@@ -1,0 +1,59 @@
+name: Proposal
+description: A spec clarification, a documentation fix, or a verifier or tooling proposal.
+title: "proposal: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The trust core is change-controlled, not frozen. A new surface costs
+        new gates, conformance evidence, and an adversarial pass showing it did
+        not weaken existing controls. This proposal form is where that scope is
+        argued before implementation.
+
+        In scope:
+
+        - clarifications and corrections to `SPEC.md`, which is normative
+        - conformance vectors that pin behaviour the spec already requires
+        - documentation that is wrong, missing, or misleading
+        - verifiers and tooling that live outside `causal_continuity_engine/` — another independent
+          implementation of the spec, a checker, a CI job
+
+        Rejected without prior design agreement: new engine subsystems, event
+        or edge types, or CLI subcommands. Always out of scope: anything that
+        would make `causal_continuity_engine/` depend on a package outside the standard library.
+
+        If the engine is wrong rather than incomplete, file a bug report instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: >-
+        Describe the situation you are actually in, not the change you want.
+        Concrete beats general: what did you try to do, and where did it stop?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you are proposing
+      description: >-
+        The specific change. For a spec clarification, quote the sentence that is
+        ambiguous and give the reading you think is correct.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-not-outside
+    attributes:
+      label: Why can this not be done outside the engine
+      description: >-
+        The engine exposes an event log, a CLI, an HTTP API, JSON schemas, and a
+        normative spec that a stranger can implement against. Explain what stops
+        this from being built on top of those instead of inside `causal_continuity_engine/`. If the
+        answer is that the engine does not expose enough, say precisely what is
+        missing — that is a narrower and much more likely change.
+    validations:
+      required: true

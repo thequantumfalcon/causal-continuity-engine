@@ -1,0 +1,28 @@
+# gitleaks configuration.
+#
+# Push protection is NOT available on this repository (private repo, personal
+# Pro plan). When gitleaks is installed and the hook is not bypassed, the
+# pre-commit hook is the only local scan before content reaches the remote;
+# the server workflow runs only after a push. It is therefore configured to
+# acknowledge specific known-synthetic values rather than skip files or relax
+# rules — a path-wide exclusion would let a real secret hide beside a known fake.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+Synthetic credentials that exist so a test can prove they get redacted.
+
+TestR3RedactionBeforeExtraction ingests a GitHub-PAT-shaped literal inside
+issue text and then asserts it reaches neither the graph nor the resume
+packet. The literal has to look like a real token for the test to mean
+anything, which is exactly why the scanner flags it. It is allowlisted by its
+exact value, not by its path, so any OTHER secret appearing in the same file
+is still a finding.
+"""
+regexes = [
+  # tests/test_regressions_round2.py — obviously synthetic: sequential
+  # alphabet followed by 123456.
+  '''ghp_ABCDEFghijklmnopqrstuvwx123456''',
+]

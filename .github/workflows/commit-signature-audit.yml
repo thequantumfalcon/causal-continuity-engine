@@ -1,0 +1,44 @@
+name: commit-signature-audit
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# This is a detective, post-push control. It reports a main commit that GitHub
+# did not verify, but it cannot prevent that commit from landing. The required
+# PR/check rules remain the preventive control for the default branch.
+jobs:
+  signature-audit:
+    name: commit-signature-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require GitHub verification for the exact pushed commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          response="$(mktemp)"
+          trap 'rm -f "$response"' EXIT
+          gh api "repos/$GH_REPO/commits/$EXPECTED_SHA" > "$response"
+          jq -e --arg sha "$EXPECTED_SHA" '
+            type == "object"
+            and .sha == $sha
+            and (.commit | type == "object")
+            and (
+              .commit.verification
+              | type == "object"
+              and (.verified | type == "boolean")
+              and .verified == true
+              and (.reason | type == "string" and length > 0)
+              and (.signature | type == "string" and length > 0)
+              and (.payload | type == "string" and length > 0)
+              and (.verified_at | type == "string" and length > 0)
+            )
+          ' "$response"

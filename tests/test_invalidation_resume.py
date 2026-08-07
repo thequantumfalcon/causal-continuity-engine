@@ -1,0 +1,205 @@
+"""Invalidation propagation/classification and resume packet composition."""
+
+import pytest
+
+from causal_continuity_engine.graph import Graph
+from causal_continuity_engine.invalidation import InvalidationEngine, classify
+from causal_continuity_engine.memory import Memory
+from causal_continuity_engine.resume import ResumeComposer
+from causal_continuity_engine.store import Store
+
+TEN, PRJ = "ten_t", "prj_t"
+
+
+@pytest.fixture
+def env():
+    store = Store(":memory:")
+    graph = Graph(store)
+    memory = Memory(store, graph)
+    inv = InvalidationEngine(store, graph)
+    composer = ResumeComposer(store, graph, memory)
+    graph.put_node(
+        entity_type="project", tenant_id=TEN, project_id=PRJ,
+        node_id=PRJ, status="active", data={"name": "resume fixture"})
+    yield store, graph, memory, inv, composer
+    store.close()
+
+
+def _chain(graph):
+    """assumption <- (assumes) task <- (depends_on) decision."""
+    a = graph.put_node(entity_type="assumption", tenant_id=TEN, project_id=PRJ,
+                       data={"statement": "schema is stable"}, status="active",
+                       criticality="high")
+    t = graph.put_node(entity_type="task", tenant_id=TEN, project_id=PRJ,
+                       data={"title": "build importer"}, status="open",
+                       criticality="high")
+    d = graph.put_node(entity_type="decision", tenant_id=TEN, project_id=PRJ,
+                       data={"title": "batch nightly"}, status="accepted",
+                       criticality="medium")
+    graph.put_edge(edge_type="assumes", src_id=t.id, dst_id=a.id,
+                   tenant_id=TEN, project_id=PRJ)
+    graph.put_edge(edge_type="depends_on", src_id=d.id, dst_id=t.id,
+                   tenant_id=TEN, project_id=PRJ)
+    return a, t, d
+
+
+class TestClassify:
+    def test_matrix_deterministic(self):
+        assert classify(0.9, "high", 0.9) == "blocked"
+        assert classify(0.9, "high", 0.5) == "review_required"
+        assert classify(0.6, "medium", 0.9) == "review_required"
+        assert classify(0.2, "low", 0.9) == "valid"
+
+
+@pytest.mark.parametrize("target", [False, [], "issue-1", 7])
+def test_resume_target_must_be_object_or_null(env, target):
+    _, _, _, _, composer = env
+    with pytest.raises(ValueError, match="target must be an object or null"):
+        composer.compose(
+            tenant_id=TEN, project_id=PRJ, target=target)
+
+
+@pytest.mark.parametrize("budget", [True, False, 0, -1, 100_001, 1.5, "10"])
+def test_resume_token_budget_is_exact_bounded_integer(env, budget):
+    _, _, _, _, composer = env
+    with pytest.raises(ValueError, match="token_budget.*1 to 100000"):
+        composer.compose(
+            tenant_id=TEN, project_id=PRJ, token_budget=budget)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"target": {"score": float("nan")}},
+        {"target": {"score": float("inf")}},
+        {"target": {"value": object()}},
+        {"state_basis": {"score": float("-inf")}},
+    ],
+)
+def test_resume_inputs_must_be_finite_canonical_json(env, kwargs):
+    _, _, _, _, composer = env
+    with pytest.raises(ValueError, match="finite canonical JSON"):
+        composer.compose(tenant_id=TEN, project_id=PRJ, **kwargs)
+
+
+class TestInvalidation:
+    def test_fire_propagates_and_transitions(self, env):
+        store, graph, memory, inv, _ = env
+        a, t, d = _chain(graph)
+        result = inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                          trigger_type="contradictory_evidence",
+                          trigger_confidence=0.95, reason="schema changed")
+        assert graph.get(a.id)["status"] == "invalidated"
+        assert graph.get(t.id)["status"] == "blocked"
+        affected = {c["node_id"]: c for c in result["data"]["affected"]}
+        assert affected[t.id]["impact"] == "blocked"
+        assert result["data"]["minimal_causal_path"]
+        assert result["data"]["recommended_action"]
+
+    def test_unknown_trigger_rejected(self, env):
+        store, graph, memory, inv, _ = env
+        a, _, _ = _chain(graph)
+        with pytest.raises(ValueError):
+            inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                     trigger_type="vibes")
+
+    def test_low_confidence_high_criticality_needs_human(self, env):
+        store, graph, memory, inv, _ = env
+        a, t, d = _chain(graph)
+        result = inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                          trigger_type="dependency_drift",
+                          trigger_confidence=0.4, reason="maybe")
+        assert result["status"] == "pending_confirmation"
+        # No automatic state change happened (ADR-008 / CI-005)
+        assert graph.get(a.id)["status"] == "active"
+        assert graph.get(t.id)["status"] == "open"
+
+    def test_confirm_applies_reject_discards(self, env):
+        store, graph, memory, inv, _ = env
+        a, t, d = _chain(graph)
+        pending = inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                           trigger_type="dependency_drift", trigger_confidence=0.4)
+        inv.confirm(pending["node_id"], actor="lead", accept=True)
+        assert graph.get(a.id)["status"] == "invalidated"
+        # second scenario: reject
+        a2 = graph.put_node(entity_type="assumption", tenant_id=TEN,
+                            project_id=PRJ, data={"statement": "x is stable"},
+                            status="active", criticality="high")
+        pending2 = inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a2.id,
+                            trigger_type="dependency_drift", trigger_confidence=0.4)
+        inv.confirm(pending2["node_id"], actor="lead", accept=False)
+        assert graph.get(a2.id)["status"] == "active"
+        assert graph.get(pending2["node_id"])["status"] == "rejected"
+
+    def test_resolution_supersede_preserves_history(self, env):
+        store, graph, memory, inv, _ = env
+        a, t, d = _chain(graph)
+        fired = inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                         trigger_type="changed_requirement", trigger_confidence=0.9)
+        replacement = graph.put_node(
+            entity_type="decision", tenant_id=TEN, project_id=PRJ,
+            data={"title": "adopt schema v2", "supersedes_node_id": a.id},
+            status="accepted",
+            authority="human_decision")
+        out = inv.resolve(fired["node_id"], mode="superseding_decision",
+                          actor="lead", replacement_node_id=replacement.id)
+        assert out["status"] == "resolved"
+        assert graph.get(a.id)["status"] == "superseded"
+        assert len(graph.history(a.id)) >= 3          # active -> invalidated -> superseded
+        assert graph.get(t.id)["status"] == "open"  # exact pre-invalidation state
+        edges = graph.out_edges(replacement.id, {"supersedes"})
+        assert edges and edges[0]["dst_id"] == a.id
+
+    def test_metrics(self, env):
+        store, graph, memory, inv, _ = env
+        a, _, _ = _chain(graph)
+        inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                 trigger_type="failed_check", trigger_confidence=0.9)
+        m = inv.metrics(PRJ)
+        assert m["total"] == 1 and m["by_trigger"]["failed_check"] == 1
+
+
+class TestResume:
+    def test_packet_sections_present(self, env):
+        store, graph, memory, inv, composer = env
+        _chain(graph)
+        pkt = composer.compose(tenant_id=TEN, project_id=PRJ)
+        for section in ("mission", "authority", "accepted_decisions",
+                        "verified_progress", "invalidations", "open_work",
+                        "environment", "trust", "continuity_lineage",
+                        "evidence_index", "omissions"):
+            assert section in pkt
+
+    def test_l0_never_dropped_under_budget(self, env):
+        store, graph, memory, inv, composer = env
+        pin = graph.put_node(entity_type="constraint", tenant_id=TEN,
+                             project_id=PRJ,
+                             data={"statement": "never push to main"},
+                             status="active", criticality="critical")
+        memory.promote(PRJ, pin.id, "L0", actor="h")
+        for i in range(40):
+            graph.put_node(entity_type="claim", tenant_id=TEN, project_id=PRJ,
+                           data={"statement": f"filler fact number {i} about the"
+                                 " system architecture and its many details"},
+                           status="recorded")
+        pkt = composer.compose(tenant_id=TEN, project_id=PRJ, token_budget=300)
+        pinned_ids = [p["node_id"] for p in pkt["mission"]["pinned_control_state"]]
+        assert pin.id in pinned_ids
+        assert pkt["omissions"], "budget pressure must be disclosed"
+
+    def test_open_invalidation_blocks_next_safe_action(self, env):
+        store, graph, memory, inv, composer = env
+        a, t, d = _chain(graph)
+        inv.fire(tenant_id=TEN, project_id=PRJ, target_node_id=a.id,
+                 trigger_type="contradictory_evidence", trigger_confidence=0.95)
+        pkt = composer.compose(tenant_id=TEN, project_id=PRJ)
+        assert pkt["invalidations"], "open invalidation must surface"
+        nsa = pkt["open_work"]["next_safe_action"]["summary"]
+        assert "invalidation" in nsa.lower() or "blocked" not in nsa
+
+    def test_render_markdown(self, env):
+        store, graph, memory, inv, composer = env
+        _chain(graph)
+        pkt = composer.compose(tenant_id=TEN, project_id=PRJ)
+        md = ResumeComposer.render_markdown(pkt)
+        assert "# CCE Resume Packet" in md and "Next safe action" in md

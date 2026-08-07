@@ -1,0 +1,199 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions: {}
+
+# A tag is a one-shot release identity. Serializing reruns prevents two jobs
+# from racing to create or publish the same immutable GitHub release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A signed version tag on an unreviewed side branch is still an
+      # unreviewed release. Full checkout history supplies origin/main without
+      # leaving a credential behind for any repository-controlled command.
+      - name: Require the tagged commit to belong to main
+        run: |
+          git rev-parse --verify refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+          # The release bootstrap uses a fresh isolated PIP_CACHE_DIR; restoring
+          # setup-python's ambient cache would be unreachable and misleading.
+
+      - name: Bind tag to package version and checked-out commit
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python .github/scripts/check_release_tag.py "$GITHUB_REF_NAME"
+          --verify-github --verify-required-checks
+
+      # These stable TypeURI URLs are part of the public protocol. They remain
+      # bound to the schema-version publication tag even on later package
+      # releases; a draft must not exist unless each serves the checked-out bytes.
+      - name: Verify every runtime-declared immutable public schema URL
+        run: python .github/scripts/verify_public_schemas.py --tag "$GITHUB_REF_NAME"
+
+      - name: Run every release gate and build twice
+        run: python .github/scripts/bootstrap_tools.py --release
+
+      # Workflow artifacts are immutable within a run. The next job downloads
+      # this handoff by immutable artifact ID, validates its service-side digest,
+      # and recomputes its exact SHA256SUMS before publishing.
+      - name: Upload the exact verified release set
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: cce-release-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      attestations: write
+      artifact-metadata: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Download the verified release set
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: dist
+          # v8 calculates the downloaded artifact archive's digest and compares
+          # it with GitHub's immutable artifact metadata. Make the fail-closed
+          # behavior explicit instead of relying on its default.
+          digest-mismatch: error
+
+      # No checkout and no package execution occur in this credentialed job.
+      # The complete mutable ubuntu-latest runner/tool image is trusted here,
+      # including the shell, gh, sha256sum, find, cmp, grep, cut, sort, test,
+      # mktemp and basename. A compromised gh could mutate release state and
+      # counterfeit its read-back. The exact two-entry SHA256SUMS covers the
+      # wheel and sdist within the three-file asset set.
+      - name: Recheck the immutable handoff without repository code
+        env:
+          ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}
+        run: |
+          set -eu
+          printf '%s\n' "$ARTIFACT_ID" | grep -Eq '^[0-9]+$'
+          printf '%s\n' "$EXPECTED_ARTIFACT_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+
+          entry_count="$(find dist -mindepth 1 -maxdepth 1 | wc -l)"
+          file_count="$(find dist -mindepth 1 -maxdepth 1 -type f | wc -l)"
+          wheel_count="$(find dist -maxdepth 1 -type f -name 'causal_continuity_engine-*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -type f -name 'causal_continuity_engine-*.tar.gz' | wc -l)"
+          test "$entry_count" -eq 3
+          test "$file_count" -eq 3
+          test "$wheel_count" -eq 1
+          test "$sdist_count" -eq 1
+          test -f dist/SHA256SUMS
+
+          wheel="$(find dist -maxdepth 1 -type f -name 'causal_continuity_engine-*.whl' -print -quit)"
+          sdist="$(find dist -maxdepth 1 -type f -name 'causal_continuity_engine-*.tar.gz' -print -quit)"
+          expected_manifest="$(mktemp)"
+          trap 'rm -f "$expected_manifest"' EXIT
+          for artifact in "$sdist" "$wheel"; do
+            digest="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
+            printf '%s  %s\n' "$digest" "$(basename "$artifact")"
+          done | LC_ALL=C sort > "$expected_manifest"
+          cmp --silent "$expected_manifest" dist/SHA256SUMS
+          echo "validated artifact $ARTIFACT_ID at sha256:$EXPECTED_ARTIFACT_DIGEST"
+
+      - name: Classify repository visibility without a falsy default
+        id: visibility
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: |
+          set -eu
+          case "$REPOSITORY_VISIBILITY" in
+            public) echo "public=true" >> "$GITHUB_OUTPUT" ;;
+            private|internal) echo "public=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown repository visibility: $REPOSITORY_VISIBILITY" >&2; exit 1 ;;
+          esac
+
+      # Public repositories use the public Sigstore transparency log. Private
+      # personal-account repositories cannot request GitHub attestations, so
+      # the release remains checksummed and reproducible until the public flip.
+      - name: Attest release provenance
+        if: steps.visibility.outputs.public == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        with:
+          subject-path: "dist/*"
+
+      # Create or resume a draft, replace its assets with the already verified
+      # set, download them back for byte comparison, then publish once. A rerun
+      # after a partial upload is safe; a rerun after publication is read-only
+      # verification because immutable assets cannot be replaced.
+      - name: Publish immutable-ready GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This job deliberately has no checkout, so gh cannot infer a
+          # repository from Git metadata. Bind every release command to the
+          # event repository explicitly.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          state="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
+          case "$state" in
+            "")
+              gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+              state=true
+              ;;
+            true|false) ;;
+            *)
+              echo "unexpected GitHub release state: $state" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$state" = "true" ]; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          fi
+
+          expected_assets="$(for artifact in dist/*; do basename "$artifact"; done | LC_ALL=C sort)"
+          actual_assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | map(.name) | sort | .[]')"
+          test "$actual_assets" = "$expected_assets"
+
+          remote="$(mktemp -d)"
+          trap 'rm -rf "$remote"' EXIT
+          gh release download "$GITHUB_REF_NAME" --dir "$remote"
+          for artifact in dist/*; do
+            cmp --silent "$artifact" "$remote/$(basename "$artifact")"
+          done
+
+          if [ "$state" = "true" ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+          fi

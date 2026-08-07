@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "causal-continuity-engine"
+dynamic = ["version"]
+description = "Causal Continuity Engine - continuity, causal invalidation, and proof for long-running coding agents"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE.txt", "NOTICE"]
+readme = "README.md"
+authors = [{ name = "Thomas Albrecht" }]
+keywords = [
+    "agents", "provenance", "event-sourcing", "audit", "governance",
+    "causal-graph", "verification", "supply-chain",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/thequantumfalcon/causal-continuity-engine"
+Repository = "https://github.com/thequantumfalcon/causal-continuity-engine"
+Issues = "https://github.com/thequantumfalcon/causal-continuity-engine/issues"
+Changelog = "https://github.com/thequantumfalcon/causal-continuity-engine/blob/main/CHANGELOG.md"
+Specification = "https://github.com/thequantumfalcon/causal-continuity-engine/blob/main/SPEC.md"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.1",
+    "build==1.5.0",
+    "jsonschema==4.26.0",
+    "pip==26.1.2",
+]
+
+[project.scripts]
+cce-engine = "causal_continuity_engine.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["causal_continuity_engine*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+causal_continuity_engine = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "causal_continuity_engine.__version__" }
+
+# Audit inputs are retained for installed verification without becoming public
+# import namespaces or colliding with another distribution's data files.
+[tool.setuptools.data-files]
+"share/causal-continuity-engine/audit" = ["SPEC.md"]
+"share/causal-continuity-engine/audit/schemas" = ["schemas/*.json"]
+"share/causal-continuity-engine/audit/benchmarks" = ["benchmarks/*.py"]
+"share/causal-continuity-engine/audit/benchmarks/continuitybench" = ["benchmarks/continuitybench/*.py"]
+"share/causal-continuity-engine/audit/tests" = ["tests/*.py"]
+"share/causal-continuity-engine/audit/vectors" = ["vectors/*.json", "vectors/*.py"]
+"share/causal-continuity-engine/audit/verifiers" = ["verifiers/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+# ---------------------------------------------------------------------------
+# Lint gate.
+#
+# The tool version and rule selection are both explicit. Pinning the executable
+# makes diagnostics reproducible, while keeping the selection here ensures
+# local and CI invocations cannot silently choose different rules.
+#
+# E/F/W/I is deliberate scope: pyflakes catches real defects (dead code,
+# undefined names), and I keeps imports ordered. The opinionated families
+# (B, UP, SIM, RUF, FURB) are NOT enabled — turning them on today would demand
+# ~150 edits across a heavily reviewed trust core, and broad style churn is a
+# risk with no matching benefit. Revisit as an intentional formatting change,
+# never as collateral to a behavioral fix.
+#
+# `ruff format` is deliberately NOT part of the gate: a broad mechanical
+# rewrite would bury behavioral changes in formatting noise.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# The corpus generator and the conformance tests must put the repository root
+# on sys.path before importing causal_continuity_engine, so their imports cannot
+# sit at the top.
+"vectors/generate.py" = ["E402"]

@@ -1,0 +1,45 @@
+# This workflow is INERT until the repository is made public.
+#
+# actions/dependency-review-action calls GitHub's dependency review API. On a
+# private repository that API requires GitHub Code Security, which this plan
+# does not include, so every run here would fail for reasons that have nothing
+# to do with the pull request. A small classifier runs everywhere, but checkout
+# and dependency review are skipped on private/internal repositories. At the
+# public flip the review begins enforcing with no edit to this file; an unknown
+# visibility fails rather than silently disabling it.
+
+name: dependency-review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Classify repository visibility without a falsy default
+        id: visibility
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: |
+          set -eu
+          case "$REPOSITORY_VISIBILITY" in
+            public) echo "enabled=true" >> "$GITHUB_OUTPUT" ;;
+            private|internal) echo "enabled=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "unknown repository visibility: $REPOSITORY_VISIBILITY" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.visibility.outputs.enabled == 'true'
+        with:
+          persist-credentials: false
+
+      # Moving major branches exist, but this repository never executes them.
+      # The reviewed v5.0.0 commit is pinned exactly, and Dependabot proposes
+      # future reviewed SHA updates.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        if: steps.visibility.outputs.enabled == 'true'

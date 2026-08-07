@@ -1,0 +1,240 @@
+[
+  {
+    "expected_errors": [],
+    "expected_verdict": "VALID",
+    "name": "valid_hmac"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "VALID",
+    "name": "valid_hmac_unicode"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "VALID",
+    "name": "valid_hmac_jcs_edges"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "VALID",
+    "name": "empty_required_authoritative_pass"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "UNVERIFIED",
+    "name": "unverified_hmac_no_key"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "UNVERIFIED",
+    "name": "unverified_forged_body_no_key"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "VALID",
+    "name": "valid_lamport"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "INCOMPLETE",
+    "name": "incomplete_failed_check"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "INCOMPLETE",
+    "name": "empty_required_no_results"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "INCOMPLETE",
+    "name": "empty_required_self_asserted_pass"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "INCOMPLETE",
+    "name": "empty_required_authoritative_failure"
+  },
+  {
+    "expected_errors": [
+      "E_DIGEST"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "tamper_statement"
+  },
+  {
+    "expected_errors": [
+      "E_SIGNATURE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "tamper_statement_resealed"
+  },
+  {
+    "expected_errors": [
+      "E_SIGNATURE",
+      "E_STATUS"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "status_contradicts_contents"
+  },
+  {
+    "expected_errors": [
+      "E_SIGNATURE",
+      "E_STATUS"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "self_asserted_cannot_satisfy"
+  },
+  {
+    "expected_errors": [],
+    "expected_verdict": "VALID",
+    "name": "self_assertion_cannot_poison_authoritative_pass"
+  },
+  {
+    "expected_errors": [
+      "E_FINGERPRINT"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "lamport_fingerprint_spoof"
+  },
+  {
+    "expected_errors": [
+      "E_UNREGISTERED"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "lamport_no_registry"
+  },
+  {
+    "expected_errors": [
+      "E_SIGNATURE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "lamport_truncated_key"
+  },
+  {
+    "expected_errors": [
+      "E_UNBOUND"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unbound_task"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "task_id_under_unrelated_field"
+  },
+  {
+    "expected_errors": [
+      "E_PROJECT"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "wrong_project"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "missing_required_field"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "created_at_noncanonical_offset"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "created_at_invalid_calendar_date"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_schema_version"
+  },
+  {
+    "expected_errors": [
+      "E_SCHEME"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_algorithm"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "invalid_result_value"
+  },
+  {
+    "expected_errors": [
+      "E_STATUS"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "summary_contradicts_contents"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "actor_wrong_type"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "action_intent_wrong_type"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "policy_decision_wrong_type"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "input_item_wrong_type"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_top_level_field"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_action_intent_field"
+  },
+  {
+    "expected_errors": [
+      "E_CJSON"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "non_binary64_integer"
+  },
+  {
+    "expected_errors": [
+      "E_SIGNATURE",
+      "E_STATUS"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "retry_cannot_launder_a_failure"
+  }
+]

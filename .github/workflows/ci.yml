@@ -1,0 +1,166 @@
+name: ci
+
+# Action pinning policy for this repository:
+#
+#   * Every action, including first-party actions/*, is pinned to a full
+#     40-character commit SHA with its release in a trailing comment.
+#   * Dependabot tracks those SHAs and proposes reviewed updates.
+#   * A tag is a mutable pointer that its owner can move after review. A commit
+#     SHA is the only immutable action reference supported by GitHub.
+#
+# Example:
+#
+#         uses: some-org/some-action@0123456789abcdef0123456789abcdef01234567  # v1.2.3
+#
+# Any new action follows that form. The repository policy should also enable
+# "Require actions to be pinned to a full-length commit SHA" so config drift
+# fails closed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A superseded pull-request run is worthless. A superseded push to main is
+  # not: it is the only record that a given commit on main was green.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject.toml declares requires-python = ">=3.11".
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # CI never pushes. A token left in .git/config is readable by every
+          # command that runs after checkout, including the recipes below.
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          # Do not restore setup-python's ambient pip cache. The bootstrap
+          # deliberately uses a fresh PIP_CACHE_DIR inside its isolation root.
+
+      - name: lint, deps, test, corpus, caps, bench
+        # A checked-in stdlib orchestrator stops at the first failure and is
+        # shared by Linux, Windows, macOS, and the release verification job. No
+        # downloaded command runner interprets the trusted gate sequence.
+        #
+        #   setup   installs the package editable plus pinned test, lint,
+        #           schema-validation, and build tooling
+        #   lint    ruff check, with the rule set pinned in pyproject.toml
+        #           under [tool.ruff.lint] -- not on the command line
+        #   deps    causal_continuity_engine/ imports nothing outside the standard library, which is
+        #           what makes README.md's zero-dependency claim checkable
+        #   test    the pytest suite
+        #   corpus  the reference still reaches the committed verdict for every
+        #           conformance vector in vectors/
+        #   caps    every capability claim resolves to real symbols, files and
+        #           tests, AND regenerating docs/CAPABILITIES.md leaves it
+        #           unchanged, so a stale or hand-edited table fails here
+        #   bench   ContinuityBench, every metric against its target
+        #
+        # Two things this chain deliberately does not do. It does not check
+        # formatting: `just fmt-check` is advisory because broad formatting
+        # churn obscures reviewed behavior. It does not check authorship
+        # attribution: that is a separate workflow,
+        # .github/workflows/no-ai-attribution.yml, job `attribution`, which
+        # runs on the same events as this one.
+        run: python .github/scripts/bootstrap_tools.py
+
+  # The verifier tests execute real child processes, and generated artifacts
+  # are byte-gated, so platform independence has to be exercised rather than
+  # inferred from pure-Python source. One current Python is enough to expose
+  # OS semantics while the Linux matrix owns interpreter-version coverage.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Native Windows portability gate
+        shell: pwsh
+        run: python .github/scripts/bootstrap_tools.py
+
+  # macOS 15 is the hosted ARM64 image. This one current-interpreter leg
+  # exercises wheel availability, filesystem normalization, and POSIX process
+  # behavior on Apple Silicon; the Linux matrix owns version coverage.
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Native macOS ARM64 portability gate
+        run: python .github/scripts/bootstrap_tools.py
+
+  artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Build twice and verify the installed wheel
+        run: python .github/scripts/bootstrap_tools.py --artifacts-only
+
+  # The single stable CI status context. Require this instead of individual
+  # matrix/build legs; the independent `attribution` and `secrets` workflow
+  # contexts remain separate required controls.
+  #
+  # A matrix job reports one check per leg -- "test (3.11)", "test (3.12)",
+  # "test (3.13)", "test (3.14)" -- and never a bare "test". Those names change whenever the
+  # matrix changes, so a ruleset that names them stops gating the moment a
+  # Python version is added or dropped, without any visible failure. This
+  # job's name does not depend on the matrix.
+  #
+  # `if: always()` is what makes it sound. Without it the job is skipped when
+  # `test` fails, and GitHub treats a skipped required check as satisfied.
+  # needs.test.result is the aggregate over every matrix leg, so it is
+  # "success" only when all four passed.
+  ci:
+    needs: [test, windows, macos, artifacts]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every required CI leg succeeded
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          ARTIFACT_RESULT: ${{ needs.artifacts.result }}
+        run: |
+          test "$TEST_RESULT" = "success"
+          test "$WINDOWS_RESULT" = "success"
+          test "$MACOS_RESULT" = "success"
+          test "$ARTIFACT_RESULT" = "success"

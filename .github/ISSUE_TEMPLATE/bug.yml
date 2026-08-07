@@ -1,0 +1,125 @@
+name: Bug report
+description: The engine does something that contradicts its documented behaviour.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A bug report is a claim about behaviour, and the claim has to carry
+        enough for someone else to reproduce it on a machine you do not
+        control. A report that cannot be reproduced is not necessarily wrong,
+        but there is nothing in it to act on.
+
+        Before filing, check that what you are seeing is not a limit that is
+        already written down. `docs/CAPABILITIES.md` records the honest limit
+        of every capability claim — `implemented` there means the mechanism
+        exists and is tested, never that the requirement is solved in full.
+        `SPEC.md` section 11 lists what the proof envelope specification
+        deliberately does not cover.
+
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem
+      description: A best guess is fine. Pick "Not sure / other" if it does not fit.
+      options:
+        - Engine and causal graph
+        - Resume packet
+        - Proof envelope and completion gate
+        - Evidence probes and grading
+        - Invalidation and blast radius
+        - Memory tiers
+        - CLI
+        - Standalone verifier (verifiers/verify_proof.py)
+        - Not sure / other
+    validations:
+      required: true
+
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The exact command or API call, verbatim, including every flag.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: >-
+        If the expectation comes from a document, cite it: a SPEC.md section,
+        an ADR number from docs/adr/ADR-INDEX.md, a row in docs/CAPABILITIES.md,
+        or a line in the README. An expectation with a source is a much stronger
+        report than one without.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: >-
+        The output verbatim, including the exit code and any traceback.
+        Paraphrasing loses the detail that usually turns out to matter.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: >-
+        The shortest sequence that reaches the wrong behaviour starting from a
+        fresh project — `cce-engine init` and then the fewest steps that show it, or a
+        failing test. Strip out everything that is not needed to make it happen.
+        A report without a reproduction cannot be acted on. If the bug needs a
+        particular database, proof envelope, or webhook payload, attach it with
+        anything private removed.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: cce-version
+    attributes:
+      label: CCE version
+      description: >-
+        `python -c "from causal_continuity_engine import __version__; print(__version__)"`, or the version in
+        causal_continuity_engine/__init__.py. If you are running from a checkout,
+        give the commit SHA
+        instead — it is more precise than the version string.
+      placeholder: "0.1.0, or a commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: The full output of `python -V`. The engine requires 3.11 or newer.
+      placeholder: "Python 3.12.4"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Name, version, and architecture.
+      placeholder: "macOS 15.5 arm64, or Ubuntu 24.04 x86_64"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: documented-limits
+    attributes:
+      label: Documented limits
+      options:
+        - label: >-
+            I checked `docs/CAPABILITIES.md` and section 11 of `SPEC.md`, and what
+            I am reporting is not one of the limits recorded there.
+          required: true

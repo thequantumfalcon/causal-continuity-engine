@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.anchor.v1.json",
+  "title": "CCE External Chain Anchor v1",
+  "description": "Content-free prefix commitment intended for publication outside the operator's control.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "table", "count", "tip", "intact_at_export",
+    "exported_at"
+  ],
+  "dependentRequired": {
+    "tenant_id": ["project_id"],
+    "project_id": ["tenant_id"]
+  },
+  "properties": {
+    "schema_version": {"const": "cce.anchor.v1"},
+    "table": {"enum": ["events", "audit_log"]},
+    "count": {"type": "integer", "minimum": 0},
+    "tip": {"$ref": "#/$defs/digest"},
+    "intact_at_export": {"const": true},
+    "exported_at": {"$ref": "#/$defs/timestamp"},
+    "tenant_id": {"$ref": "#/$defs/identifier"},
+    "project_id": {"$ref": "#/$defs/identifier"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["count"],
+        "properties": {"count": {"const": 0}}
+      },
+      "then": {
+        "properties": {
+          "tip": {
+            "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "tip": {
+            "not": {
+              "const": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"},
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    }
+  }
+}

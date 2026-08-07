@@ -1,0 +1,8 @@
+# Direct development and release-tool inputs. Regenerate requirements-dev.lock
+# with the command embedded in that file, then review every version and hash.
+setuptools==83.0.0
+pip==26.1.2
+build==1.5.0
+jsonschema==4.26.0
+pytest==9.1.1
+ruff==0.16.1

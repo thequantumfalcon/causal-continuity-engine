@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions
+    url: https://github.com/thequantumfalcon/causal-continuity-engine/discussions
+    about: Ask and answer questions here.
+  - name: Security report
+    url: https://github.com/thequantumfalcon/causal-continuity-engine/security/policy
+    about: Read the security policy before reporting. Never open a public issue for a vulnerability.

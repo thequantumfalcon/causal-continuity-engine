@@ -1,0 +1,99 @@
+{
+  "context": {
+    "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
+  },
+  "envelope": {
+    "action_id": "act_40b2ae1bef32792e85f6ab6f",
+    "action_intent": {
+      "requirement_ids": [],
+      "statement": "the exporter is done",
+      "type": "task_complete"
+    },
+    "actor": {
+      "agent": "generator"
+    },
+    "continuity_links": {
+      "proof_node_id": "act_da23447f4a9c2a04f13105ee",
+      "task_ids": [
+        "tsk_84f67c24102474dfe72635a3"
+      ]
+    },
+    "created_at": "2026-08-04T05:22:11.038203Z",
+    "environment": {},
+    "evidence_context": {
+      "determinism": {},
+      "mutation": null,
+      "policy_pinned": [],
+      "unpinned_required": []
+    },
+    "execution": [],
+    "inputs": [
+      {
+        "digest": "sha256:ca8700155873f81b9b4dca7e3378182bfae43e9ca62b9b56d4150f61c52286f4",
+        "kind": "artifact",
+        "name": "artifact:deliverable.py"
+      },
+      {
+        "digest": "sha256:e997c565169d0dbfabe37d7bf4b47636f5b9e589c01d38183eb7f034ff7979f5",
+        "kind": "continuity",
+        "name": "continuity:task_ids:tsk_84f67c24102474dfe72635a3"
+      }
+    ],
+    "policy_decision": {
+      "action_scope": "deliverable.py",
+      "action_scopes": [
+        "deliverable.py"
+      ],
+      "action_type": "run_verifier",
+      "applicable_grant_ids": [
+        "grt_1a03249b7b1b81c7e90e950f"
+      ],
+      "decided_at": "2026-08-04T05:22:11.041209Z",
+      "decision": "allow",
+      "effective_level": 2,
+      "policy_config": {
+        "max_autonomy_level": 2,
+        "require_proof_for": [],
+        "required_verifiers": [],
+        "tenant_max": 3
+      },
+      "reasons": [
+        "scope 'deliverable.py': effective level 2 >= required 2"
+      ],
+      "required_level": 2,
+      "scope_decisions": [
+        {
+          "decision": "allow",
+          "effective_level": 2,
+          "required_level": 2,
+          "scope": "deliverable.py"
+        }
+      ]
+    },
+    "project_id": "prj_vectors",
+    "proof_digest": "sha256:6a92bf38c09692606f3eca49db1805f2e7d8fd13cbad093880bbfc3f2296ffdd",
+    "proof_id": "prf_3b803c1cef3299faefa5fba3",
+    "schema_version": "cce.proof.v1",
+    "signature": {
+      "algorithm": "hmac-sha256",
+      "key_id": "vectors",
+      "value": "fbc9a5ef7657c52577e48b60b447c54fb8d963e30572942421d0d4240a97433f"
+    },
+    "status": "incomplete",
+    "subject": [],
+    "tenant_id": "ten_local",
+    "verification_summary": {
+      "failed": [],
+      "inconclusive": [],
+      "missing": [],
+      "passed": [],
+      "required": [],
+      "skipped": [],
+      "unbacked_self_assertions": []
+    },
+    "verifications": []
+  },
+  "expected_errors": [],
+  "expected_verdict": "INCOMPLETE",
+  "name": "empty_required_no_results"
+}

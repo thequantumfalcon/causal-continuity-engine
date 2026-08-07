@@ -1,0 +1,21 @@
+include AGENTS.md CHANGELOG.md LICENSE.txt NOTICE README.md SPEC.md pyproject.toml justfile
+include CITATION.cff
+include requirements-dev.in requirements-dev.lock
+include .editorconfig .gitattributes .gitignore .gitleaks.toml .pre-commit-config.yaml
+recursive-include causal_continuity_engine *.py py.typed
+recursive-include benchmarks *.py
+recursive-include docs *.md
+include docs/assets/social-preview.png
+recursive-include schemas *.json
+recursive-include tests *.py
+recursive-include vectors *.py *.json
+recursive-include verifiers *.py
+include .github/CODEOWNERS .github/CONTRIBUTING.md .github/SECURITY.md
+include .github/SUPPORT.md .github/dependabot.yml .github/pull_request_template.md
+include .github/release.yml .github/ruleset.README.md
+include .github/ruleset.json .github/tag-ruleset.json
+recursive-include .github/ISSUE_TEMPLATE *.yml
+recursive-include .github/scripts *.py
+recursive-include .github/workflows *.yml
+include .githooks/commit-msg .githooks/pre-commit
+global-exclude __pycache__ *.py[cod] .DS_Store

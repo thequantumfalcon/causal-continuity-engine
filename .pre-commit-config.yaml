@@ -1,0 +1,51 @@
+# The alternative local gate, for contributors who prefer the pre-commit
+# framework:
+#
+#     pipx install pre-commit
+#     git config --unset core.hooksPath
+#     pre-commit install
+#
+# The repository's own gate is .githooks/pre-commit, and it carries BOTH the
+# AI-attribution scan and gitleaks. Git honours exactly one hook path, and the
+# framework refuses to install while `core.hooksPath` is set, so this file and
+# .githooks/ are alternatives -- never both live at once. This path gives you
+# the secret scan locally but not the attribution scan; CI enforces attribution
+# independently (.github/workflows/no-ai-attribution.yml, job `attribution`),
+# so a contributor who runs neither hook path is still caught before merge.
+#
+# gitleaks below is load-bearing defence in depth, not decoration. The
+# `secrets` CI job also scans pushes and pull requests, but a local hook catches
+# a credential before it reaches the remote. Once pushed, a secret must be
+# treated as leaked regardless of what a later CI result says.
+#
+# Every hook is frozen to the immutable commit behind the reviewed release
+# named in its comment. Tracking either a branch or a movable tag would let
+# third-party code change without any commit in this repository.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 39d9ac5938dadb73df0564a45f163e25ff9fa6e2  # v0.16.1
+    hooks:
+      # Lint only, matching `just lint` and CI. Formatting is advisory in this
+      # project and deliberately not a gate: the tree was hand-formatted before
+      # ruff, and a broad rewrite would create review noise for no behaviour
+      # change. A hook that reformatted on every commit would enforce, at the
+      # strictest point available, the exact rule the justfile and
+      # pyproject.toml both decline. Run `just fmt-check` when you want to see
+      # the divergence.
+      - id: ruff-check
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
+    hooks:
+      - id: gitleaks

@@ -1,0 +1,19 @@
+#!/bin/sh
+PATTERN='co-authored-by:.*(anthropic|chatgpt|claude|codex|copilot|gemini|openai)|noreply@(anthropic|openai)\.com|generated (with|by)[[:space:]]+\[?(chatgpt|claude|codex|copilot|gemini|openai)'
+identity_input="$(mktemp)" || exit 1
+trap 'rm -f "$identity_input"' EXIT HUP INT TERM
+cat "$1" > "$identity_input" || exit 1
+git var GIT_AUTHOR_IDENT >> "$identity_input" || exit 1
+grep_status=0
+grep -nEi "$PATTERN" "$identity_input" || grep_status=$?
+case "$grep_status" in
+    0)
+        echo "ERROR: AI attribution in commit message or author identity. Remove it." >&2
+        exit 1
+        ;;
+    1) ;;
+    *)
+        echo "ERROR: grep failed; attribution status is unknown." >&2
+        exit "$grep_status"
+        ;;
+esac

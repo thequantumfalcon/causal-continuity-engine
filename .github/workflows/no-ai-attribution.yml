@@ -1,0 +1,129 @@
+name: no-ai-attribution
+
+# CI-side mirror of .githooks/pre-commit and .githooks/commit-msg, using the
+# same expression. The local hooks only run for a clone that has been pointed
+# at them with `git config core.hooksPath .githooks`, and `git commit
+# --no-verify` bypasses them. This workflow is the copy that cannot be
+# skipped.
+#
+# The three enforcement files are excluded from the scan because they contain
+# the expression they enforce. No directory is exempt: contributor guidance,
+# issue forms, release policy, and every other workflow remain in scope.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    name: attribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The commit-message half of the scan walks a range of commits, not
+          # just the tip, so the full history is required.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Diff and commit messages carry no AI attribution
+        # Passed through the environment rather than interpolated into the
+        # script body, which is the general rule for anything from the event
+        # payload. Both are empty on push events and unused there.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          PATTERN='co-authored-by:.*(anthropic|chatgpt|claude|codex|copilot|gemini|openai)|noreply@(anthropic|openai)\.com|generated (with|by)[[:space:]]+\[?(chatgpt|claude|codex|copilot|gemini|openai)'
+          found=0
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+
+          scan_file() {
+            file="$1"
+            label="$2"
+            grep_status=0
+            grep -nEi "$PATTERN" "$file" || grep_status=$?
+            case "$grep_status" in
+              0)
+                echo "::error::AI attribution in $label"
+                found=1
+                ;;
+              1) ;;
+              *)
+                echo "grep failed while scanning $label" >&2
+                exit "$grep_status"
+                ;;
+            esac
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            for sha in "$BASE_SHA" "$HEAD_SHA"; do
+              if ! printf '%s\n' "$sha" \
+                   | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+                echo "pull-request base/head SHA metadata is missing or malformed" >&2
+                exit 1
+              fi
+            done
+            git cat-file -e "$BASE_SHA^{commit}"
+            git cat-file -e "$HEAD_SHA^{commit}"
+
+            printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" > "$scratch/pr-metadata"
+            scan_file "$scratch/pr-metadata" "the pull request title or body"
+            # Scan the proposed tree, not raw diff text. Raw diffs also contain
+            # deleted lines, so they prevented a pull request from removing a
+            # violation. The head tree passes once the text is genuinely gone.
+            git_grep_status=0
+            git grep -nEi "$PATTERN" "$HEAD_SHA" -- . \
+              ':(exclude).githooks/pre-commit' \
+              ':(exclude).githooks/commit-msg' \
+              ':(exclude).github/workflows/no-ai-attribution.yml' \
+              || git_grep_status=$?
+            case "$git_grep_status" in
+              0) echo "::error::AI attribution in the proposed pull request tree"; found=1 ;;
+              1) ;;
+              *) echo "git grep failed for the proposed pull request tree" >&2; exit "$git_grep_status" ;;
+            esac
+            # Commit messages, author names, and author emails of the commits
+            # the pull request would merge. This is the .githooks/commit-msg
+            # half: a message never appears in a diff.
+            git log --format='%B%n%an%n%ae' "$BASE_SHA".."$HEAD_SHA" \
+              > "$scratch/commit-identities"
+            scan_file "$scratch/commit-identities" \
+              "a pull request commit message, author name, or author email"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            # Push to main: scan the whole tracked tree and the whole history,
+            # so a bypass that reached main is caught even if it never went
+            # through a pull request.
+            git_grep_status=0
+            git grep -nEi "$PATTERN" -- . \
+              ':(exclude).githooks/pre-commit' \
+              ':(exclude).githooks/commit-msg' \
+              ':(exclude).github/workflows/no-ai-attribution.yml' \
+              || git_grep_status=$?
+            case "$git_grep_status" in
+              0) echo "::error::AI attribution in the tree on main"; found=1 ;;
+              1) ;;
+              *) echo "git grep failed for the tree on main" >&2; exit "$git_grep_status" ;;
+            esac
+            git log --format='%B%n%an%n%ae' > "$scratch/commit-identities"
+            scan_file "$scratch/commit-identities" "the history of main"
+          else
+            echo "unexpected attribution event: $GITHUB_EVENT_NAME" >&2
+            exit 1
+          fi
+
+          if [ "$found" -ne 0 ]; then
+            echo "Remove it. The rule has no exceptions." >&2
+            exit 1
+          fi
+          echo "clean"

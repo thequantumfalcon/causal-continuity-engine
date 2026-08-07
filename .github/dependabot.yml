@@ -1,0 +1,75 @@
+version: 2
+
+# Cooldown is the primary mitigation here, not the version bumps themselves.
+#
+# The realistic supply-chain attack on this repository is not a slow-burning
+# CVE in a mature release. It is a freshly published malicious version: a
+# hijacked maintainer account, a stolen publishing token, a poisoned build
+# step. Those releases are usually detected and yanked within days of
+# publication, and the window in which they do damage is the window in which
+# an automated updater proposes them. Refusing to open an update pull request
+# until a release has survived in public for a cooling-off period removes most
+# of that exposure and costs a week of latency.
+#
+# Major versions wait twice as long: they see far less real-world usage in
+# their first days, so a bad one takes longer to surface.
+#
+# Cooldown applies to version updates. Dependabot security updates are not
+# subject to it, which is the correct asymmetry -- a known-exploited flaw
+# should not sit behind a delay meant to catch unknown ones.
+
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      # One pull request for all minor and patch bumps. applies-to is set
+      # explicitly so security updates stay ungrouped and individually
+      # reviewable.
+      minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+          - minor
+          - patch
+
+  # The engine itself has no runtime dependencies -- causal_continuity_engine/ is standard library
+  # only. `just deps` and CI's run_gates.py aggregate invoke the same scanner. This entry covers whatever
+  # development tooling pyproject.toml comes to declare.
+  #
+  # `requirements-dev.in` mirrors the direct [dev] and build-system pins;
+  # `requirements-dev.lock` is the complete hash-checked closure CI executes.
+  # An update is incomplete until both declarations and the regenerated lock
+  # change together. The separate pre-commit ecosystem below covers hook
+  # revisions; a ruff bump still needs every copy reviewed as one gate change.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types:
+          - minor
+          - patch

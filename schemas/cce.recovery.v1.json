@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.recovery.v1.json",
+  "title": "CCE Recovery Packet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "generated_at", "project_id", "last_outcome",
+    "last_safe_checkpoint", "verified_work_to_keep", "quarantined",
+    "remaining_tasks", "verifier_gaps", "rerun_instructions"
+  ],
+  "properties": {
+    "schema_version": {"const": "cce.recovery.v1"},
+    "generated_at": {"$ref": "#/$defs/timestamp"},
+    "project_id": {"$ref": "#/$defs/identifier"},
+    "last_outcome": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "failed", "failure_mode"],
+          "properties": {
+            "status": {
+              "enum": [
+                "completed", "partially_completed", "blocked", "failed",
+                "cancelled", "inconclusive"
+              ]
+            },
+            "failed": {"type": "array", "items": {"type": "object"}},
+            "failure_mode": {
+              "type": ["string", "null"],
+              "enum": [
+                "planning", "retrieval", "stale_assumption", "tool",
+                "environment", "verification", "policy", "coordination",
+                "unknown", null
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "last_safe_checkpoint": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node_id", "label", "working_state"],
+          "properties": {
+            "node_id": {"$ref": "#/$defs/identifier"},
+            "label": {"type": ["string", "null"]},
+            "working_state": {}
+          }
+        }
+      ]
+    },
+    "verified_work_to_keep": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/work"}
+    },
+    "quarantined": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/identifier"},
+      "uniqueItems": true
+    },
+    "remaining_tasks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/task"}
+    },
+    "verifier_gaps": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "rerun_instructions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"},
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "summary"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/identifier"},
+        "summary": {"type": "string"}
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "status", "summary"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/identifier"},
+        "status": {"type": ["string", "null"]},
+        "summary": {"type": "string"}
+      }
+    }
+  }
+}

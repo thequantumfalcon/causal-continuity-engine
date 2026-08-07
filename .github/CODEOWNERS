@@ -1,0 +1,45 @@
+# Code owners for the Causal Continuity Engine.
+#
+# HOW THIS FILE IS READ: the LAST pattern that matches a file wins — not the
+# first, and not the most specific. So the catch-all is written first and the
+# high-sensitivity paths follow it, in order of increasing sensitivity, so
+# that they are matched last and therefore win. Adding a new broad pattern at
+# the bottom would silently take ownership of everything below it.
+#
+# Syntax note: GitHub's CODEOWNERS does not support "!" negation or "[ ]"
+# character ranges. Every pattern here is a plain gitignore-style path.
+#
+# One maintainer owns everything today, so every line names the same owner and
+# nothing here changes who can merge — GitHub does not request review from the
+# author of a pull request, and there is no second reviewer to request. The
+# file earns its place because it makes sensitive-path changes visible in
+# review and predeclares the paths that should gain an additional owner. When
+# a second maintainer is added, edit the relevant patterns to name that
+# reviewer; collaborator status alone does not change the owners listed here.
+
+# Everything, unless a later line says otherwise.
+*                       @thequantumfalcon
+
+# Repository automation: CI, the attribution guard, this policy set.
+/.github/               @thequantumfalcon
+
+# Commit-time enforcement. A change here can disable the guards.
+/.githooks/             @thequantumfalcon
+
+# The normative proof-envelope specification. Changing this text changes what
+# every implementation is required to do.
+/SPEC.md                @thequantumfalcon
+
+# The independent verifier, and the conformance corpus that is the arbiter
+# between it and the reference implementation.
+/verifiers/             @thequantumfalcon
+/vectors/               @thequantumfalcon
+
+# The trust layer: envelope construction and verification, the verifier
+# policy, and the completion gate that refuses a task without a valid proof.
+/causal_continuity_engine/proof.py           @thequantumfalcon
+/causal_continuity_engine/policy.py          @thequantumfalcon
+/causal_continuity_engine/engine.py          @thequantumfalcon
+
+# The decision record. Entries are appended, not rewritten.
+/docs/adr/              @thequantumfalcon

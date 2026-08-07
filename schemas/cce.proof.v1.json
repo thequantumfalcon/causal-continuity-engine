@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "SPEC.md section 2 additionally requires the entire instance to satisfy RFC 7493 I-JSON and be signed and digested as RFC 8785 JCS; JSON Schema cannot express every canonicalization constraint. The created_at pattern fixes its canonical spelling, while consumers must also enable the date-time format assertion or apply SPEC.md calendar validation; the repository harness and both proof implementations do so without optional format packages.",
+  "$id": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.proof.v1.json",
+  "title": "CCE Proof Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "proof_id", "created_at", "tenant_id", "project_id",
+    "action_id", "subject", "action_intent", "actor", "inputs",
+    "environment", "execution", "verifications", "policy_decision",
+    "continuity_links", "evidence_context", "status",
+    "verification_summary", "proof_digest", "signature"
+  ],
+  "properties": {
+    "schema_version": {"const": "cce.proof.v1"},
+    "proof_id": {"type": "string", "pattern": "^prf_[0-9a-f]{24}$"},
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{6}Z$"
+    },
+    "tenant_id": {"$ref": "#/$defs/identifier"},
+    "project_id": {"$ref": "#/$defs/identifier"},
+    "action_id": {"$ref": "#/$defs/identifier"},
+    "subject": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/subject"}
+    },
+    "action_intent": {"$ref": "#/$defs/actionIntent"},
+    "actor": {"type": "object"},
+    "inputs": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/input"}
+    },
+    "environment": {"type": "object"},
+    "execution": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/execution"}
+    },
+    "verifications": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/verification"}
+    },
+    "policy_decision": {"$ref": "#/$defs/policyDecision"},
+    "continuity_links": {"$ref": "#/$defs/continuityLinks"},
+    "evidence_context": {"$ref": "#/$defs/evidenceContext"},
+    "status": {
+      "enum": [
+        "draft", "verified", "failed", "incomplete", "inconclusive",
+        "stale", "invalid"
+      ]
+    },
+    "verification_summary": {"$ref": "#/$defs/summary"},
+    "proof_digest": {"$ref": "#/$defs/digest"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"},
+    "identifierArray": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableDigest": {
+      "anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest", "kind"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/digest"},
+        "kind": {"type": "string", "minLength": 1}
+      }
+    },
+    "actionIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "statement", "requirement_ids"],
+      "properties": {
+        "type": {"type": "string", "minLength": 1},
+        "statement": {"type": "string"},
+        "requirement_ids": {"$ref": "#/$defs/identifierArray"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool", "command_digest", "exit_code", "started_at", "output_digest"
+      ],
+      "properties": {
+        "tool": {"type": "string", "minLength": 1},
+        "command_digest": {"$ref": "#/$defs/nullableDigest"},
+        "exit_code": {"type": ["integer", "null"]},
+        "started_at": {"type": "string", "minLength": 1},
+        "output_digest": {"$ref": "#/$defs/nullableDigest"}
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command_present", "status", "exit_code", "details"],
+      "properties": {
+        "command_present": {"type": "boolean"},
+        "status": {"enum": ["held", "unmet", "absent", "inconclusive"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "details": {"type": "string"}
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verifier", "result"],
+      "properties": {
+        "verifier": {"type": "string", "minLength": 1},
+        "result": {
+          "enum": [
+            "passed", "failed", "skipped", "missing", "inconclusive", "stale"
+          ]
+        },
+        "source": {
+          "enum": ["executed", "verifier_authoritative", "self_asserted"]
+        },
+        "pinned": {"type": "boolean"},
+        "command_digest": {"$ref": "#/$defs/nullableDigest"},
+        "definition_digest": {"$ref": "#/$defs/nullableDigest"},
+        "kind": {"type": "string"},
+        "started_at": {"type": "string"},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "exit_code": {"type": ["integer", "null"]},
+        "output_digest": {"$ref": "#/$defs/nullableDigest"},
+        "evidence_digest": {"$ref": "#/$defs/nullableDigest"},
+        "coverage": {"type": ["object", "null"]},
+        "control": {
+          "anyOf": [{"$ref": "#/$defs/control"}, {"type": "null"}]
+        },
+        "observed": {"type": ["object", "null"]},
+        "details": {"type": "string"},
+        "network": {"type": "string"}
+      }
+    },
+    "policyDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision"],
+      "properties": {
+        "decision": {"enum": ["allow", "deny"]},
+        "reason": {"type": "string"},
+        "action_type": {"type": "string"},
+        "required_level": {"type": "integer"},
+        "effective_level": {"type": "integer"},
+        "action_scope": {"type": ["string", "null"]},
+        "applicable_grant_ids": {"$ref": "#/$defs/stringArray"},
+        "reasons": {"$ref": "#/$defs/stringArray"},
+        "policy_config": {"type": "object"},
+        "decided_at": {"type": "string"},
+        "action_scopes": {"$ref": "#/$defs/stringArray"},
+        "scope_decisions": {
+          "type": "array",
+          "items": {"type": "object"}
+        }
+      }
+    },
+    "continuityLinks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task_ids": {"$ref": "#/$defs/identifierArray"},
+        "requirement_ids": {"$ref": "#/$defs/identifierArray"},
+        "decision_ids": {"$ref": "#/$defs/identifierArray"},
+        "assumption_ids": {"$ref": "#/$defs/identifierArray"},
+        "artifact_ids": {"$ref": "#/$defs/identifierArray"},
+        "evidence_ids": {"$ref": "#/$defs/identifierArray"},
+        "action_ids": {"$ref": "#/$defs/identifierArray"},
+        "proof_node_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "evidenceContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unpinned_required": {"$ref": "#/$defs/stringArray"},
+        "policy_pinned": {"$ref": "#/$defs/stringArray"},
+        "mutation": {"type": ["object", "null"]},
+        "determinism": {"type": "object"}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unbacked_self_assertions", "required", "missing", "failed",
+        "inconclusive", "skipped", "passed"
+      ],
+      "properties": {
+        "unbacked_self_assertions": {"$ref": "#/$defs/stringArray"},
+        "required": {"$ref": "#/$defs/stringArray"},
+        "missing": {"$ref": "#/$defs/stringArray"},
+        "failed": {"$ref": "#/$defs/stringArray"},
+        "inconclusive": {"$ref": "#/$defs/stringArray"},
+        "skipped": {"$ref": "#/$defs/stringArray"},
+        "passed": {"$ref": "#/$defs/stringArray"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "algorithm", "value"],
+      "properties": {
+        "key_id": {"type": "string", "minLength": 1},
+        "algorithm": {"type": "string", "minLength": 1},
+        "value": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "array", "minItems": 1}
+          ]
+        },
+        "fingerprint": {"$ref": "#/$defs/digest"},
+        "public_key": {"type": "array"}
+      }
+    }
+  }
+}

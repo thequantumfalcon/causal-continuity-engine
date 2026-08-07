@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "JSON Schema format may be annotation-only. Consumers must enable the date-time assertion or apply equivalent Gregorian calendar validation; the repository harness and Store write boundary do so.",
+  "$id": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.event.v1.json",
+  "title": "CCE Canonical Stored Event v1",
+  "description": "The exact event object emitted by Store. payload_digest identifies the source delivery before capture policy; stored_payload_digest authenticates the canonical persisted payload after metadata-only or redacted capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id", "tenant_id", "project_id", "source_type", "source_id",
+    "idempotency_key", "observed_at", "recorded_at", "valid_from", "valid_to",
+    "actor_type", "actor_id", "authority", "sensitivity", "capture_mode",
+    "payload_digest", "stored_payload_digest", "payload", "schema_version",
+    "seq", "prev_hash", "entry_hash"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "pattern": "^evt_[0-9a-f]{24}$"},
+    "tenant_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"},
+    "project_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"},
+    "source_type": {"type": "string", "minLength": 1},
+    "source_id": {"type": ["string", "null"]},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "recorded_at": {"type": "string", "format": "date-time"},
+    "valid_from": {"type": ["string", "null"], "format": "date-time"},
+    "valid_to": {"type": ["string", "null"], "format": "date-time"},
+    "actor_type": {"enum": ["human", "agent", "service", null]},
+    "actor_id": {"type": ["string", "null"]},
+    "authority": {
+      "enum": [
+        "untrusted_content", "agent_inference", "agent_observed",
+        "human_intent", "repository_authoritative", "verifier_authoritative",
+        "human_decision", "tenant_policy"
+      ]
+    },
+    "sensitivity": {"type": "string", "minLength": 1},
+    "capture_mode": {"enum": ["metadata_only", "redacted", "full"]},
+    "payload_digest": {
+      "description": "SHA-256 commitment to the canonical raw source payload; this is the delivery/idempotency identity and can differ from stored_payload_digest after capture policy.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "stored_payload_digest": {
+      "description": "SHA-256 commitment to the exact canonical payload bytes persisted and processed. Null is reserved for unavailable payloads migrated from stores that predate this commitment.",
+      "anyOf": [
+        {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "payload": {"type": ["object", "null"]},
+    "schema_version": {"const": "cce.event.v1"},
+    "seq": {"type": "integer", "minimum": 1},
+    "prev_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "entry_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"payload": {"type": "object"}}},
+      "then": {
+        "properties": {
+          "stored_payload_digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"stored_payload_digest": {"type": "null"}}},
+      "then": {"properties": {"payload": {"type": "null"}}}
+    }
+  ]
+}

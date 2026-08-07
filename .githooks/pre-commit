@@ -1,0 +1,61 @@
+#!/bin/sh
+# Repository pre-commit gate. Attribution is blocking; gitleaks is blocking
+# when installed and emits an explicit warning when unavailable.
+#
+# WHY BOTH LIVE HERE: git honours exactly one hook path. This repository sets
+# `core.hooksPath = .githooks`, and the pre-commit framework refuses to install
+# while that is set ("Cowardly refusing to install hooks with `core.hooksPath`
+# set"). Keeping the secret scan only in .pre-commit-config.yaml therefore meant
+# a maintainer with the repo's hook path configured got the attribution guard
+# and NO secret scan, while a contributor who ran `pre-commit install` got the
+# reverse. Either way exactly one gate was live, and nothing said which.
+#
+# .pre-commit-config.yaml remains supported for contributors who prefer the
+# framework: unset core.hooksPath first. CI enforces the attribution rule
+# independently (.github/workflows/no-ai-attribution.yml), so a contributor who
+# runs neither hook path is still caught before merge.
+
+# ---------------------------------------------------------------- attribution
+# The three enforcement files necessarily contain the expression they search
+# for, so only those exact files are excluded. No directory is exempt.
+PATTERN='co-authored-by:.*(anthropic|chatgpt|claude|codex|copilot|gemini|openai)|noreply@(anthropic|openai)\.com|generated (with|by)[[:space:]]+\[?(chatgpt|claude|codex|copilot|gemini|openai)'
+# Search the proposed index tree rather than raw diff text. Deleted lines must
+# not prevent the commit that removes a violation.
+git_grep_status=0
+git grep --cached -nEi "$PATTERN" -- . \
+  ':(exclude).githooks/pre-commit' \
+  ':(exclude).githooks/commit-msg' \
+  ':(exclude).github/workflows/no-ai-attribution.yml' \
+  || git_grep_status=$?
+case "$git_grep_status" in
+    0)
+        echo "ERROR: AI attribution found in staged changes. Remove it before committing." >&2
+        exit 1
+        ;;
+    1) ;;
+    *)
+        echo "ERROR: git grep failed; attribution status is unknown." >&2
+        exit "$git_grep_status"
+        ;;
+esac
+
+# --------------------------------------------------------------------- secrets
+# Load-bearing, not decoration. GitHub secret scanning and push protection are
+# unavailable here (private repository, personal Pro plan). When gitleaks is
+# installed and this hook is not bypassed, it is the only local scan before a
+# pasted credential reaches the remote; the server workflow runs after push.
+# .gitleaks.toml allowlists the synthetic token the redaction tests need by
+# VALUE rather than by path, so a real secret in the same file is still caught.
+if command -v gitleaks >/dev/null 2>&1; then
+    if ! gitleaks git --staged --config .gitleaks.toml --redact --no-banner; then
+        echo "ERROR: gitleaks flagged a potential secret in the staged changes." >&2
+        echo "If it is a synthetic test value, allowlist it BY VALUE in .gitleaks.toml." >&2
+        exit 1
+    fi
+else
+    # Warn rather than refuse. A fresh clone has no gitleaks, and blocking every
+    # commit until it is installed teaches people to reach for --no-verify,
+    # which would disable the attribution guard above as well.
+    echo "WARNING: gitleaks is not installed - the secret scan did NOT run." >&2
+    echo "  brew install gitleaks   (or use .pre-commit-config.yaml)" >&2
+fi

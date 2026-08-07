@@ -1,0 +1,21 @@
+# Canonicalize every committed text blob as LF, whatever platform authored it.
+# The index blobs were already LF when this rule was enabled; a pre-existing
+# Windows worktree may still need a fresh checkout before exact release checks.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even in a Windows working tree or /bin/sh will
+# not run them. The git hooks are shell scripts with no .sh extension.
+*.sh text eol=lf
+.githooks/* text eol=lf
+*.bat text eol=crlf
+
+# Binary: never normalize line endings, never diff as text.
+*.png -text
+
+# Language statistics. docs/ is prose about the engine, not engine code.
+docs/** linguist-documentation
+
+# The conformance corpus is produced by vectors/generate.py and checked back
+# in; `python3 vectors/generate.py --check` is what validates it, not review
+# of the JSON by hand. vectors/generate.py itself stays counted as source.
+vectors/*.json linguist-generated

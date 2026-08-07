@@ -1,0 +1,168 @@
+{
+  "context": {
+    "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
+  },
+  "envelope": {
+    "action_id": "act_c5e3ce1d73369136a17bb04d",
+    "action_intent": {
+      "requirement_ids": [],
+      "statement": "the exporter is done",
+      "type": "task_complete"
+    },
+    "actor": {
+      "agent": "generator"
+    },
+    "continuity_links": {
+      "proof_node_id": "act_140741ee183aaa4ba58fe284",
+      "task_ids": [
+        "tsk_b78190adb963da6fffc3f369"
+      ]
+    },
+    "created_at": "2026-08-04T05:22:13.166190Z",
+    "environment": {},
+    "evidence_context": {
+      "determinism": {
+        "unit-tests": {
+          "checked_at": "2026-08-04T05:22:13.869308Z",
+          "note": "check repeated a non-passing verdict; consistency of failure does not establish usable evidence",
+          "results": [
+            "failed",
+            "failed"
+          ],
+          "stable": false
+        }
+      },
+      "mutation": {
+        "artifacts": [
+          "deliverable.py"
+        ],
+        "baseline": {
+          "unit-tests": "failed"
+        },
+        "bound": false,
+        "detected": [],
+        "error": "baseline did not pass: unit-tests=failed",
+        "inconclusive": [
+          {
+            "artifact": "<unmutated-tree>",
+            "checks": {
+              "unit-tests": "failed"
+            },
+            "mutation": "baseline",
+            "why": "required checks must pass before mutation detection can be measured"
+          }
+        ],
+        "ran_at": "2026-08-04T05:22:13.341712Z",
+        "undetected": []
+      },
+      "policy_pinned": [
+        "unit-tests"
+      ],
+      "unpinned_required": []
+    },
+    "execution": [
+      {
+        "command_digest": "sha256:681c0ab02471ec9797a10fc81b4c5569da6bb64defe102ac7f98c35cbfb9deb9",
+        "exit_code": 1,
+        "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
+        "started_at": "2026-08-04T05:22:13.340712Z",
+        "tool": "verifier:unit-tests"
+      }
+    ],
+    "inputs": [
+      {
+        "digest": "sha256:ca8700155873f81b9b4dca7e3378182bfae43e9ca62b9b56d4150f61c52286f4",
+        "kind": "artifact",
+        "name": "artifact:deliverable.py"
+      },
+      {
+        "digest": "sha256:34ecf2a83475167cd1ba2867ed4f1b329b27f1d877990e23174d24f18f9382de",
+        "kind": "continuity",
+        "name": "continuity:task_ids:tsk_b78190adb963da6fffc3f369"
+      }
+    ],
+    "policy_decision": {
+      "action_scope": "deliverable.py",
+      "action_scopes": [
+        "deliverable.py"
+      ],
+      "action_type": "run_verifier",
+      "applicable_grant_ids": [
+        "grt_b5542383e3edc093df2d79c7"
+      ],
+      "decided_at": "2026-08-04T05:22:13.166193Z",
+      "decision": "allow",
+      "effective_level": 2,
+      "policy_config": {
+        "max_autonomy_level": 2,
+        "tenant_max": 3
+      },
+      "reasons": [
+        "scope 'deliverable.py': effective level 2 >= required 2"
+      ],
+      "required_level": 2,
+      "scope_decisions": [
+        {
+          "decision": "allow",
+          "effective_level": 2,
+          "required_level": 2,
+          "scope": "deliverable.py"
+        }
+      ]
+    },
+    "project_id": "prj_vectors",
+    "proof_digest": "sha256:dbff13c27980664fb5caa308bd574b32bd0b1092cdb680e99f3c3f4349310522",
+    "proof_id": "prf_e70fe715f6bfcb786d2358e8",
+    "schema_version": "cce.proof.v1",
+    "signature": {
+      "algorithm": "hmac-sha256",
+      "key_id": "vectors",
+      "value": "ca726ae37f05a9d4924d5a0f40281ac3ab682679ee00794c1e4c461ed02f29ce"
+    },
+    "status": "failed",
+    "subject": [],
+    "tenant_id": "ten_local",
+    "verification_summary": {
+      "failed": [
+        "unit-tests"
+      ],
+      "inconclusive": [],
+      "missing": [],
+      "passed": [],
+      "required": [
+        "unit-tests"
+      ],
+      "skipped": [],
+      "unbacked_self_assertions": []
+    },
+    "verifications": [
+      {
+        "command_digest": "sha256:681c0ab02471ec9797a10fc81b4c5569da6bb64defe102ac7f98c35cbfb9deb9",
+        "control": {
+          "command_present": true,
+          "details": "control failed as required",
+          "exit_code": 1,
+          "status": "held"
+        },
+        "coverage": null,
+        "definition_digest": "sha256:d95a684ebc6c3302153f9bade28f5285b3bb909a372ad764f7ae03371d3e6c42",
+        "details": "exit 1",
+        "duration_seconds": 0.094,
+        "evidence_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
+        "exit_code": 1,
+        "kind": "command",
+        "network": "restricted",
+        "observed": null,
+        "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
+        "pinned": true,
+        "result": "failed",
+        "source": "executed",
+        "started_at": "2026-08-04T05:22:13.166195Z",
+        "verifier": "unit-tests"
+      }
+    ]
+  },
+  "expected_errors": [],
+  "expected_verdict": "INCOMPLETE",
+  "name": "incomplete_failed_check"
+}

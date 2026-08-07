@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.continuity-receipt.v1.json",
+  "title": "CCE Counterfactual Continuity Receipt v1",
+  "description": "Authenticated operator receipt for one atomic causal-policy frontier. Predicate truth and currentness require semantic verification, not schema validation alone.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "payload_type", "receipt_id", "generated_at",
+    "decision", "audience", "privacy_notice", "issuer", "basis",
+    "satisfied", "blockers", "flip_conditions", "decision_state",
+    "trust_limit", "receipt_digest", "signature"
+  ],
+  "properties": {
+    "schema_version": {"const": "cce.continuity-receipt.v1"},
+    "payload_type": {"const": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.continuity-receipt.v1.json"},
+    "receipt_id": {"type": "string", "pattern": "^prf_"},
+    "generated_at": {"$ref": "#/$defs/timestamp"},
+    "decision": {"enum": ["success", "neutral", "failure", "action_required", "cancelled"]},
+    "audience": {"const": "operator"},
+    "privacy_notice": {"type": "string", "minLength": 1},
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configured_key_id", "algorithm", "verification_mode", "independently_verifiable"],
+      "properties": {
+        "configured_key_id": {"type": "string", "minLength": 1},
+        "algorithm": {"type": "string", "minLength": 1},
+        "verification_mode": {"enum": ["locally_authenticated_mac", "registered_public_key", "configured_authenticator", "unestablished_authenticity"]},
+        "independently_verifiable": {"type": "boolean"}
+      }
+    },
+    "basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id", "project_id", "tracked_ref", "current_head_sha",
+        "policy_digest", "projection_digest", "decision_state_digest",
+        "project_event_frontier", "event_log", "audit_log"
+      ],
+      "properties": {
+        "tenant_id": {"$ref": "#/$defs/identifier"},
+        "project_id": {"$ref": "#/$defs/identifier"},
+        "tracked_ref": {"type": ["string", "null"]},
+        "current_head_sha": {"type": ["string", "null"]},
+        "policy_digest": {"$ref": "#/$defs/digest"},
+        "projection_digest": {"$ref": "#/$defs/digest"},
+        "decision_state_digest": {"$ref": "#/$defs/digest"},
+        "project_event_frontier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "max_seq", "entries_digest"],
+          "properties": {
+            "count": {"type": "integer", "minimum": 0},
+            "max_seq": {"type": "integer", "minimum": 0},
+            "entries_digest": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "event_log": {"$ref": "#/$defs/checkpoint"},
+        "audit_log": {"$ref": "#/$defs/checkpoint"}
+      }
+    },
+    "satisfied": {"type": "array", "items": {"$ref": "#/$defs/predicate"}},
+    "blockers": {"type": "array", "items": {"$ref": "#/$defs/predicate"}},
+    "flip_conditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantics", "to_success", "from_success"],
+      "properties": {
+        "semantics": {"const": "ceteris_paribus_boolean_frontier"},
+        "to_success": {"$ref": "#/$defs/flip"},
+        "from_success": {"$ref": "#/$defs/flip"}
+      }
+    },
+    "decision_state": {"$ref": "#/$defs/decisionState"},
+    "trust_limit": {"type": "string", "minLength": 1},
+    "receipt_digest": {"$ref": "#/$defs/digest"},
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_id", "algorithm", "value"],
+      "properties": {
+        "key_id": {"type": "string", "minLength": 1},
+        "algorithm": {"type": "string", "minLength": 1},
+        "fingerprint": {"type": "string"},
+        "public_key": {"type": "array"},
+        "value": {"type": ["string", "array"]}
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$"},
+    "nullableIdentifier": {
+      "oneOf": [{"$ref": "#/$defs/identifier"}, {"type": "null"}]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$"
+    },
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "tip", "intact"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "tip": {"$ref": "#/$defs/digest"},
+        "intact": {"type": "boolean"}
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predicate", "subject", "observed", "required", "satisfied", "evidence_digest", "remediation"],
+      "properties": {
+        "predicate": {"$ref": "#/$defs/predicateName"},
+        "subject": {"type": ["string", "null"]},
+        "observed": {"$ref": "#/$defs/predicateValue"},
+        "required": {"$ref": "#/$defs/predicateValue"},
+        "satisfied": {"type": "boolean"},
+        "evidence_digest": {"$ref": "#/$defs/digest"},
+        "remediation": {"type": "string"}
+      }
+    },
+    "flip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operator", "predicates"],
+      "properties": {
+        "operator": {"enum": ["all", "any"]},
+        "predicates": {"type": "array", "items": {"$ref": "#/$defs/predicateName"}, "uniqueItems": true}
+      }
+    },
+    "predicateName": {
+      "enum": [
+        "critical_invalidations_empty",
+        "human_approvals_complete",
+        "authority_conflicts_empty",
+        "active_proof_failures_empty",
+        "required_verifiers_current",
+        "resume_packet_current",
+        "revision_frontier_decidable",
+        "integrity_chains_intact"
+      ]
+    },
+    "predicateValue": {
+      "oneOf": [
+        {"type": "boolean"},
+        {"type": "integer", "minimum": 0},
+        {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        }
+      ]
+    },
+    "decisionState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invalidations", "proofs", "verifier_requirements",
+        "trusted_passes", "verifier_gaps", "conflicts", "packet",
+        "revision", "integrity", "predicates"
+      ],
+      "properties": {
+        "invalidations": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/invalidationState"}
+        },
+        "proofs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/proofState"}
+        },
+        "verifier_requirements": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/verifierRequirement"}
+        },
+        "trusted_passes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/trustedPass"}
+        },
+        "verifier_gaps": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/conflictState"}
+        },
+        "packet": {"$ref": "#/$defs/packetState"},
+        "revision": {"$ref": "#/$defs/revisionState"},
+        "integrity": {"$ref": "#/$defs/integrityState"},
+        "predicates": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/predicate"}
+        }
+      }
+    },
+    "invalidationState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id", "status", "severity", "trigger_type",
+        "target_node_id", "affected"
+      ],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/identifier"},
+        "status": {"type": "string", "minLength": 1},
+        "severity": {"type": ["string", "null"]},
+        "trigger_type": {"type": ["string", "null"]},
+        "target_node_id": {"$ref": "#/$defs/nullableIdentifier"},
+        "affected": {"type": "array"}
+      }
+    },
+    "proofState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "status", "proof_id", "claim_key", "intent_type"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/identifier"},
+        "status": {"type": "string", "minLength": 1},
+        "proof_id": {"$ref": "#/$defs/nullableIdentifier"},
+        "claim_key": {"type": ["string", "null"]},
+        "intent_type": {"type": ["string", "null"]}
+      }
+    },
+    "verifierRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "pinned", "command_digest", "definition_digest"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "pinned": {"type": "boolean"},
+        "command_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "definition_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "trustedPass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id", "verifier", "source", "command_digest", "definition_digest", "head_sha",
+        "app", "app_id", "workflow_id", "workflow_path", "installation_id"
+      ],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/identifier"},
+        "verifier": {"type": "string", "minLength": 1},
+        "source": {"type": ["string", "null"]},
+        "command_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "definition_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "head_sha": {"type": ["string", "null"]},
+        "app": {"type": ["string", "null"]},
+        "app_id": {"type": ["integer", "null"], "minimum": 1},
+        "workflow_id": {"type": ["integer", "null"], "minimum": 1},
+        "workflow_path": {"type": ["string", "null"]},
+        "installation_id": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "conflictState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "entity_type", "status", "authority", "statement_digest"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/identifier"},
+        "entity_type": {"type": "string", "minLength": 1},
+        "status": {"type": ["string", "null"]},
+        "authority": {"type": ["string", "null"]},
+        "statement_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "packetState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_id", "last_event_seq", "packet_digest",
+        "control_basis_digest", "audit_entry_hash", "current"
+      ],
+      "properties": {
+        "packet_id": {"$ref": "#/$defs/nullableIdentifier"},
+        "last_event_seq": {"type": ["integer", "null"], "minimum": 0},
+        "packet_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "control_basis_digest": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "audit_entry_hash": {"anyOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+        "current": {"type": "boolean"}
+      }
+    },
+    "revisionState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tracked_ref", "current_head_sha", "uncertain",
+        "external_without_frontier"
+      ],
+      "properties": {
+        "tracked_ref": {"type": ["string", "null"]},
+        "current_head_sha": {"type": ["string", "null"]},
+        "uncertain": {"type": "boolean"},
+        "external_without_frontier": {"type": "boolean"}
+      }
+    },
+    "integrityState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_log_intact", "audit_log_intact"],
+      "properties": {
+        "event_log_intact": {"type": "boolean"},
+        "audit_log_intact": {"type": "boolean"}
+      }
+    }
+  }
+}
