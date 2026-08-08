@@ -91,6 +91,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact-id }}
           path: dist
+          # Downloading by artifact ID nests the payload in a directory named
+          # after the artifact; merging extracts the verified files directly
+          # into dist so the exact-count recheck below sees them.
+          merge-multiple: true
           # v8 calculates the downloaded artifact archive's digest and compares
           # it with GitHub's immutable artifact metadata. Make the fail-closed
           # behavior explicit instead of relying on its default.
@@ -220,6 +224,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact-id }}
           path: dist
+          merge-multiple: true
           digest-mismatch: error
 
       # Same no-checkout discipline as the release job above: only artifact
