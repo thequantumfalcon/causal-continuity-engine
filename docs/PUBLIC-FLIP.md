@@ -99,6 +99,15 @@ OIDC; afterwards, require PyPI's filenames and SHA-256 digests to match the
 GitHub release before announcing availability. Do not describe a pending
 publisher as a reservation.
 
+**Progress 2026-08-08:** the pending Trusted Publisher was configured by the
+owner (project `causal-continuity-engine`, owner `thequantumfalcon`,
+repository `causal-continuity-engine`, workflow `release.yml`, environment
+`pypi`); the `pypi` GitHub environment exists; and `release.yml` now carries
+the OIDC publish job gated on that environment. Environment protection rules
+(required owner review, tag-only deployments) are unavailable on a private
+personal repository and are a mandatory post-flip step below — add them
+before approving the first `pypi` deployment.
+
 ### Apply and read back the committed branch ruleset — complete
 
 Branch ruleset `20590966` (`protect-default`) was applied from the committed
@@ -196,7 +205,7 @@ visibility change.
 
 Immediately after the public flip, keep Actions enabled, change
 `allowed_actions` to `selected`, retain full-SHA enforcement, and permit only
-the seven Action repositories reviewed in the committed workflows:
+the eight Action repositories reviewed in the committed workflows:
 
 ```bash
 REPO=thequantumfalcon/causal-continuity-engine
@@ -216,7 +225,8 @@ gh api --method PUT "/repos/$REPO/actions/permissions/selected-actions" --input 
     "actions/download-artifact@*",
     "actions/attest-build-provenance@*",
     "actions/dependency-review-action@*",
-    "gitleaks/gitleaks-action@*"
+    "gitleaks/gitleaks-action@*",
+    "pypa/gh-action-pypi-publish@*"
   ]
 }
 JSON
@@ -236,7 +246,7 @@ policy="$(gh api "/repos/$REPO/actions/permissions" \
   --jq '[.enabled,.allowed_actions,.sha_pinning_required] | @json')"
 test "$policy" = '[true,"selected",true]'
 
-expected_selected='{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":["actions/attest-build-provenance@*","actions/checkout@*","actions/dependency-review-action@*","actions/download-artifact@*","actions/setup-python@*","actions/upload-artifact@*","gitleaks/gitleaks-action@*"]}'
+expected_selected='{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":["actions/attest-build-provenance@*","actions/checkout@*","actions/dependency-review-action@*","actions/download-artifact@*","actions/setup-python@*","actions/upload-artifact@*","gitleaks/gitleaks-action@*","pypa/gh-action-pypi-publish@*"]}'
 selected="$(gh api "/repos/$REPO/actions/permissions/selected-actions" \
   --jq '{github_owned_allowed,verified_allowed,patterns_allowed:(.patterns_allowed|sort)} | @json')"
 test "$selected" = "$expected_selected"
@@ -247,6 +257,34 @@ verification on the exact candidate commit. Do not describe this allowlist as
 enforced until both GET read-backs and those workflow runs pass; a missing
 repository pattern is an outage, while an extra pattern silently widens the
 execution boundary.
+
+### Protect the pypi environment and gate fork PR workflows
+
+Both controls are plan-restricted on a private personal repository and free
+once public; run them immediately after the flip, before any release tag:
+
+```bash
+REPO=thequantumfalcon/causal-continuity-engine
+OWNER_ID="$(gh api user --jq .id)"
+
+# Required owner review plus tag-only deployments for the pypi environment.
+gh api --method PUT "repos/$REPO/environments/pypi" --input - <<JSON
+{"prevent_self_review":false,
+ "reviewers":[{"type":"User","id":$OWNER_ID}],
+ "deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}
+JSON
+gh api --method POST "repos/$REPO/environments/pypi/deployment-branch-policies" \
+  -f name='v*' -f type=tag
+
+# Require approval for ALL outside collaborators' fork PR workflows.
+gh api --method PUT "repos/$REPO/actions/permissions/fork-pr-contributor-approval" \
+  -f approval_policy=all_external_contributors
+```
+
+Read all three back and compare as exact values: the environment must show
+the reviewer and the `v*` tag policy, and the approval policy must be
+`all_external_contributors`. The pypi environment's required review is what
+turns every index publication into an explicit owner decision.
 
 ### 6. Secret scanning, push protection, and private vulnerability reporting
 
