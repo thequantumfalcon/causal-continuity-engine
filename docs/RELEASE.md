@@ -21,11 +21,11 @@ and remain bound to the reviewed tag.
    principal in the operator's release record.
 
 The branch ruleset and signer are still real prerequisites, not documentation
-of completed settings. A time-boxed 2026-08-04 read-back found live branch
-ruleset `20196699` requiring only `ci`, with an always-on RepositoryRole
-bypass. Tag ruleset `20350891` was observed active with no bypass and signed,
-non-mutable `v*` tags. Remote settings are mutable: re-read both immediately
-before release, and do not create a tag until the branch PUT and both
+of completed settings. A 2026-08-08 read-back found branch ruleset `20590966`
+and tag ruleset `20590968` both active and matching the committed desired
+state: no bypass actors, required signatures, and signed, non-mutable `v*`
+tags. Remote settings are mutable: re-read both immediately
+before release, and do not create a tag until both
 read-backs in `.github/ruleset.README.md` show the committed desired state.
 
 **GitHub-Verified is not a project signer allowlist.** It says GitHub accepted
@@ -201,13 +201,13 @@ the version, and create a new signed tag so the failure remains attributable.
 Do not run this during a normal release, and do not use it to replace a
 published immutable release. If an erroneous protected tag was pushed but no
 release was published, record the incident and exact object IDs first. An
-administrator may then disable only tag ruleset `20350891`, confirm that exact
+administrator may then disable only tag ruleset `20590968`, confirm that exact
 ruleset is disabled, delete only the named bad tag, restore the committed tag
 ruleset immediately even if deletion fails, and read it back:
 
 ```bash
 REPO=thequantumfalcon/causal-continuity-engine
-RULESET=20350891
+RULESET=20590968
 TAG=v0.1.0
 ENDPOINT="repos/$REPO/rulesets/$RULESET"
 

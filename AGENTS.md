@@ -44,12 +44,13 @@ failure. Native Windows and macOS 15 ARM64 invoke the same sequence on 3.14,
 and the artifact job builds twice and exercises an installed wheel. The `ci`
 job fans all four paths in. It is the only status context required by the live branch
 ruleset today.
-The `attribution` and `secrets` workflows run independently but are not
-merge-blocking until the stricter committed desired state in
-`.github/ruleset.json` is applied. A 2026-08-04 remote audit also found an
-always-on RepositoryRole bypass and no branch signature rule. Release-tag
-ruleset `20350891` is active with no bypass and requires signatures; the branch
-ruleset remains the outstanding drift.
+The committed desired state in `.github/ruleset.json` was applied and read
+back on 2026-08-08: branch ruleset `20590966` is active with no bypass
+actors, required signatures, and merge-blocking `ci`, `attribution`,
+`secrets`, and `DCO` contexts. Release-tag ruleset `20590968` is active with
+no bypass and requires signatures. No known drift remains, but remote
+settings are mutable — re-read the live objects rather than trusting this
+sentence.
 `commit-signature-audit.yml` reports GitHub's verdict for the exact pushed
 `main` SHA, but it runs after the commit has landed. It is a detective signal,
 not a substitute for the desired preventive `required_signatures` branch rule.

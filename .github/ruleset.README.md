@@ -7,40 +7,42 @@ the API update and a read-back are separate operational steps.
 
 ## Verified live state and drift
 
-A remote read-back on 2026-08-04 found:
+A remote read-back on 2026-08-08, after both committed files were applied to
+this repository, found:
 
-- branch ruleset 20196699, protect-default, is active;
-- it requires only the ci status context;
-- RepositoryRole id 5 has bypass_mode always;
-- required_signatures is absent;
-- tag ruleset 20350891, protect-releases, is active with no bypass actors and
+- branch ruleset 20590966, protect-default, is active with no bypass actors,
+  required_signatures, linear history, PR-only squash merges, and required
+  status contexts ci, attribution, and secrets (GitHub Actions app,
+  integration_id 15368) plus DCO (DCO app, integration_id 1861);
+- tag ruleset 20590968, protect-releases, is active with no bypass actors and
   deletion, non-fast-forward, and required-signature rules.
 
-The attribution and secrets workflows run, but they are not merge-blocking in
-that live state. The observed main tip had a valid GitHub-Verified signature,
-but one signed commit is not enforcement for the next commit.
+The DCO context was added to the live branch ruleset only after the DCO app's
+check was observed reporting on a real pull request; the committed
+ruleset.json records the same four contexts as the desired state.
 
 Inspect the live objects, not just this document:
 
     gh api repos/thequantumfalcon/causal-continuity-engine/rulesets --jq '.[] | [.id, .name, .target, .enforcement]'
-    gh api repos/thequantumfalcon/causal-continuity-engine/rulesets/20196699 --jq '{id,name,enforcement,bypass_actors,rules}'
-    gh api repos/thequantumfalcon/causal-continuity-engine/rulesets/20350891 --jq '{id,name,enforcement,bypass_actors,rules}'
+    gh api repos/thequantumfalcon/causal-continuity-engine/rulesets/20590966 --jq '{id,name,enforcement,bypass_actors,rules}'
+    gh api repos/thequantumfalcon/causal-continuity-engine/rulesets/20590968 --jq '{id,name,enforcement,bypass_actors,rules}'
 
 ## Apply and verify the desired state
 
 Update the existing branch object by ID. Do not POST a duplicate:
 
-    gh api -X PUT repos/thequantumfalcon/causal-continuity-engine/rulesets/20196699 --input .github/ruleset.json
+    gh api -X PUT repos/thequantumfalcon/causal-continuity-engine/rulesets/20590966 --input .github/ruleset.json
 
 The release-tag ruleset is already live. Update it by ID if its committed
 desired state changes; do not POST a duplicate:
 
-    gh api -X PUT repos/thequantumfalcon/causal-continuity-engine/rulesets/20350891 --input .github/tag-ruleset.json
+    gh api -X PUT repos/thequantumfalcon/causal-continuity-engine/rulesets/20590968 --input .github/tag-ruleset.json
 
 Run all three inspection commands again after mutation. The branch read-back
 must show an empty bypass_actors array, required_signatures, and required
 status contexts ci, attribution, and secrets, each with integration_id 15368
-(the GitHub Actions app). The tag query must show active
+(the GitHub Actions app), plus DCO with integration_id 1861 (the DCO app).
+The tag query must show active
 protect-releases with an empty bypass list plus deletion, non_fast_forward,
 and required_signatures rules. Save the returned tag ruleset ID for later
 updates.
@@ -99,7 +101,7 @@ control; do not describe the audit workflow as a substitute.
 
 ## Desired release-tag contract
 
-Live tag ruleset `20350891` was created and read back on 2026-08-04. It matches
+Live tag ruleset `20590968` was created and read back on 2026-08-08. It matches
 refs/tags/v*, blocks update and deletion, requires the target commit to have a
 verified signature, and has no bypass actor.
 
@@ -130,7 +132,7 @@ maintainer signed.
 ## Controls outside these JSON files
 
 Repository settings require every Action reference to use a full-length commit
-SHA; the 2026-08-04 API read-back reports `sha_pinning_required: true`. The
+SHA; the 2026-08-08 API read-back reports `sha_pinning_required: true`. The
 workflows comply, and Dependabot tracks those SHAs. Public visibility
 additionally unlocks native secret scanning,
 push protection, dependency review, and public artifact attestations; the
