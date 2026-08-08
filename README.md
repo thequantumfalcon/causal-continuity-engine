@@ -566,7 +566,7 @@ envelope it ever signed. Withdrawing a key is not a mechanism this has.
 **A stranger cannot tell whether an envelope is still fresh.** An envelope is a
 statement about a moment. Whether the deliverables it names still carry the
 digests it records requires the project, not the envelope. The engine checks it
-— that is rejection 14 above — but someone holding only the envelope cannot, so
+— that is rejection 15 above — but someone holding only the envelope cannot, so
 `VALID` from the standalone verifier says the record is sound, not that the
 world it describes still exists. SPEC §11, item 1.
 

@@ -34,14 +34,17 @@ or branch reference even if review misses it.
 
 ### Release immutability — complete
 
-Release immutability was enabled and read back through GitHub's API on
-2026-08-04, while the repository still had no tags or releases. It applies to
-future releases and must remain enabled through the first publication.
+Release immutability was enabled through the repository settings UI on
+2026-08-08, while the repository still had no tags or releases. The current
+repository API does not expose the flag for read-back, so this is an
+owner-attested setting; verify it in the settings UI before the first
+publication. It applies to future releases and must remain enabled through
+the first publication.
 
 ### Signed release-tag protection — complete
 
-Tag ruleset `20350891` (`protect-releases`) was created and read back on
-2026-08-04. It is active for `refs/tags/v*`, has no bypass actors, blocks
+Tag ruleset `20590968` (`protect-releases`) was created and read back on
+2026-08-08. It is active for `refs/tags/v*`, has no bypass actors, blocks
 deletion and non-fast-forward updates, requires signatures, and reports that
 the current user can never bypass it.
 
@@ -96,18 +99,16 @@ OIDC; afterwards, require PyPI's filenames and SHA-256 digests to match the
 GitHub release before announcing availability. Do not describe a pending
 publisher as a reservation.
 
-### Apply and read back the committed branch ruleset
+### Apply and read back the committed branch ruleset — complete
 
-Remote inspection on 2026-08-04 found branch ruleset `20196699`
-(`protect-default`) active but behind the committed policy:
-
-- only `ci` is a required status context;
-- RepositoryRole id 5 has an `always` bypass;
-- the branch required-signature rule is absent.
-
-Apply `.github/ruleset.json` to that existing ID. The tag ruleset is already
-live and must be read back alongside it; commands are in
-`.github/ruleset.README.md`. Merely committing JSON does not change GitHub.
+Branch ruleset `20590966` (`protect-default`) was applied from the committed
+`.github/ruleset.json` and read back exactly on 2026-08-08: no bypass actors,
+required signatures, linear history, PR-only squash merges, and required
+status contexts `ci`, `attribution`, and `secrets` (integration_id 15368)
+plus `DCO` (integration_id 1861, added after the DCO app's check was observed
+on a real pull request). The tag ruleset is live alongside it; inspection
+commands are in `.github/ruleset.README.md`. Merely committing JSON does not
+change GitHub — re-verify the live objects after any change.
 
 ### 2. Re-run the full-history secret scan
 
@@ -159,6 +160,11 @@ license, limited to claims necessarily infringed by each contributor's contribut
 If any part of this work might be patentable, that decision belongs **before** the first public
 push, not after. This is a flag, not legal advice — take it to a lawyer if it matters.
 
+**RESOLVED 2026-08-08 (owner decision):** defensive publication. The public
+release itself is the disclosure; no patent filing will precede it. This
+followed a prior-art search recorded on 2026-08-06 that recommended defensive
+publication with an optional provisional; the owner declined the provisional.
+
 ### 5. Decide on a CLA
 
 As sole copyright holder, the owner controls licensing of the current code. Once someone else's
@@ -169,6 +175,11 @@ accepting the first external pull request.
 
 The DCO (`git commit -s`) is a weaker, different thing: it asserts the contributor had the right
 to submit, and it does not give you relicensing rights. See item 9.
+
+**DECIDED 2026-08-08 (owner decision):** no CLA for now — DCO only, enforced
+by the DCO app as a required merge context. Revisit before accepting any
+contribution whose relicensing might matter; adding a CLA later binds only
+subsequent contributions.
 
 ---
 

@@ -246,12 +246,11 @@ def test_required_check_contract_is_derived_from_committed_ruleset(tmp_path):
         if rule["type"] == "required_status_checks":
             for entry in rule["parameters"]["required_status_checks"]:
                 entry["integration_id"] = 4242
-            # Public-only and third-party PR controls may later become branch
-            # requirements without being push-event release attestations.
-            rule["parameters"]["required_status_checks"].extend([
-                {"context": "dependency-review", "integration_id": 4242},
-                {"context": "DCO", "integration_id": 8675309},
-            ])
+            # The committed ruleset already carries the PR-only DCO context;
+            # dependency-review may later become a branch requirement the same
+            # way without being a push-event release attestation.
+            rule["parameters"]["required_status_checks"].append(
+                {"context": "dependency-review", "integration_id": 4242})
     (tmp_path / ".github").mkdir()
     (tmp_path / ".github" / "ruleset.json").write_text(
         json.dumps(ruleset), encoding="utf-8")
