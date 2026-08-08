@@ -205,8 +205,10 @@ jobs:
     # Trusted publishing exchanges this job's OIDC token for a short-lived
     # scoped upload token; PyPI's pending publisher binds the owner, this
     # repository, this workflow filename, and the pypi environment. No
-    # long-lived PyPI credential exists anywhere. The environment's required
-    # reviewer makes every index publication an explicit owner approval.
+    # long-lived PyPI credential exists anywhere. The pypi environment's
+    # required-reviewer protection, applied before the first publish per
+    # docs/PUBLIC-FLIP.md, makes every index publication an explicit owner
+    # approval; do not approve a deployment before that protection is live.
     environment:
       name: pypi
       url: https://pypi.org/project/causal-continuity-engine/

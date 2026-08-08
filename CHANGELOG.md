@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No release has been tagged. The repository carries no tags at all, so the
-`0.1.0` entry below describes the first release as it stands on `main`, not
-something a consumer can install by version.
+No unreleased changes.
+
+## 0.1.0 — 2026-08-08
+
+Everything below is new; this is the first release.
 
 **The public API is not declared stable.** While the version is `0.y.z`,
 anything may change in any release, without a deprecation period: module
@@ -25,11 +27,9 @@ The one format with a written, normative definition is the proof envelope
 rather than infer one; the conformance corpus in `vectors/` includes a vector
 for an envelope declaring a version the verifier does not know.
 
-## 0.1.0 — not yet released
-
-Everything below is new. The Fixed and Security entries record defects found
-and closed by adversarial review during development; none of them ever
-shipped, because nothing has. They are listed because the decision records and
+The Fixed and Security entries record defects found and closed by
+adversarial review during development; every one was found and fixed before
+this first release shipped. They are listed because the decision records and
 regression tests that pin them are part of what ships.
 
 ### Added
