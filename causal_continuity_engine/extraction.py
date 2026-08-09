@@ -50,6 +50,23 @@ class ExtractionResult:
     extractor_version: str = EXTRACTOR_VERSION
 
 
+# Modal patterns ("... must never ...") have to look backwards for the start of
+# the clause, and both edges of that lookback need care on real prose.
+#
+# _CLAUSE_START anchors the beginning to a place a clause can actually begin.
+# A bare `{0,80}?` lookback has no left boundary, so once the clause is longer
+# than the budget the match starts wherever the character count lands — which
+# on real text is reliably mid-word ("stale capsules" arriving as "le
+# capsules").
+#
+# _IN_CLAUSE / _CLAUSE_TAIL treat `.` as a sentence end only when whitespace or
+# the end of the text follows it. A dot inside an identifier — `generate.py`,
+# `v0.1.0`, `README.md` — is ordinary clause content, and excluding it outright
+# truncated statements to the fragment after the dot.
+_CLAUSE_START = r"(?:\A|[\n;:]\s*|\.\s+)"
+_IN_CLAUSE = r"(?:[^.\n;]|\.(?!\s|\Z))"
+_CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z))"
+
 # Patterns: (kind, regex, base_confidence)
 _PATTERNS: list[tuple[str, re.Pattern, float]] = [
     ("assumption", re.compile(
@@ -61,11 +78,13 @@ _PATTERNS: list[tuple[str, re.Pattern, float]] = [
     ("assumption", re.compile(
         r"\b(?:provided|as\s+long\s+as|expects?\s+that)\s+(?P<s>[^.\n]{8,300})", re.I), 0.6),
     ("constraint", re.compile(
-        r"(?P<s>[^.\n;]{0,80}?\b(?:must\s+not|may\s+not|never|shall\s+not|"
-        r"do\s+not\s+ever)\s+[^.\n]{4,300})", re.I), 0.85),
+        _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
+        r"{0,120}?\b(?:must\s+not|may\s+not|never|shall\s+not|"
+        r"do\s+not\s+ever)\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.85),
     ("requirement", re.compile(
-        r"(?P<s>[^.\n;]{0,80}?\b(?:must|shall|is\s+required\s+to|needs?\s+to)"
-        r"(?!\s+not)\s+[^.\n]{4,300})", re.I), 0.8),
+        _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
+        r"{0,120}?\b(?:must|shall|is\s+required\s+to|needs?\s+to)"
+        r"(?!\s+not)\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
     ("requirement", re.compile(
         r"\bacceptance\s+criteri(?:a|on)\s*[:\-]\s*(?P<s>[^\n]{4,300})", re.I), 0.9),
     ("decision", re.compile(

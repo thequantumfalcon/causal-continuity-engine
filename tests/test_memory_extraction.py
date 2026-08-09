@@ -149,3 +149,46 @@ class TestExtraction:
         a = normalize_statement("The API returns JSON.")
         b = normalize_statement("the api returns json")
         assert a == b
+
+    def test_modal_clauses_start_at_a_boundary_not_mid_word(self):
+        """Real prose, found by backfilling this repository's own issues.
+
+        The modal patterns look backwards for the start of the clause. With an
+        unanchored character budget the match began wherever the count landed,
+        so "stale capsules" was stored as "le capsules"; and because a dot was
+        always treated as a sentence end, "`vectors/generate.py --check`" was
+        stored as "py --check`". Both garble the control state an agent reads.
+        """
+        extractor = DeterministicExtractor()
+
+        def statements(text, kind):
+            return [item.statement for item
+                    in extractor.extract(
+                        text, source_authority="human_intent").items
+                    if item.kind == kind]
+
+        long_clause = (
+            "`docs/RESEARCH-ROADMAP.md` (Benchmark program) lists adversarial"
+            " tracks ContinuityBench should grow, including: *stale capsules"
+            " confronted with newer target invalidations* — old source state"
+            " must never erase newer target control state.")
+        found = statements(long_clause, "constraint")
+        assert found, "no constraint extracted"
+        assert any(s.startswith("*stale capsules") for s in found), found
+
+        dotted = (
+            "`python vectors/generate.py --check` must accept the regenerated"
+            " corpus deterministically.")
+        found = statements(dotted, "requirement")
+        assert found, "no requirement extracted"
+        assert any(
+            s.startswith("`python vectors/generate.py --check`")
+            for s in found), found
+
+        # A dot that really does end a sentence still bounds the clause.
+        two_sentences = (
+            "The exporter buffers rows. The exporter must stream rows instead.")
+        found = statements(two_sentences, "requirement")
+        assert found, "no requirement extracted"
+        assert all(
+            not s.startswith("The exporter buffers") for s in found), found
