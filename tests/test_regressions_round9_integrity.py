@@ -496,6 +496,32 @@ def test_engine_owned_managers_reject_foreign_tenant_substitution(tmp_path):
         owner.close()
 
 
+def test_memory_promote_rejects_a_node_from_another_project(tmp_path):
+    """Isolation on the project axis, inside one tenant.
+
+    The test above pins the tenant boundary. Promotion is the most damaging
+    direction to get wrong within a single tenant: L0 is pinned control state
+    that lands in every resume packet, so a node promoted across projects
+    would present one project's authority as another's.
+    """
+    engine = Engine(tmp_path / "shared.sqlite3", tenant_id=TEN)
+    try:
+        engine.create_project("alpha", project_id="prj_alpha")
+        engine.create_project("beta", project_id="prj_beta")
+        foreign = engine.graph.put_node(
+            entity_type="constraint", tenant_id=TEN, project_id="prj_beta",
+            status="active", data={"statement": "BETA ONLY"})
+
+        with pytest.raises(PermissionError, match="outside project"):
+            engine.memory.promote(
+                "prj_alpha", foreign.id, "L0", actor="attacker")
+
+        assert foreign.id not in engine.memory.tier_members("prj_alpha", "L0")
+        assert engine.graph.get(foreign.id)["project_id"] == "prj_beta"
+    finally:
+        engine.close()
+
+
 def test_policy_grant_and_audit_roll_back_together(monkeypatch):
     engine = Engine(tenant_id=TEN)
     engine.create_project("policy-atomic", project_id=PRJ)
