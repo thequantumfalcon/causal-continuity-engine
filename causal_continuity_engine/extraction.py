@@ -70,9 +70,16 @@ class ExtractionResult:
 # was dropped in silence. "We assume numpy 1.26.4 is installed" extracted
 # nothing at all, and "We decided to pin pip 26.1.2" recorded the false
 # statement "pin pip 26". In this domain those are the common sentences.
+# Markdown soft-wraps: a single newline continues the paragraph, and comment
+# bodies are wrapped at roughly eighty columns by every editor that touches
+# them. Treating any newline as a clause end truncated most real sentences at
+# the wrap — "must stream rows instead of" losing the half that says instead of
+# what. A blank line, list item, heading or quote marker does begin a new
+# logical unit, so those still bound the clause.
+_SOFT_WRAP = r"\n(?![ \t]*(?:\n|[-*+>#]|\d+[.)]))"
 _CLAUSE_START = r"(?:\A|[\n;:]\s*|\.\s+)"
-_IN_CLAUSE = r"(?:[^.\n;]|\.(?!\s|\Z))"
-_CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z))"
+_IN_CLAUSE = r"(?:[^.\n;]|\.(?!\s|\Z)|" + _SOFT_WRAP + r")"
+_CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z)|" + _SOFT_WRAP + r")"
 
 # Patterns: (kind, regex, base_confidence)
 _PATTERNS: list[tuple[str, re.Pattern, float]] = [
