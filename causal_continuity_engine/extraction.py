@@ -63,6 +63,13 @@ class ExtractionResult:
 # the end of the text follows it. A dot inside an identifier — `generate.py`,
 # `v0.1.0`, `README.md` — is ordinary clause content, and excluding it outright
 # truncated statements to the fragment after the dot.
+#
+# The forward-capturing patterns need the same treatment, and failed harder
+# without it: their tails have a minimum length, so a dotted identifier near
+# the start of the clause left too few characters to match and the statement
+# was dropped in silence. "We assume numpy 1.26.4 is installed" extracted
+# nothing at all, and "We decided to pin pip 26.1.2" recorded the false
+# statement "pin pip 26". In this domain those are the common sentences.
 _CLAUSE_START = r"(?:\A|[\n;:]\s*|\.\s+)"
 _IN_CLAUSE = r"(?:[^.\n;]|\.(?!\s|\Z))"
 _CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z))"
@@ -70,13 +77,14 @@ _CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z))"
 # Patterns: (kind, regex, base_confidence)
 _PATTERNS: list[tuple[str, re.Pattern, float]] = [
     ("assumption", re.compile(
-        r"\b(?:we\s+)?assum(?:e|es|ing|ption(?:\s*[:\-])?)\s+(?:that\s+)?(?P<s>[^.\n]{8,300})",
-        re.I), 0.85),
+        r"\b(?:we\s+)?assum(?:e|es|ing|ption(?:\s*[:\-])?)\s+(?:that\s+)?(?P<s>"
+        + _CLAUSE_TAIL + r"{8,300})", re.I), 0.85),
     ("assumption", re.compile(
-        r"\b(?:relies|relying|depends?)\s+on\s+(?:the\s+fact\s+that\s+)?(?P<s>[^.\n]{8,300})",
-        re.I), 0.7),
+        r"\b(?:relies|relying|depends?)\s+on\s+(?:the\s+fact\s+that\s+)?(?P<s>"
+        + _CLAUSE_TAIL + r"{8,300})", re.I), 0.7),
     ("assumption", re.compile(
-        r"\b(?:provided|as\s+long\s+as|expects?\s+that)\s+(?P<s>[^.\n]{8,300})", re.I), 0.6),
+        r"\b(?:provided|as\s+long\s+as|expects?\s+that)\s+(?P<s>"
+        + _CLAUSE_TAIL + r"{8,300})", re.I), 0.6),
     ("constraint", re.compile(
         _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
         r"{0,120}?\b(?:must\s+not|may\s+not|never|shall\s+not|"
@@ -89,7 +97,7 @@ _PATTERNS: list[tuple[str, re.Pattern, float]] = [
         r"\bacceptance\s+criteri(?:a|on)\s*[:\-]\s*(?P<s>[^\n]{4,300})", re.I), 0.9),
     ("decision", re.compile(
         r"\b(?:we\s+)?(?:decided|decision(?:\s*[:\-])?|chose|will\s+use|agreed)\s+"
-        r"(?:to\s+|on\s+|that\s+)?(?P<s>[^.\n]{4,300})", re.I), 0.8),
+        r"(?:to\s+|on\s+|that\s+)?(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
 ]
 
 _INJECTION_PATTERNS = re.compile(

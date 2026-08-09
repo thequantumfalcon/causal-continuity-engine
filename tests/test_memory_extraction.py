@@ -192,3 +192,38 @@ class TestExtraction:
         assert found, "no requirement extracted"
         assert all(
             not s.startswith("The exporter buffers") for s in found), found
+
+    def test_dotted_identifiers_do_not_silently_drop_statements(self):
+        """Version numbers and filenames are the common case in this domain.
+
+        The forward-capturing patterns have a minimum tail length, so a dotted
+        identifier near the start of the clause left too few characters to
+        match: "We assume numpy 1.26.4 is installed" extracted nothing at all,
+        and "We decided to pin pip 26.1.2" recorded "pin pip 26" — a statement
+        that is not merely truncated but false.
+        """
+        extractor = DeterministicExtractor()
+
+        def first(text, kind):
+            for item in extractor.extract(
+                    text, source_authority="human_intent").items:
+                if item.kind == kind:
+                    return item.statement
+            return None
+
+        assert first(
+            "We assume numpy 1.26.4 is already installed in the environment.",
+            "assumption") == "numpy 1.26.4 is already installed in the environment"
+        assert first(
+            "This relies on setup.py being present in the sdist root.",
+            "assumption") == "setup.py being present in the sdist root"
+        assert first(
+            "We decided to pin pip 26.1.2 for the release toolchain.",
+            "decision") == "pin pip 26.1.2 for the release toolchain"
+
+        # The sentence boundary still bounds a forward capture: the following
+        # sentence must not be swallowed into the statement.
+        assert first(
+            "We assume the feed is ordered by timestamp."
+            " The exporter buffers rows.",
+            "assumption") == "the feed is ordered by timestamp"
