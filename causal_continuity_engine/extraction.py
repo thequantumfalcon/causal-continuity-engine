@@ -272,12 +272,22 @@ def normalize_statement(statement: str) -> str:
 
 # Regions of a comment that are not the author asserting something. A fenced
 # block is code, and code comments are full of modal verbs; a blockquote is
-# someone else's words, frequently quoted in order to disagree with them.
-# Extracting either attributes a statement to an author who did not make it.
+# someone else's words, frequently quoted in order to disagree with them; an
+# HTML comment renders invisibly, so its text is something no reader of the
+# thread ever saw. Extracting any of them attributes a statement to an author
+# who did not make it — and in the HTML case, to one who could not have read
+# it either.
+#
+# The fence closer is tied to its opener by backreference. Matching a bare
+# three markers meant a longer fence never found its end and masked the rest
+# of the body, silently swallowing the prose that followed; `\r?` does the
+# same for CRLF text. Both failed closed in the wrong direction — losing real
+# statements rather than admitting code.
 _NON_PROSE = (
-    re.compile(r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)[ \t]*$|\Z)",
-               re.S | re.M),
+    re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,}).*?"
+               r"(?:^[ \t]*(?P=fence)[`~]*[ \t]*\r?$|\Z)", re.S | re.M),
     re.compile(r"^[ \t]*>.*$", re.M),
+    re.compile(r"<!--.*?(?:-->|\Z)", re.S),
 )
 
 # Markdown that decorates a line rather than forming part of the statement.
