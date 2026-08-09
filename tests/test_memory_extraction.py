@@ -396,3 +396,55 @@ class TestExtraction:
             source_authority="human_intent").items]
         assert "the verifier must reject every capsule whose signature has" \
                " expired" in statements
+
+    def test_a_bounded_tail_ends_on_a_word(self):
+        """The 300-character bound cut wherever the count landed.
+
+        Measured across forty sentences whose length crossed the bound at
+        different offsets, 23 ended mid-token, so a statement that already
+        lost its ending also gained a fragment of a word. Bounding is
+        legitimate; splitting a word is not.
+        """
+        extractor = DeterministicExtractor()
+        for extra in range(0, 40):
+            text = ("The exporter must stream rows " + ("alpha " * 40)
+                    + ("b" * extra + " ") + "beta " * 30 + "end.")
+            for item in extractor.extract(
+                    text, source_authority="human_intent").items:
+                if item.kind != "requirement":
+                    continue
+                start = text.find(item.statement)
+                end = start + len(item.statement)
+                if start >= 0 and end < len(text):
+                    assert not text[end].isalnum(), (
+                        f"cut mid-word at offset {extra}: "
+                        f"...{item.statement[-20:]!r} then {text[end]!r}")
+
+    def test_non_ascii_statements_keep_distinct_identities(self):
+        """The dedup key seeds `stable_node_id`, so a collision merges nodes.
+
+        Reducing to `[a-z0-9 ]` discarded everything else, so statements that
+        differed only in what it discarded shared a key — and in a script with
+        no ASCII the key was empty, giving every statement in a Japanese or
+        Russian project the same node id.
+        """
+        from causal_continuity_engine.engine import stable_node_id
+
+        pairs = [
+            ("Refunds must not exceed €500 per transaction",
+             "Refunds must not exceed £500 per transaction"),
+            ("エクスポータは行をストリーミングしなければならない",
+             "検証者は署名を拒否しなければならない"),
+            ("Кэш должен быть очищен", "Ключи должны быть защищены"),
+        ]
+        for first, second in pairs:
+            assert normalize_statement(first) != normalize_statement(second)
+            assert normalize_statement(first) != ""
+            assert (stable_node_id("prj", "requirement", first)
+                    != stable_node_id("prj", "requirement", second))
+
+        # Existing ASCII behaviour is unchanged, and compatibility forms fold.
+        assert (normalize_statement("The API returns JSON.")
+                == normalize_statement("the api returns json"))
+        assert (normalize_statement("ＡＰＩ must be stable")
+                == normalize_statement("API must be stable"))

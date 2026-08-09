@@ -93,32 +93,32 @@ _GAP = r"(?:[ \t]|" + _SOFT_WRAP + r")+"
 _PATTERNS: list[tuple[str, re.Pattern, float]] = [
     ("assumption", re.compile(
         r"\b(?:we\s+)?assum(?:e|es|ing|ption(?:\s*[:\-])?)" + _GAP + r"(?:that" + _GAP + r")?(?P<s>"
-        + _CLAUSE_TAIL + r"{8,300})", re.I), 0.85),
+        + _CLAUSE_TAIL + r"{8,300}(?!\w))", re.I), 0.85),
     ("assumption", re.compile(
         r"\b(?:relies|relying|depends?)" + _GAP + r"on" + _GAP
         + r"(?:the" + _GAP + r"fact" + _GAP + r"that" + _GAP + r")?"
-        + r"(?P<s>" + _CLAUSE_TAIL + r"{8,300})", re.I), 0.7),
+        + r"(?P<s>" + _CLAUSE_TAIL + r"{8,300}(?!\w))", re.I), 0.7),
     ("assumption", re.compile(
         r"\b(?:provided|as\s+long\s+as|expects?\s+that)" + _GAP + r"(?P<s>"
-        + _CLAUSE_TAIL + r"{8,300})", re.I), 0.6),
+        + _CLAUSE_TAIL + r"{8,300}(?!\w))", re.I), 0.6),
     ("constraint", re.compile(
         _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
         r"{0,120}?\b(?:must\s+not|may\s+not|never|shall\s+not|"
-        r"do\s+not\s+ever)" + _GAP + _CLAUSE_TAIL + r"{4,300})", re.I), 0.85),
+        r"do\s+not\s+ever)" + _GAP + _CLAUSE_TAIL + r"{4,300}(?!\w))", re.I), 0.85),
     ("requirement", re.compile(
         _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
         # A prohibition is a constraint and only a constraint; without the
         # `never` exclusion "must never X" was filed as both, recording the
         # same sentence twice under two different types.
         r"{0,120}?\b(?:must|shall|is\s+required\s+to|needs?\s+to)"
-        r"(?!\s+(?:not|never))" + _GAP + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
+        r"(?!\s+(?:not|never))" + _GAP + _CLAUSE_TAIL + r"{4,300}(?!\w))", re.I), 0.8),
     ("requirement", re.compile(
         r"\bacceptance\s+criteri(?:a|on)\s*[:\-]\s*"
-        + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.9),
+        + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300}(?!\w))", re.I), 0.9),
     ("decision", re.compile(
         r"\b(?:we\s+)?(?:decided|decision(?:\s*[:\-])?|chose|will\s+use|agreed)\s+"
         r"(?:(?:to|on|that)" + _GAP + r")?"
-        + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
+        + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300}(?!\w))", re.I), 0.8),
 ]
 
 _INJECTION_PATTERNS = re.compile(
