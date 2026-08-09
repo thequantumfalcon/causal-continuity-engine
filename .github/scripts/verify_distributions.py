@@ -77,7 +77,7 @@ GITHOOK_FILES = {
 SDIST_SOURCE_TREES = {
     "benchmarks": {".py"},
     IMPORT_PACKAGE: {".py", "py.typed"},
-    "docs": {".md", ".png"},
+    "docs": {".md", ".png", ".svg"},
     "schemas": {".json"},
     "tests": {".py"},
     "vectors": {".json", ".py"},
