@@ -49,9 +49,9 @@ def _verified(reason="valid"):
 
 def test_current_metadata_is_tag_ready_in_both_modes():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT) == ("0.1.0", "2026-08-08")
+    assert metadata.check(ROOT) == ("0.1.1", "2026-08-09")
     assert metadata.check(
-        ROOT, release_tag="v0.1.0") == ("0.1.0", "2026-08-08")
+        ROOT, release_tag="v0.1.1") == ("0.1.1", "2026-08-09")
 
 
 def test_release_metadata_requires_matching_dates_and_reset_unreleased(tmp_path):
