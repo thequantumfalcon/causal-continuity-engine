@@ -352,3 +352,47 @@ class TestExtraction:
             "The exporter must stream rows instead of\nbuffering."
             " A new sentence follows."
         ) == "The exporter must stream rows instead of buffering"
+
+    def test_a_masked_region_is_a_barrier_not_a_blank(self):
+        """Masking to spaces let a clause stitch across the masked region.
+
+        The gap between a cue word and its clause was a plain `\\s+`, which
+        matches newlines, so it walked over a blanked code fence and joined
+        "The exporter must" to "stream rows to the client" — recording a
+        sentence that appears nowhere in the source. A fabricated statement is
+        worse than a lost one: nothing downstream can tell it is invented.
+        """
+        extractor = DeterministicExtractor()
+
+        def statements(text):
+            return [i.statement for i in extractor.extract(
+                text, source_authority="human_intent").items]
+
+        assert statements(
+            "The exporter must\n```\nnever buffer rows\n```\n"
+            "stream rows to the client.") == []
+        # A paragraph break is a barrier for the same reason.
+        assert statements(
+            "The exporter must\n\nstream rows to the client.") == []
+        # But an ordinary soft wrap between cue and clause still reads.
+        assert statements(
+            "The exporter must\nstream rows to the client.") == [
+                "The exporter must stream rows to the client"]
+
+    def test_table_rows_stay_separate_statements(self):
+        """A soft wrap continues a paragraph; a table row is its own line."""
+        extractor = DeterministicExtractor()
+        statements = [i.statement for i in extractor.extract(
+            "| field | rule |\n| id | must be unique |\n"
+            "| name | must be present |",
+            source_authority="human_intent").items]
+        assert statements == ["id | must be unique", "name | must be present"]
+
+    def test_acceptance_criteria_survive_a_soft_wrap(self):
+        extractor = DeterministicExtractor()
+        statements = [i.statement for i in extractor.extract(
+            "Acceptance criteria: the verifier must reject every capsule whose\n"
+            "signature has expired.",
+            source_authority="human_intent").items]
+        assert "the verifier must reject every capsule whose signature has" \
+               " expired" in statements
