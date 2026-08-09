@@ -89,13 +89,14 @@ just test                             # should be green before you change anythi
 ```
 
 Install gitleaks. It is load-bearing here, not decoration: GitHub's native
-secret scanning and repository push protection are unavailable on this private
-personal-account repository. The local hook catches a credential before it
-leaves the machine; the `secrets` workflow scans pull requests, pushes to
-`main`, and the full history weekly. The hook warns rather than refuses when
-gitleaks is missing, so that server-side scan remains visible after a local
-`--no-verify`. The committed ruleset makes it merge-blocking, but the live
-ruleset still requires only `ci`; see `.github/ruleset.README.md`. If a
+secret scanning and push protection are enabled on this repository, but both
+act only once content reaches GitHub. The local hook catches a credential
+before it leaves the machine; the `secrets` workflow scans pull requests,
+pushes to `main`, and the full history weekly. The hook warns rather than
+refuses when gitleaks is missing, so that server-side scan remains visible
+after a local `--no-verify`. The live ruleset requires `ci`, `attribution`,
+`secrets`, and `DCO`, so a failing scan blocks the merge; see
+`.github/ruleset.README.md`. If a
 synthetic test value trips the scan,
 allowlist it in `.gitleaks.toml` by value, never by path, so a real secret in
 the same file is still caught.
@@ -139,10 +140,9 @@ wheel. The `ci` job fans all those paths into one context.
 
 Attribution is not one of these, and it is not a lint rule. It is enforced by
 `.githooks/pre-commit` locally and by the `attribution` job in
-`.github/workflows/no-ai-attribution.yml`. The committed desired ruleset
-requires both `attribution` and `secrets`; the live ruleset does not yet,
-and that operational drift is a blocker documented in
-`.github/ruleset.README.md`.
+`.github/workflows/no-ai-attribution.yml`. The live ruleset requires both
+`attribution` and `secrets` to pass before a merge; the apply and read-back
+procedure is in `.github/ruleset.README.md`.
 
 `docs/CAPABILITIES.md` is generated, never hand-edited. If your change moves a
 symbol a claim points at, run
@@ -223,20 +223,20 @@ sdist, and checksum manifest to a separate draft-to-final publish job. See
 
 **Sign off your commits.** Contributions are accepted under the
 [Developer Certificate of Origin 1.1](https://developercertificate.org/), and
-external contributions are asked for a
+every commit in a pull request must carry a
 `Signed-off-by` trailer:
 
 ```bash
 git commit -s -m "fix(graph): bound traversal at the configured budget"
 ```
 
-This is not enforced today. There is no DCO app, workflow, or `commit-msg`
-check for the trailer, so a pull request is not yet blocked for missing it.
-Existing history predates enforcement and is not being rewritten merely to
-add trailers. The DCO app will be enabled, and its check made required, when
-the repository goes public. `git rebase --signoff` will add the trailer if you
-forget it on an unpublished branch. By signing off you certify the DCO's terms
-and license your contribution under the repository's Apache-2.0 license.
+This is enforced. The DCO app checks every commit in a pull request and its
+`DCO` check is a required status, so a pull request missing the trailer is
+blocked from merging. Existing history predates enforcement and is not being
+rewritten merely to add trailers. `git rebase --signoff` will add the trailer
+if you forget it on an unpublished branch. By signing off you certify the
+DCO's terms and license your contribution under the repository's Apache-2.0
+license.
 
 Keep the branch focused. One defect, one pull request. Do not reformat
 adjacent code, rename things you did not introduce, or clean up unrelated dead

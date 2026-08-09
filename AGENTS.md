@@ -42,8 +42,7 @@ gates too, not optional extras. The `test` job in
 to `main`, across Python 3.11, 3.12, 3.13 and 3.14. The runner stops at the first
 failure. Native Windows and macOS 15 ARM64 invoke the same sequence on 3.14,
 and the artifact job builds twice and exercises an installed wheel. The `ci`
-job fans all four paths in. It is the only status context required by the live branch
-ruleset today.
+job fans all four paths in.
 The committed desired state in `.github/ruleset.json` was applied and read
 back on 2026-08-08: branch ruleset `20590966` is active with no bypass
 actors, required signatures, and merge-blocking `ci`, `attribution`,
@@ -53,9 +52,9 @@ settings are mutable — re-read the live objects rather than trusting this
 sentence.
 `commit-signature-audit.yml` reports GitHub's verdict for the exact pushed
 `main` SHA, but it runs after the commit has landed. It is a detective signal,
-not a substitute for the desired preventive `required_signatures` branch rule.
-Treat `.github/ruleset.README.md` as the drift register and do not describe
-the desired controls as live enforcement.
+not a substitute for the preventive `required_signatures` branch rule.
+Treat `.github/ruleset.README.md` as the drift register: re-read the live
+objects before describing any control as enforced.
 
 The `justfile` exposes focused local commands. Hosted Linux, Windows, macOS,
 and release jobs use `run_gates.py` so no separately downloaded command runner can

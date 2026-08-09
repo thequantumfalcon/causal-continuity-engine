@@ -13,9 +13,8 @@ and remain bound to the reviewed tag.
 2. Preserve the repository-level requirement for full-length commit SHAs on
    every GitHub Action reference. The 2026-08-04 API read-back reports
    `sha_pinning_required: true`.
-3. Preserve release immutability. It was enabled and read back through the
-   GitHub API on 2026-08-04, before any tag or release existed. The setting is
-   not retroactive, so verify it again before the first tag.
+3. Preserve release immutability. It was enabled before any tag or release
+   existed. The setting is not retroactive, so verify it again before each tag.
 4. Confirm the maintainer's signing key renders both commits and signed tags
    as **Verified** on GitHub, and record the expected key fingerprint or SSH
    principal in the operator's release record.
@@ -181,17 +180,18 @@ Python image (or an equivalently authenticated interpreter distribution).
 
 ## Python package index publication
 
-The GitHub release workflow does **not** currently upload to PyPI. The intended
-name `causal-continuity-engine` was unclaimed when checked on 2026-08-04, and a
-[pending Trusted Publisher does not reserve it](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/).
-Before claiming registry availability, configure a protected `pypi` GitHub
-environment and a pending publisher bound exactly to this owner, repository,
-and `release.yml`. Then add a separately reviewed OIDC publish job that receives
-only the already verified wheel and sdist, uses no long-lived token, emits
-PEP 740 attestations, and verifies PyPI's exposed SHA-256 digests before the
-release is announced. Until that path is approved and exercised, installation
-instructions remain source/GitHub based and must not say `pip install
-causal-continuity-engine`.
+The GitHub release workflow uploads to PyPI. The name
+`causal-continuity-engine` was claimed by the first successful publish
+(0.1.0, 2026-08-08); a
+[pending Trusted Publisher does not reserve a name](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/),
+only publishing does.
+
+The `pypi` job runs after `verify` and `publish`, is gated on the protected
+`pypi` environment, and authenticates by OIDC Trusted Publishing bound to this
+owner, repository, and `release.yml` — no long-lived token. It receives only
+the already verified wheel and sdist, re-checks them against the checksum
+manifest before upload, and emits PEP 740 attestations. Require PyPI's exposed
+SHA-256 digests to match the GitHub release assets before announcing.
 
 Do not reuse a failed version or replace an asset. Correct the cause, increment
 the version, and create a new signed tag so the failure remains attributable.
