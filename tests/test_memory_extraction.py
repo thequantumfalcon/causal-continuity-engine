@@ -275,3 +275,40 @@ class TestExtraction:
             "The exporter must never buffer the whole result set.",
             source_authority="human_intent").items
         assert [i.kind for i in items] == ["constraint"]
+
+    def test_a_soft_wrapped_sentence_is_one_statement(self):
+        """Editors wrap comment bodies at about eighty columns.
+
+        Treating every newline as a clause end truncated the majority of real
+        sentences at the wrap point, and the surviving fragment still read as
+        a complete clause: "must stream rows ... instead of", missing the half
+        that says instead of what.
+        """
+        extractor = DeterministicExtractor()
+
+        def first(text, kind="requirement"):
+            for item in extractor.extract(
+                    text, source_authority="human_intent").items:
+                if item.kind == kind:
+                    return item.statement
+            return None
+
+        wrapped = ("The exporter must stream rows from the upstream feed"
+                   " instead of\nbuffering the entire result set in memory.")
+        assert first(wrapped) == (
+            "The exporter must stream rows from the upstream feed instead of"
+            " buffering the entire result set in memory")
+        # Identical text on one line must give the identical statement.
+        assert first(wrapped) == first(wrapped.replace("\n", " "))
+
+        # A blank line, a list item and a sentence end all still bound it.
+        assert first(
+            "The exporter must stream rows.\n\nUnrelated next paragraph."
+        ) == "The exporter must stream rows"
+        assert first(
+            "The verifier must reject bad input\n- a separate bullet entirely"
+        ) == "The verifier must reject bad input"
+        assert first(
+            "The exporter must stream rows instead of\nbuffering."
+            " A new sentence follows."
+        ) == "The exporter must stream rows instead of buffering"
