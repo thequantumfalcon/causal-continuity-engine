@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## 0.1.1 — 2026-08-09
+## 0.1.2 — 2026-08-09
 
 A documentation and hygiene release. No engine, schema, proof, or HTTP
-behaviour changed; the only executable change is the credential-handling fix
-below.
+behaviour changed; the only executable changes are the credential-handling and
+release-workflow fixes below.
+
+`v0.1.1` was tagged from this same work and never published: the release
+workflow's checksum recheck rejected its own verified artifacts, for the reason
+recorded under Fixed. The tag is left in place so that failure stays
+attributable, and the version was incremented rather than reused.
 
 ### Fixed
 
@@ -23,6 +28,14 @@ below.
   decoding and the command fails with `api token file must be ASCII`, naming
   no content. Found while closing out a CodeQL triage: the alert itself was a
   false positive, this residue was not.
+- **The release workflow's checksum recheck compared the manifest in the wrong
+  order.** `SHA256SUMS` is filename-ordered, as both `build_distributions.py`
+  and `verify_distributions.py` define it, but the two shell rechecks in
+  `release.yml` sorted whole lines — which begin with the digest. The
+  comparison therefore succeeded only when the artifacts' digests happened to
+  sort the same way their filenames do, making every release a coin flip that
+  0.1.0 won and the 0.1.1 attempt lost. Both rechecks now sort on the filename
+  field, and a regression test pins the contract.
 - **Documentation that described the repository as private and unpublished.**
   Those statements were accurate when written and became false when the
   repository went public and 0.1.0 shipped. The security policy was the
