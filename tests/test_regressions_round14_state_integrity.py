@@ -466,7 +466,11 @@ def test_capsule_budget_trimming_is_not_control_drift():
     try:
         capsule = _export_capsule(engine, token_budget=1)
         assert capsule["resume_packet"]["omissions"]
-        assert len(capsule["resume_packet"]["verified_progress"]) == 3
+        # Trimming must be attributed rather than silent. This deliberately
+        # does not assert a surviving item count: that encoded the old fixed
+        # cap, which made token_budget a trigger instead of a bound.
+        assert any(o["section"] == "verified progress detail"
+                   for o in capsule["resume_packet"]["omissions"])
 
         result = engine.capsules.import_capsule(
             capsule, signer=engine.signer, target_model="target",

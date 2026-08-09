@@ -574,6 +574,21 @@ class ResumeComposer:
     # ----------------------------------------------------------------- budget
 
     def _fit_budget(self, packet: dict, budget: int, omissions: list[dict]) -> dict:
+        """Trim trimmable material until the budget is met, and say so if it is not.
+
+        Trimming to a fixed cap made `token_budget` a trigger rather than a
+        bound: once each section had been cut to its cap the loop stopped,
+        however far over budget the packet still was, so a large project
+        returned the same oversized packet at every budget. Sections are now
+        reduced progressively.
+
+        Authority — mission, L0 and constraints — is still never dropped, which
+        is the point of the design. When authority alone exceeds the budget the
+        packet is emitted over budget, and `token_estimate` reports its real
+        size so a caller comparing that against the budget it asked for can
+        tell. This is deliberately not recorded as an omission: nothing was
+        withheld, and saying otherwise would itself be a false statement.
+        """
         trim_order = [
             ("recent_context", "recent context"),
             ("verified_progress", "verified progress detail"),
@@ -584,17 +599,26 @@ class ResumeComposer:
             if _tokens(packet) <= budget:
                 break
             section = packet.get(key)
-            if isinstance(section, list) and len(section) > 3:
-                dropped = len(section) - 3
-                packet[key] = section[:3]
-                omissions.append({"reason": "token_budget", "section": label,
-                                  "count": dropped})
+            if isinstance(section, list) and section:
+                kept = list(section)
+                while kept and _tokens({**packet, key: kept}) > budget:
+                    kept.pop()
+                if len(kept) != len(section):
+                    packet[key] = kept
+                    omissions.append({
+                        "reason": "token_budget", "section": label,
+                        "count": len(section) - len(kept)})
             elif key == "open_work" and isinstance(section, dict):
                 tasks = section.get("tasks", [])
-                if len(tasks) > 5:
-                    omissions.append({"reason": "token_budget", "section": label,
-                                      "count": len(tasks) - 5})
-                    section["tasks"] = tasks[:5]
+                kept = list(tasks)
+                while kept and _tokens(
+                        {**packet, key: {**section, "tasks": kept}}) > budget:
+                    kept.pop()
+                if len(kept) != len(tasks):
+                    omissions.append({
+                        "reason": "token_budget", "section": label,
+                        "count": len(tasks) - len(kept)})
+                    section["tasks"] = kept
         packet["omissions"] = omissions
         return packet
 
