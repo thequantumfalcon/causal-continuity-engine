@@ -1144,8 +1144,10 @@ def cmd_serve(args):
     engine, meta = _engine(args)
     root = Path("." if args.dir is None else args.dir)
     _, cce_dir = _physical_cce_directory(root, root / ".cce")
-    api_token = _read_private(_secret_path(cce_dir, meta["api_token_file"])) \
-        .decode("ascii")
+    token_bytes = _read_private(_secret_path(cce_dir, meta["api_token_file"]))
+    if not token_bytes.isascii():
+        raise ValueError("api token file must be ASCII")
+    api_token = token_bytes.decode("ascii")
     webhook_secret = _read_private(
         _secret_path(cce_dir, meta["webhook_secret_file"]))
     print(_sanitize_human(

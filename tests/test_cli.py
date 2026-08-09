@@ -662,3 +662,17 @@ def test_bounded_reader_regular_file_to_fifo_swap_is_nonblocking(
     with pytest.raises(ValueError, match="changed before|physical regular"):
         cli_module._read_bounded_file(source, 1024, label="payload")
     assert swapped
+
+
+def test_serve_rejects_non_ascii_api_token_without_echoing_bytes(
+        tmp_path, capsys):
+    _init(tmp_path, capsys)
+    token_path = tmp_path / ".cce" / "secrets" / "api.token"
+    token_path.write_bytes(b"caf\xc3\xa9-token")
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--dir", str(tmp_path), "serve"])
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "error: api token file must be ASCII" in err
+    assert "0xc3" not in err
+    assert "xc3" not in err
