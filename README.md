@@ -6,7 +6,7 @@ Continuity, causal invalidation, and proof for long-running coding agents.
 ![license](https://img.shields.io/badge/license-Apache_2.0-blue.svg)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
-<p align="center"><img src="docs/assets/demo.svg" alt="cce-engine quickstart: install, init, audit verify, assumptions" width="760"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/main/docs/assets/demo.svg" alt="cce-engine quickstart: install, init, audit verify, assumptions" width="760"></p>
 
 ## The problem
 
