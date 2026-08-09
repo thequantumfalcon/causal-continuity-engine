@@ -205,7 +205,8 @@ visibility change.
 
 Immediately after the public flip, keep Actions enabled, change
 `allowed_actions` to `selected`, retain full-SHA enforcement, and permit only
-the eight Action repositories reviewed in the committed workflows:
+the nine Action repositories reviewed in the committed workflows
+(actions/attest is the composite dependency of actions/attest-build-provenance):
 
 ```bash
 REPO=thequantumfalcon/causal-continuity-engine
@@ -224,6 +225,7 @@ gh api --method PUT "/repos/$REPO/actions/permissions/selected-actions" --input 
     "actions/upload-artifact@*",
     "actions/download-artifact@*",
     "actions/attest-build-provenance@*",
+    "actions/attest@*",
     "actions/dependency-review-action@*",
     "gitleaks/gitleaks-action@*",
     "pypa/gh-action-pypi-publish@*"
@@ -246,7 +248,7 @@ policy="$(gh api "/repos/$REPO/actions/permissions" \
   --jq '[.enabled,.allowed_actions,.sha_pinning_required] | @json')"
 test "$policy" = '[true,"selected",true]'
 
-expected_selected='{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":["actions/attest-build-provenance@*","actions/checkout@*","actions/dependency-review-action@*","actions/download-artifact@*","actions/setup-python@*","actions/upload-artifact@*","gitleaks/gitleaks-action@*","pypa/gh-action-pypi-publish@*"]}'
+expected_selected='{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":["actions/attest-build-provenance@*","actions/attest@*","actions/checkout@*","actions/dependency-review-action@*","actions/download-artifact@*","actions/setup-python@*","actions/upload-artifact@*","gitleaks/gitleaks-action@*","pypa/gh-action-pypi-publish@*"]}'
 selected="$(gh api "/repos/$REPO/actions/permissions/selected-actions" \
   --jq '{github_owned_allowed,verified_allowed,patterns_allowed:(.patterns_allowed|sort)} | @json')"
 test "$selected" = "$expected_selected"
