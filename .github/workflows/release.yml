@@ -129,10 +129,14 @@ jobs:
           sdist="$(find dist -maxdepth 1 -type f -name 'causal_continuity_engine-*.tar.gz' -print -quit)"
           expected_manifest="$(mktemp)"
           trap 'rm -f "$expected_manifest"' EXIT
+          # SHA256SUMS is defined as filename-ordered by both the builder and
+          # verify_distributions.py, so sort on the filename field. Sorting the
+          # whole line would order by digest and match only when the digests
+          # happen to sort the same way the filenames do.
           for artifact in "$sdist" "$wheel"; do
             digest="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
             printf '%s  %s\n' "$digest" "$(basename "$artifact")"
-          done | LC_ALL=C sort > "$expected_manifest"
+          done | LC_ALL=C sort -k2 > "$expected_manifest"
           cmp --silent "$expected_manifest" dist/SHA256SUMS
           echo "validated artifact $ARTIFACT_ID at sha256:$EXPECTED_ARTIFACT_DIGEST"
 
@@ -246,10 +250,11 @@ jobs:
           test -f dist/SHA256SUMS
           expected_manifest="$(mktemp)"
           trap 'rm -f "$expected_manifest"' EXIT
+          # Filename-ordered, matching the builder and verify_distributions.py.
           for artifact in "$sdist" "$wheel"; do
             digest="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
             printf '%s  %s\n' "$digest" "$(basename "$artifact")"
-          done | LC_ALL=C sort > "$expected_manifest"
+          done | LC_ALL=C sort -k2 > "$expected_manifest"
           cmp --silent "$expected_manifest" dist/SHA256SUMS
           mkdir upload
           mv "$wheel" "$sdist" upload/
