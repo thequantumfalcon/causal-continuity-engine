@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
+## 0.1.1 — 2026-08-09
+
+A documentation and hygiene release. No engine, schema, proof, or HTTP
+behaviour changed; the only executable change is the credential-handling fix
+below.
+
+### Fixed
+
+- **`cce-engine serve` no longer echoes a byte of the API token file.** A
+  token file containing non-ASCII bytes surfaced Python's decode error, which
+  quotes the offending byte value. The raw bytes are now checked before
+  decoding and the command fails with `api token file must be ASCII`, naming
+  no content. Found while closing out a CodeQL triage: the alert itself was a
+  false positive, this residue was not.
+- **Documentation that described the repository as private and unpublished.**
+  Those statements were accurate when written and became false when the
+  repository went public and 0.1.0 shipped. The security policy was the
+  serious one — it stated there was no reporting channel at all and told
+  anyone who found a defect to withhold the report until the repository was
+  public, while private vulnerability reporting was already enabled.
+  `CONTRIBUTING.md` also said sign-off was unenforced and that native secret
+  scanning was unavailable, and `docs/RELEASE.md` said the release workflow
+  did not upload to PyPI and that installation instructions must not name
+  `pip install`. Each now states the live state, re-read from the API rather
+  than assumed.
+- **The README demo image is referenced by an absolute URL.** PyPI does not
+  resolve repository-relative image paths, so the relative form would have
+  rendered as a broken image on the project page while rendering correctly on
+  GitHub.
+
+### Added
+
+- A terminal quickstart demo on the README's first screen, built from real
+  captured command output.
+- `.svg` assets under `docs/` are admitted to the reviewed source contract and
+  ship in the sdist, alongside the existing `.png` allowance.
+
 ## 0.1.0 — 2026-08-08
 
 Everything below is new; this is the first release.

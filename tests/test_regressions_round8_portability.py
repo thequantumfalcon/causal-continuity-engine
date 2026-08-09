@@ -27,6 +27,7 @@ from causal_continuity_engine.engine import Engine
 from tests.schema_validation import draft202012_validator
 
 ROOT = Path(__file__).resolve().parent.parent
+SDIST_NAME = f"causal_continuity_engine-{runtime_package.__version__}.tar.gz"
 SCHEMA_PATHS = tuple(sorted((ROOT / "schemas").glob("*.json")))
 SCHEMA_URI_BASE = (
     "https://raw.githubusercontent.com/thequantumfalcon/"
@@ -1162,7 +1163,9 @@ def test_distribution_verifier_requires_exact_sdist_filename(tmp_path):
 
     with pytest.raises(
             SystemExit,
-            match="filename must be exactly causal_continuity_engine-0.1.0.tar.gz"):
+            match=re.escape(
+                "filename must be exactly causal_continuity_engine-"
+                f"{runtime_package.__version__}.tar.gz")):
         verifier._validated_sdist_payload(wrong, ROOT, expected_epoch=1700000000)
 
 
@@ -1170,7 +1173,7 @@ def test_distribution_verifier_bounds_compressed_sdist_size(
         tmp_path, monkeypatch):
     verifier = _load_release_script("verify_distributions")
     monkeypatch.setattr(verifier, "MAX_SDIST_ARCHIVE_BYTES", 9)
-    sdist = tmp_path / "causal_continuity_engine-0.1.0.tar.gz"
+    sdist = tmp_path / SDIST_NAME
     sdist.write_bytes(b"0123456789")
 
     with pytest.raises(SystemExit, match="compressed archive exceeds"):
@@ -1188,7 +1191,7 @@ def test_distribution_verifier_rejects_noncanonical_gzip_header(
     header.extend(epoch.to_bytes(4, "little"))
     header.extend(b"\x02\xff")
     header[offset] = value
-    sdist = tmp_path / "causal_continuity_engine-0.1.0.tar.gz"
+    sdist = tmp_path / SDIST_NAME
     sdist.write_bytes(bytes(header) + b"payload")
 
     with pytest.raises(SystemExit, match="gzip header is not canonical"):
@@ -2086,26 +2089,29 @@ def test_distribution_verifier_rejects_false_record_digest(tmp_path):
 
 def test_release_rejects_unsigned_annotated_tag(monkeypatch):
     checker = _load_release_script("check_release_tag")
+    version = runtime_package.__version__
+    tag = f"v{version}"
     monkeypatch.setattr(
-        checker, "_verify_release_metadata", lambda tag: "0.1.0")
+        checker, "_verify_release_metadata", lambda name: version)
 
     def fake_git(*args):
         if args[:2] == ("cat-file", "-t"):
             return "tag"
         if args[:2] == ("cat-file", "-p"):
-            return "object abc\ntype commit\ntag v0.1.0\n\nCCE v0.1.0"
+            return f"object abc\ntype commit\ntag {tag}\n\nCCE {tag}"
         raise AssertionError(args)
 
     monkeypatch.setattr(checker, "_git", fake_git)
     with pytest.raises(SystemExit, match="must carry a PGP or SSH signature"):
-        checker.main(["v0.1.0"])
+        checker.main([tag])
 
 
 def test_release_rejects_signed_tag_object_aliased_under_another_name(
         monkeypatch):
     checker = _load_release_script("check_release_tag")
+    version = runtime_package.__version__
     monkeypatch.setattr(
-        checker, "_verify_release_metadata", lambda tag: "0.1.0")
+        checker, "_verify_release_metadata", lambda name: version)
 
     def fake_git(*args):
         if args[:2] == ("cat-file", "-t"):
@@ -2119,7 +2125,7 @@ def test_release_rejects_signed_tag_object_aliased_under_another_name(
 
     monkeypatch.setattr(checker, "_git", fake_git)
     with pytest.raises(SystemExit, match="signed tag object names"):
-        checker.main(["v0.1.0"])
+        checker.main([f"v{version}"])
 
 
 def _trusted_check_api(commit, *, ci_path=".github/workflows/ci.yml"):
