@@ -91,8 +91,11 @@ _PATTERNS: list[tuple[str, re.Pattern, float]] = [
         r"do\s+not\s+ever)\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.85),
     ("requirement", re.compile(
         _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
+        # A prohibition is a constraint and only a constraint; without the
+        # `never` exclusion "must never X" was filed as both, recording the
+        # same sentence twice under two different types.
         r"{0,120}?\b(?:must|shall|is\s+required\s+to|needs?\s+to)"
-        r"(?!\s+not)\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
+        r"(?!\s+(?:not|never))\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
     ("requirement", re.compile(
         r"\bacceptance\s+criteri(?:a|on)\s*[:\-]\s*(?P<s>[^\n]{4,300})", re.I), 0.9),
     ("decision", re.compile(
@@ -174,9 +177,14 @@ class DeterministicExtractor:
         # matches (highest confidence wins) so one sentence never yields two
         # near-duplicate variants (e.g. "Acceptance criteria: X must Y" and
         # "X must Y").
+        # Patterns run over prose only; spans and context still quote the
+        # original text, so a report points at what the author actually wrote.
+        # The injection screen above deliberately reads the raw text: a payload
+        # hidden inside a fence is still a payload.
+        prose = _prose_only(text)
         candidates = []
         for kind, pattern, base_conf in _PATTERNS:
-            for m in pattern.finditer(text):
+            for m in pattern.finditer(prose):
                 statement = _clean(m.group("s"))
                 if not _plausible(statement):
                     result.abstained += 1
@@ -255,8 +263,34 @@ def normalize_statement(statement: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Regions of a comment that are not the author asserting something. A fenced
+# block is code, and code comments are full of modal verbs; a blockquote is
+# someone else's words, frequently quoted in order to disagree with them.
+# Extracting either attributes a statement to an author who did not make it.
+_NON_PROSE = (
+    re.compile(r"^[ \t]*(?:```|~~~).*?(?:^[ \t]*(?:```|~~~)[ \t]*$|\Z)",
+               re.S | re.M),
+    re.compile(r"^[ \t]*>.*$", re.M),
+)
+
+# Markdown that decorates a line rather than forming part of the statement.
+_LEADING_MARKUP = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|\|\s*)+")
+
+
+def _prose_only(text: str) -> str:
+    """Blank non-prose regions, preserving offsets so spans stay truthful."""
+    masked = list(text)
+    for pattern in _NON_PROSE:
+        for match in pattern.finditer(text):
+            for index in range(match.start(), match.end()):
+                if masked[index] != "\n":
+                    masked[index] = " "
+    return "".join(masked)
+
+
 def _clean(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip().rstrip(".;,:")
+    collapsed = re.sub(r"\s+", " ", s).strip()
+    return _LEADING_MARKUP.sub("", collapsed).strip().rstrip(".;,:| ")
 
 
 def _plausible(statement: str) -> bool:

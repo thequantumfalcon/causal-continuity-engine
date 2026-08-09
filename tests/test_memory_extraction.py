@@ -227,3 +227,51 @@ class TestExtraction:
             "We assume the feed is ordered by timestamp."
             " The exporter buffers rows.",
             "assumption") == "the feed is ordered by timestamp"
+
+    def test_code_fences_and_quotations_are_not_the_author_speaking(self):
+        """Neither is an assertion by the person writing the comment.
+
+        A fenced block is code, and code comments are full of modal verbs. A
+        blockquote is someone else's words — frequently quoted in order to
+        disagree with them, so extracting one can record the opposite of the
+        author's position and attribute it to them.
+        """
+        extractor = DeterministicExtractor()
+
+        def kinds(text):
+            return [(i.kind, i.statement) for i
+                    in extractor.extract(
+                        text, source_authority="human_intent").items]
+
+        assert kinds(
+            "Here is the repro:\n\n```python\n"
+            "# the parser must never accept a bare tag\n"
+            "assert parse(x) is None\n```\n\nThat is all.") == []
+        assert kinds(
+            "> we must migrate to Postgres next quarter\n\n"
+            "I disagree with the above.") == []
+
+        # Prose after a fence is still the author speaking, and an inline code
+        # span is ordinary content rather than a block of code.
+        assert ("requirement", "The exporter must stream rows instead of"
+                " buffering") in kinds(
+            "```\ncode\n```\n\nThe exporter must stream rows instead of"
+            " buffering.")
+        assert ("requirement", "`--require-hashes` must be set for the release"
+                " build") in kinds(
+            "`--require-hashes` must be set for the release build.")
+
+    def test_markdown_decoration_is_not_part_of_the_statement(self):
+        extractor = DeterministicExtractor()
+        items = extractor.extract(
+            "- The verifier must reject an unsigned envelope.",
+            source_authority="human_intent").items
+        assert [i.statement for i in items] == [
+            "The verifier must reject an unsigned envelope"]
+
+    def test_a_prohibition_is_a_constraint_and_not_also_a_requirement(self):
+        extractor = DeterministicExtractor()
+        items = extractor.extract(
+            "The exporter must never buffer the whole result set.",
+            source_authority="human_intent").items
+        assert [i.kind for i in items] == ["constraint"]
