@@ -76,38 +76,47 @@ class ExtractionResult:
 # the wrap — "must stream rows instead of" losing the half that says instead of
 # what. A blank line, list item, heading or quote marker does begin a new
 # logical unit, so those still bound the clause.
-_SOFT_WRAP = r"\n(?![ \t]*(?:\n|[-*+>#]|\d+[.)]))"
+_SOFT_WRAP = r"\n(?![ \t]*(?:\n|[-*+>#|]|\d+[.)]))"
 _CLAUSE_START = r"(?:\A|[\n;:]\s*|\.\s+)"
 _IN_CLAUSE = r"(?:[^.\n;]|\.(?!\s|\Z)|" + _SOFT_WRAP + r")"
 _CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z)|" + _SOFT_WRAP + r")"
 
+# The gap between a cue word and the clause it introduces. A plain `\s+` also
+# matches newlines, so it walked across paragraph breaks and across masked
+# regions — stitching "The exporter must" to "stream rows to the client" over a
+# code fence and recording a sentence the author never wrote. Fabricating a
+# statement is worse than dropping one: nothing downstream can tell.
+_GAP = r"(?:[ \t]|" + _SOFT_WRAP + r")+"
+
 # Patterns: (kind, regex, base_confidence)
 _PATTERNS: list[tuple[str, re.Pattern, float]] = [
     ("assumption", re.compile(
-        r"\b(?:we\s+)?assum(?:e|es|ing|ption(?:\s*[:\-])?)\s+(?:that\s+)?(?P<s>"
+        r"\b(?:we\s+)?assum(?:e|es|ing|ption(?:\s*[:\-])?)" + _GAP + r"(?:that" + _GAP + r")?(?P<s>"
         + _CLAUSE_TAIL + r"{8,300})", re.I), 0.85),
     ("assumption", re.compile(
-        r"\b(?:relies|relying|depends?)\s+on\s+(?:the\s+fact\s+that\s+)?(?P<s>"
-        + _CLAUSE_TAIL + r"{8,300})", re.I), 0.7),
+        r"\b(?:relies|relying|depends?)" + _GAP + r"on" + _GAP
+        + r"(?:the" + _GAP + r"fact" + _GAP + r"that" + _GAP + r")?"
+        + r"(?P<s>" + _CLAUSE_TAIL + r"{8,300})", re.I), 0.7),
     ("assumption", re.compile(
-        r"\b(?:provided|as\s+long\s+as|expects?\s+that)\s+(?P<s>"
+        r"\b(?:provided|as\s+long\s+as|expects?\s+that)" + _GAP + r"(?P<s>"
         + _CLAUSE_TAIL + r"{8,300})", re.I), 0.6),
     ("constraint", re.compile(
         _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
         r"{0,120}?\b(?:must\s+not|may\s+not|never|shall\s+not|"
-        r"do\s+not\s+ever)\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.85),
+        r"do\s+not\s+ever)" + _GAP + _CLAUSE_TAIL + r"{4,300})", re.I), 0.85),
     ("requirement", re.compile(
         _CLAUSE_START + r"(?P<s>" + _IN_CLAUSE +
         # A prohibition is a constraint and only a constraint; without the
         # `never` exclusion "must never X" was filed as both, recording the
         # same sentence twice under two different types.
         r"{0,120}?\b(?:must|shall|is\s+required\s+to|needs?\s+to)"
-        r"(?!\s+(?:not|never))\s+" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
+        r"(?!\s+(?:not|never))" + _GAP + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
     ("requirement", re.compile(
-        r"\bacceptance\s+criteri(?:a|on)\s*[:\-]\s*(?P<s>[^\n]{4,300})", re.I), 0.9),
+        r"\bacceptance\s+criteri(?:a|on)\s*[:\-]\s*"
+        + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.9),
     ("decision", re.compile(
         r"\b(?:we\s+)?(?:decided|decision(?:\s*[:\-])?|chose|will\s+use|agreed)\s+"
-        r"(?:to\s+|on\s+|that\s+)?(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
+        r"(?:to|on|that)?" + _GAP + r"?(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
 ]
 
 _INJECTION_PATTERNS = re.compile(
@@ -295,13 +304,19 @@ _LEADING_MARKUP = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|\|\s*)+")
 
 
 def _prose_only(text: str) -> str:
-    """Blank non-prose regions, preserving offsets so spans stay truthful."""
+    """Replace non-prose regions with hard boundaries, preserving offsets.
+
+    Masking to spaces was not a barrier: the gap between a cue word and its
+    clause could walk straight across the blanked region, stitching "The
+    exporter must" to "stream rows to the client" over a code fence and
+    recording a sentence nobody wrote. Masking to newlines makes the region a
+    run of blank lines, which every clause rule already treats as an end.
+    """
     masked = list(text)
     for pattern in _NON_PROSE:
         for match in pattern.finditer(text):
             for index in range(match.start(), match.end()):
-                if masked[index] != "\n":
-                    masked[index] = " "
+                masked[index] = "\n"
     return "".join(masked)
 
 
