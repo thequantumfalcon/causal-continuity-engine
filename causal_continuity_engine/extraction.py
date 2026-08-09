@@ -199,11 +199,20 @@ class DeterministicExtractor:
         # original text, so a report points at what the author actually wrote.
         # The injection screen above deliberately reads the raw text: a payload
         # hidden inside a fence is still a payload.
-        prose = _prose_only(text)
+        # Characters that render as nothing must not change how the text is
+        # READ, but they must still be VISIBLE in what is recorded: a reader
+        # has to be able to see that a sentence carried them. So matching runs
+        # over a copy with them removed, while every statement and span is
+        # sliced from the original through `offsets`. A zero-width space
+        # inside "not" had re-typed a prohibition as a requirement, so control
+        # state mandated what the sentence forbids.
+        visible, offsets = _without_invisibles(text)
+        prose = _prose_only(visible)
         candidates = []
         for kind, pattern, base_conf in _PATTERNS:
             for m in pattern.finditer(prose):
-                statement = _clean(m.group("s"))
+                statement = _clean(
+                    text[offsets[m.start("s")]:offsets[m.end("s")]])
                 if not _plausible(statement):
                     result.abstained += 1
                     continue
@@ -246,8 +255,12 @@ class DeterministicExtractor:
                 item.meta["demotion_reason"] = "untrusted source cannot mandate"
             result.items.append(item)
 
-        for m in _CHECKLIST.finditer(text):
-            statement = _clean(m.group("s"))
+        # Masking applies to EVERY extractor. Reading raw text here let a
+        # checklist hidden in an HTML comment or a code fence arrive as
+        # actionable open work — the exact harm the mask exists to prevent.
+        for m in _CHECKLIST.finditer(prose):
+            statement = _clean(
+                text[offsets[m.start("s")]:offsets[m.end("s")]])
             if not _plausible(statement):
                 result.abstained += 1
                 continue
@@ -260,7 +273,7 @@ class DeterministicExtractor:
             # payload arrives as actionable open work rather than as prose.
             result.items.append(Extracted(
                 kind="task", statement=statement,
-                span=m.group(0).strip(),
+                span=text[offsets[m.start()]:offsets[m.end()]].strip(),
                 confidence=_calibrate(0.85, source_authority),
                 criticality="medium", scope=scope,
                 suspected_injection=block_compromised,
@@ -313,7 +326,32 @@ _NON_PROSE = (
                r"(?:^[ \t]*(?P=fence)[`~]*[ \t]*\r?$|\Z)", re.S | re.M),
     re.compile(r"^[ \t]*>.*$", re.M),
     re.compile(r"<!--.*?(?:-->|\Z)", re.S),
+    # A four-space indented block is also code, and was masked only when fenced.
+    re.compile(r"(?:^(?:[ ]{4}|\t).*(?:\n|\Z))+", re.M),
 )
+
+# Zero-width and bidirectional formatting characters: invisible to a reader,
+# but they broke `\s`-based word boundaries, so "must no<ZWSP>t" no longer
+# matched the prohibition pattern and was recorded as a requirement instead.
+_INVISIBLE = re.compile(
+    r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
+
+
+def _without_invisibles(text: str) -> tuple[str, list[int]]:
+    """Text with zero-width characters removed, plus a map back to the source.
+
+    `offsets[i]` is the index in `text` of character `i` of the returned
+    string, with a final entry for the end, so a match on the stripped copy
+    can be sliced out of the original.
+    """
+    kept: list[str] = []
+    offsets: list[int] = []
+    for index, char in enumerate(text):
+        if not _INVISIBLE.match(char):
+            kept.append(char)
+            offsets.append(index)
+    offsets.append(len(text))
+    return "".join(kept), offsets
 
 # Markdown that decorates a line rather than forming part of the statement.
 _LEADING_MARKUP = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|\|\s*)+")
