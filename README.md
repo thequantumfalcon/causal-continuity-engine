@@ -62,11 +62,19 @@ command are already used by an unrelated published project.
 Under five minutes, no dependencies beyond the package itself.
 
 ```bash
-git clone https://github.com/thequantumfalcon/causal-continuity-engine
-cd causal-continuity-engine
 python -m venv .venv
 # Activate with: source .venv/bin/activate          (macOS/Linux)
 #            or: .venv\Scripts\Activate.ps1         (Windows PowerShell)
+python -m pip install causal-continuity-engine
+```
+
+To work on the engine instead of using it, install the checkout editable — see
+[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the full toolchain:
+
+```bash
+git clone https://github.com/thequantumfalcon/causal-continuity-engine
+cd causal-continuity-engine
+python -m venv .venv
 python -m pip install -e .
 ```
 
