@@ -15,15 +15,14 @@ quarantine barrier, the redaction path, and the event and audit chains.
 
 | Version | Supported |
 |---|---|
-| Before the first release — latest commit on `main` | Yes |
+| Latest commit on `main` | Yes |
 | 0.1.x — latest published release | Yes |
 | Older releases and arbitrary commits | No |
 | Anything else | No such version exists |
 
 This is pre-1.0 software with no release branches. A fix lands on `main`; if it
 affects the latest published release, the supported delivery is a new 0.1.x
-patch release rather than mutating or backporting to an older artifact. Before
-the first release, the reviewed tip of `main` is the only supported version.
+patch release rather than mutating or backporting to an older artifact.
 
 Hosted CI requires fixes to pass on Python 3.11, 3.12, 3.13 and 3.14 on Linux,
 and on Python 3.14 natively on Windows and macOS 15 ARM64.
@@ -34,24 +33,11 @@ and on Python 3.14 natively on Windows and macOS 15 ARM64.
 either — if you are unsure whether something is a vulnerability, treat it as
 one until it has been triaged.
 
-**While this repository is private, there is no reporting channel at all.**
-GitHub's private vulnerability reporting is unavailable to outside
-reporters; repository security advisories are unavailable on private
-repositories under this account, so there is no draft advisory to open even
-with repository access; GitHub has no user-to-user messaging; and the
-maintainer's GitHub no-reply address does not accept inbound mail. This
-project is therefore **not soliciting external security reports** while it
-is private. If you have found something, hold the report until the
-repository is public rather than routing it somewhere public in the
-meantime.
-
-Standing up a monitored contact address is a prerequisite for making this
-repository public. The flip does not happen before there is somewhere for a
-report to land.
-
-**Once this repository is public**, use GitHub private vulnerability
-reporting: Security tab → **Report a vulnerability**. That is the channel,
-and it is the point at which reports become welcome.
+**Use GitHub private vulnerability reporting: Security tab → Report a
+vulnerability.** That is the channel, and reports are welcome. It is the only
+one: GitHub has no user-to-user messaging, and the maintainer's GitHub
+no-reply address does not accept inbound mail, so a report sent anywhere else
+will not arrive.
 
 This project has one maintainer and no on-call rotation. There is no
 guaranteed response time and no bug bounty. What is offered instead: a
@@ -173,8 +159,8 @@ this project wants reported. Concretely:
 
 ## Coordinated disclosure
 
-Once the public private-vulnerability-reporting channel above is live, report
-there and give a fix a reasonable window before publishing. If a
+Report through the private-vulnerability-reporting channel above and give a
+fix a reasonable window before publishing. If a
 report is valid, the advisory will credit you by whatever name and link you
 ask for, or anonymously if you prefer. If a report is not valid, you will get
 the reasoning rather than silence.

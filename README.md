@@ -52,12 +52,10 @@ parsing rather than importing, so a lazy or guarded import is caught too. CI
 invokes the same `.github/scripts/check_stdlib.py` scanner through
 `run_gates.py` on every pull request and every push to `main`.
 
-The intended PyPI distribution name is `causal-continuity-engine`, the import
-package is `causal_continuity_engine`, and the executable is `cce-engine`. The
-distribution is not yet published; the coordinated name-claim step is tracked
-in [docs/PUBLIC-FLIP.md](docs/PUBLIC-FLIP.md). Those longer names are
-intentional: the shorter `cce` distribution, import namespace, and command are
-already used by an unrelated published project.
+The PyPI distribution name is `causal-continuity-engine`, the import package is
+`causal_continuity_engine`, and the executable is `cce-engine`. Those longer
+names are intentional: the shorter `cce` distribution, import namespace, and
+command are already used by an unrelated published project.
 
 ## Quickstart
 
@@ -641,9 +639,9 @@ change, and there is no deprecation policy yet.
 - Hosted CI requires the full suite on Python 3.11, 3.12, 3.13 and 3.14 on
   Linux and natively on Windows 3.14 and macOS 15 ARM64/Python 3.14; 10/10
   ContinuityBench scenarios pass with all 6 metrics at target
-- Repository-policy JSON records the stricter desired state, not current live
-  enforcement. The exact remote drift and apply/read-back procedure are in
-  [.github/ruleset.README.md](.github/ruleset.README.md).
+- Repository-policy JSON was applied and read back against the live rulesets.
+  Remote settings are mutable, so the apply/read-back procedure that re-checks
+  them is in [.github/ruleset.README.md](.github/ruleset.README.md).
 - The accepted ADRs in [docs/adr/ADR-INDEX.md](docs/adr/ADR-INDEX.md),
   including the per-round review notes
 - Capability claims that must mechanically resolve, generated into
@@ -677,9 +675,9 @@ condition.
   of every requirement identifier used by code, tests, ADRs, and coverage.
 - [docs/REQUIREMENTS_COVERAGE.md](docs/REQUIREMENTS_COVERAGE.md) — the
   per-requirement implementation status and supporting evidence.
-- [docs/PUBLIC-FLIP.md](docs/PUBLIC-FLIP.md) — what is deliberately switched off
-  while this repository is private, and the exact command that turns each one
-  on. Read it before changing the repository's visibility.
+- [docs/PUBLIC-FLIP.md](docs/PUBLIC-FLIP.md) — the register of every control
+  that could not be enabled while this repository was private, with the exact
+  command that turned each one on at the flip.
 - [docs/RELEASE.md](docs/RELEASE.md) — the reproducible, signed, immutable-ready
   release procedure and its continuity-bound attestation roadmap.
 - [docs/RESEARCH-ROADMAP.md](docs/RESEARCH-ROADMAP.md) — standards-backed
