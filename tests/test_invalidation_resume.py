@@ -203,3 +203,58 @@ class TestResume:
         pkt = composer.compose(tenant_id=TEN, project_id=PRJ)
         md = ResumeComposer.render_markdown(pkt)
         assert "# CCE Resume Packet" in md and "Next safe action" in md
+
+
+def test_token_budget_bounds_the_packet_rather_than_merely_triggering_a_trim():
+    """`token_budget` trimmed each section to a fixed cap and then stopped.
+
+    Once every trimmable section had been cut to its cap the loop exited,
+    however far over budget the packet still was, so a project large enough to
+    matter returned a byte-identical packet at every budget. Sections are now
+    reduced progressively, so a smaller budget produces a smaller packet until
+    only authority — which is deliberately never dropped — remains.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from causal_continuity_engine.engine import Engine
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        engine = Engine(work / "cce.db", tenant_id="ten_budget", workdir=work)
+        engine.create_project("demo", project_id="prj_budget",
+                              repository_id=1, repository="octo/demo")
+        try:
+            for number in range(1, 25):
+                engine.ingest_github(
+                    "prj_budget", "issues", f"d{number}", {
+                        "action": "opened",
+                        "repository": {"id": 1, "full_name": "octo/demo"},
+                        "issue": {
+                            "number": number, "title": f"issue {number}",
+                            "state": "open", "labels": [],
+                            "body": (
+                                f"The exporter{number} must stream rows rather"
+                                f" than buffering dataset {number}."),
+                            "author_association": "OWNER",
+                            "created_at": "2026-08-01T00:00:00Z",
+                            "updated_at": "2026-08-01T00:00:00Z"}})
+
+            # Both budgets are below the untrimmed size, so both trim. The
+            # old fixed-cap code cut each section to the same cap either way
+            # and returned byte-identical packets; a bound must not.
+            untrimmed = engine.resume_packet(
+                "prj_budget", token_budget=50_000, fmt="json")["token_estimate"]
+            small = engine.resume_packet(
+                "prj_budget", token_budget=200, fmt="json")
+            larger = engine.resume_packet(
+                "prj_budget", token_budget=untrimmed - 40, fmt="json")
+
+            assert small["token_estimate"] < larger["token_estimate"]
+            # Trimming must be attributed, not silent.
+            assert any(o["reason"] == "token_budget"
+                       for o in small["omissions"])
+            # Authority survives regardless: that is the point of the design.
+            assert small["authority"] == larger["authority"]
+        finally:
+            engine.close()
