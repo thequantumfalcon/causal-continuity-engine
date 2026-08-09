@@ -9,6 +9,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
+## 0.1.3 — 2026-08-09
+
+The deterministic extractor met real prose for the first time and did badly.
+Twenty-two defects were found by running it against actual repository history
+rather than fixtures, and every one is fixed here with a regression test that
+was confirmed to fail against the code it pins. `AD-002` treats this extractor
+as the degradation path rather than the primary one; a degradation path that
+mangles its input is worse than useless, because nothing downstream can tell
+the difference.
+
+### Fixed
+
+- **Statements were fabricated across masked regions.** The gap between a cue
+  word and its clause matched newlines, so it walked over a blanked code fence
+  and joined the text either side — recording "The exporter must stream rows to
+  the client" from a body where those words never appear together. A fabricated
+  statement is worse than a lost one: nothing downstream can tell.
+- **Sentences were truncated at the line wrap.** Every clause rule excluded
+  `\n`, so a sentence wrapped at eighty columns — which is how comment bodies
+  are written — was cut at the break. "must stream rows … instead of" survives
+  as a grammatical clause with its point removed. Identical text on one line
+  extracted in full, so the record depended on the author's editor.
+- **Clauses began and ended mid-word.** An unanchored character budget started
+  the statement wherever the count landed ("stale capsules" recorded as "le
+  capsules"), and the tail bound ended it the same way in 23 of 40 measured
+  cases.
+- **Dotted identifiers truncated or silently dropped statements.** A `.` was
+  always a sentence end, so `generate.py` and `v0.1.2` cut a clause short — and
+  because the forward patterns have a minimum length, "We assume numpy 1.26.4
+  is installed" extracted nothing at all while "We decided to pin pip 26.1.2"
+  recorded the false statement "pin pip 26".
+- **Text nobody wrote became authority.** Code fences, blockquotes, HTML
+  comments and four-space indented blocks were read as the author's own prose.
+  A requirement hidden inside `<!-- ... -->` is invisible in every rendered
+  view, so no reviewer could catch it; a blockquote is by definition someone
+  else's words, frequently quoted in order to disagree with them.
+- **A hidden checklist became actionable open work.** The checklist scan read
+  raw text while every other pattern read the mask, so `- [ ]` items inside a
+  comment or fence arrived as `open` task nodes in the resume packet, needing
+  no injection wording at all.
+- **An invisible character inverted a prohibition.** A zero-width space inside
+  "not" left the sentence identical to a reader while re-typing the constraint
+  as a requirement, so control state mandated what the sentence forbids. Word
+  joiners and soft hyphens behaved the same, and word processors insert soft
+  hyphens routinely. Matching now ignores them while the statement keeps them,
+  so the packet still shows that the text carried them.
+- **Non-ASCII statements collided.** The dedup key discarded every character
+  outside ASCII, so "must not exceed €500" and "must not exceed £500" shared a
+  key and one was dropped. In a script with no ASCII the key was empty, giving
+  every statement the same identity.
+- Markdown decoration was stored inside statements; `must never X` was filed as
+  both a constraint and a requirement; consecutive table rows merged into one
+  statement; and longer or CRLF code fences never found their closer, masking
+  the remainder of the body and discarding every statement after it.
+
+### Added
+
+- `examples/quickstart.py` — the whole arc end to end in a temporary directory:
+  a proof minted by actually running a pinned verifier, accepted for the task
+  it names, refused for one it does not, and checked by the independent
+  verifier, which reports UNVERIFIED without the key and VALID with it.
+- `examples/backfill_github.py` — builds a project from a repository's real
+  history through the REST API, with no webhook, App or public endpoint. This
+  is the instrument that found everything above.
+- A regression test for cross-project rejection in `Memory.promote`.
+
+### Changed
+
+- **Node identity changes for statements containing non-ASCII characters.**
+  `stable_node_id` is derived from the dedup key, so such a statement now
+  hashes to a different id than it did in 0.1.2. A project that re-ingests one
+  records a new node rather than updating the old; the previous node remains,
+  with its history intact. Pure-ASCII projects are unaffected.
+
 ## 0.1.2 — 2026-08-09
 
 A documentation and hygiene release. No engine, schema, proof, or HTTP
