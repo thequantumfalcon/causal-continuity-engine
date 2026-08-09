@@ -116,7 +116,8 @@ _PATTERNS: list[tuple[str, re.Pattern, float]] = [
         + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.9),
     ("decision", re.compile(
         r"\b(?:we\s+)?(?:decided|decision(?:\s*[:\-])?|chose|will\s+use|agreed)\s+"
-        r"(?:to|on|that)?" + _GAP + r"?(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
+        r"(?:(?:to|on|that)" + _GAP + r")?"
+        + r"(?P<s>" + _CLAUSE_TAIL + r"{4,300})", re.I), 0.8),
 ]
 
 _INJECTION_PATTERNS = re.compile(
