@@ -21,6 +21,7 @@ emitted as low-confidence 'proposed' items).
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from .core import canonical_json, strict_json_loads
@@ -272,9 +273,23 @@ class DeterministicExtractor:
 
 
 def normalize_statement(statement: str) -> str:
-    """Canonical key for deduplication (AD-004)."""
-    s = statement.lower()
-    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    """Canonical key for deduplication (AD-004).
+
+    Reducing to `[a-z0-9 ]` discarded every character outside ASCII, so two
+    statements collided whenever they differed only in what it threw away:
+    "must not exceed €500" and "must not exceed £500" produced one key, and
+    one of the two rules was dropped as a duplicate. In a non-Latin script the
+    loss was total — every statement reduced to the empty string, so a
+    Japanese or Russian project collapsed its whole control state onto a
+    single node per kind, this key being what seeds `stable_node_id`.
+
+    Compatibility forms are folded first so width and composition variants of
+    the same text still agree. Letters, digits, marks and symbols are kept;
+    only punctuation and separators become spaces.
+    """
+    s = unicodedata.normalize("NFKC", statement).casefold()
+    s = "".join(
+        c if unicodedata.category(c)[0] in "LNMS" else " " for c in s)
     s = re.sub(r"\b(the|a|an|is|are|was|were|be|been|that|this|it|its|of|to|in|on|for)\b",
                " ", s)
     return re.sub(r"\s+", " ", s).strip()
