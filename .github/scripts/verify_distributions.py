@@ -78,6 +78,7 @@ SDIST_SOURCE_TREES = {
     "benchmarks": {".py"},
     IMPORT_PACKAGE: {".py", "py.typed"},
     "docs": {".md", ".png", ".svg"},
+    "examples": {".py"},
     "schemas": {".json"},
     "tests": {".py"},
     "vectors": {".json", ".py"},
@@ -516,7 +517,9 @@ def _source_path_is_allowed(relative: str) -> bool:
     selectors = SDIST_SOURCE_TREES.get(parts[0])
     if selectors is None:
         return False
-    if parts[0] in {"schemas", "tests", "vectors", "verifiers"} and len(parts) != 2:
+    if parts[0] in {
+            "examples", "schemas", "tests", "vectors", "verifiers",
+    } and len(parts) != 2:
         return False
     if parts[0] == "benchmarks" and not (
             len(parts) == 2
