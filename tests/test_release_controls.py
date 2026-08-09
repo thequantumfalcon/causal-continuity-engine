@@ -838,3 +838,24 @@ def test_release_verifies_public_schemas_before_any_draft_or_publish():
     assert "compromised gh could mutate release state" in publish
     assert "exact two-entry" in publish
     assert "three-file asset set" in publish
+
+
+def test_checksum_rechecks_compare_the_manifest_in_filename_order():
+    """SHA256SUMS is filename-ordered; a digest-ordered recheck is a coin flip.
+
+    `build_distributions.py` writes the manifest from `sorted(hashes.items())`
+    and `verify_distributions.py` rebuilds it with `key=lambda item: item.name`,
+    so both define the order by filename. A shell recheck that sorts the whole
+    line orders by the leading digest instead, which agrees only when the two
+    digests happen to sort the same way their filenames do. v0.1.0 passed on
+    that coincidence and v0.1.1 did not.
+    """
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    rechecks = [
+        line.strip() for line in workflow.splitlines()
+        if 'sort' in line and '"$expected_manifest"' in line
+    ]
+    assert len(rechecks) == 2
+    for recheck in rechecks:
+        assert "LC_ALL=C sort -k2 >" in recheck
