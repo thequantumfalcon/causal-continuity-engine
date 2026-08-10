@@ -145,7 +145,13 @@ class _Session:
                 for item in open_items)
         if name == "continuity_check":
             report = engine.continuity_check(project_id)
-            return json.dumps(report, indent=2, sort_keys=True)
+            # The signed receipt is four fifths of this report and is
+            # cryptographic material for export, not something a client
+            # asking "is this project continuous?" can act on. It stays
+            # available through `cce-engine check --export-receipt`.
+            summary = {key: value for key, value in report.items()
+                       if key != "continuity_receipt"}
+            return json.dumps(summary, indent=2, sort_keys=True)
         raise KeyError(name)
 
     def close(self) -> None:
