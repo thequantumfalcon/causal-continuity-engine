@@ -61,10 +61,14 @@ command are already used by an unrelated published project.
 
 ## Use it from an editor
 
-`cce-engine mcp` speaks the Model Context Protocol over stdio, so any MCP client
-— Claude Code, Cursor, VS Code — can read a project's control state directly.
-Four read-only tools: `resume_packet`, `list_assumptions`, `list_invalidations`,
-`continuity_check`.
+`cce-engine mcp` speaks the Model Context Protocol over stdio, so an MCP client
+can read a project's control state directly. Four read-only tools:
+`resume_packet`, `list_assumptions`, `list_invalidations`, `continuity_check`.
+
+**Not in a published release yet.** The subcommand exists on `main` and is not
+in any version on PyPI, so install from source to use it. It has been driven
+end to end from a built wheel with the reference MCP SDK; other clients are
+expected to work over the same transport but have not been exercised here.
 
 ```json
 {
@@ -664,11 +668,14 @@ application level rather than by row-level security.
 
 ## Status
 
-Version 0.1.0, pre-1.0. The public API is **not yet declared** — anything may
-change, and there is no deprecation policy yet.
+Pre-1.0. The public API is **not yet declared** — anything may change, and
+there is no deprecation policy yet. The released version is whatever
+[PyPI](https://pypi.org/project/causal-continuity-engine/) serves; this file is
+that package's description, so it does not restate a version number it cannot
+keep in step.
 
 - Hosted CI requires the full suite on Python 3.11, 3.12, 3.13 and 3.14 on
-  Linux and natively on Windows 3.14 and macOS 15 ARM64/Python 3.14; 10/10
+  Linux and natively on Windows 3.14 and macOS 15 ARM64/Python 3.14; 11/11
   ContinuityBench scenarios pass with all 6 metrics at target
 - Repository-policy JSON was applied and read back against the live rulesets.
   Remote settings are mutable, so the apply/read-back procedure that re-checks

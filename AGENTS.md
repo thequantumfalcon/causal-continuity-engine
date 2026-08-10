@@ -70,7 +70,7 @@ engine itself; the suite needs the hash-locked development tools.
 | `just test` | `python -m pytest tests/ -q` | the complete regression and instrument-validation suite passes |
 | `just corpus` | `python vectors/generate.py --check` | the reference still reaches every committed verdict in the corpus |
 | `just caps` | `python -m causal_continuity_engine.capabilities --write`, then `git diff --exit-code -- docs/CAPABILITIES.md` | 23 claims resolve to real symbols, files and tests, *and* `docs/CAPABILITIES.md` is regenerated rather than stale or hand-edited |
-| `just bench` | `python -m benchmarks.continuitybench.run` | 10/10 scenarios pass, all 6 metrics at target |
+| `just bench` | `python -m benchmarks.continuitybench.run` | every scenario passes, all 6 metrics at target |
 
 `docs/CAPABILITIES.md` is generated. Never edit it by hand; edit the
 declarations in `causal_continuity_engine/capabilities.py` and regenerate. The audit used to only
