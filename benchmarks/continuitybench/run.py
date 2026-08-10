@@ -79,7 +79,20 @@ def run() -> dict:
         t0 = time.monotonic()
         for scenario in ALL_SCENARIOS:
             start = time.monotonic()
-            result = scenario()
+            try:
+                result = scenario()
+            except Exception as exc:  # noqa: BLE001 - reported as a failure
+                # A scenario that raises must not take the run with it. An
+                # aborted run emits no metrics at all, and no metrics reads
+                # the same as never having run — the confusion this project
+                # exists to prevent. Record the crash as a failed scenario.
+                result = {
+                    "name": getattr(scenario, "__name__", "unknown_scenario"),
+                    "checks": [(f"scenario raised "
+                                f"{type(exc).__name__}: {exc}", False)],
+                    "metrics": {},
+                    "crashed": True,
+                }
             result["seconds"] = round(time.monotonic() - start, 3)
             result["passed"] = all(ok for _, ok in result["checks"])
             results.append(result)
@@ -98,11 +111,20 @@ def run() -> dict:
             "false_completion_rate": collect("false_completion_rate"),
             "recovered_work_ratio": collect("recovered_work_ratio"),
         }
+        # A crashed scenario contributes no metrics, so every average above is
+        # taken over an incomplete set — and a scenario that would have scored
+        # badly improves the average by crashing. Report those as incomplete
+        # rather than as a pass the run cannot support. `continuity_success_
+        # rate` is exempt: a crash counts as a failure in its denominator, so
+        # it stays meaningful as a lower bound.
+        crashed = [r["name"] for r in results if r.get("crashed")]
         gates = {}
         for name, target in MVP_TARGETS.items():
             actual = metrics.get(name)
             if actual is None:
                 gates[name] = "no-data"
+            elif crashed and name != "continuity_success_rate":
+                gates[name] = "incomplete"
             elif name == "false_completion_rate":
                 gates[name] = "PASS" if actual <= target else "FAIL"
             else:
