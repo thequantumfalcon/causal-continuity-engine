@@ -117,6 +117,30 @@ def test_tools_answer_from_a_real_project(tmp_path):
     assert "CCE Resume Packet" in packet["content"][0]["text"]
 
 
+def test_continuity_check_answers_the_question_without_the_receipt(tmp_path):
+    """A status answer must not ship the signed receipt.
+
+    The receipt was four fifths of the payload — 8,244 of 10,602 characters on
+    a one-issue project — and it is cryptographic material for export, not
+    something a client asking whether the project is continuous can act on.
+    It remains available through `cce-engine check --export-receipt`.
+    """
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    (response,) = _drive(
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "continuity_check", "arguments": {}}}],
+        directory=str(tmp_path))
+    body = response["result"]["content"][0]["text"]
+    assert response["result"]["isError"] is False
+    report = json.loads(body)
+    assert "continuity_receipt" not in report
+    # The fields a caller actually decides on are still present.
+    assert "conclusion" in report and "open_invalidations" in report
+
+
 @pytest.mark.parametrize("module", ["causal_continuity_engine.mcp"])
 def test_the_server_adds_no_runtime_dependency(module):
     """Zero third-party imports is the property the hand-rolled server exists
