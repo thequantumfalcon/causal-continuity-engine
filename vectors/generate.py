@@ -291,10 +291,20 @@ def build() -> list[dict]:
     del t["verification_summary"]
     add("missing_required_field", t, "INVALID", ["E_SHAPE"])
 
+    # Every shape here is one a real producer emits by accident: a naive
+    # datetime, a space separator from a database column, lowercase
+    # designators from a hand-built string, and a leap second that no
+    # calendar library will parse.  Each must be refused on shape, before
+    # any digest or signature work, so a malformed instant can never be
+    # signed into the record and read back as a real moment.
     for name, created_at in (
         ("created_at_noncanonical_offset", "2026-08-04T04:05:06+00:00"),
         ("created_at_invalid_calendar_date",
          "2026-02-30T04:05:06.123456Z"),
+        ("created_at_missing_timezone", "2026-08-04T04:05:06.123456"),
+        ("created_at_space_separator", "2026-08-04 04:05:06.123456Z"),
+        ("created_at_lowercase_designators", "2026-08-04t04:05:06.123456z"),
+        ("created_at_leap_second", "2026-06-30T23:59:60.000000Z"),
     ):
         t = json.loads(json.dumps(good_hmac))
         t["created_at"] = created_at
@@ -352,6 +362,25 @@ def build() -> list[dict]:
     t["signature"] = hmac_signer.sign(t)
     add("unknown_action_intent_field", t, "INVALID", ["E_SHAPE"],
         hmac_key_hex=key_hex)
+
+    # An unknown field is refused wherever it appears, not only at the top
+    # level and in action_intent.  A reader that tolerated one inside a
+    # verification, an execution record, or the evidence context would accept an
+    # envelope carrying meaning it cannot see, which is how a future
+    # producer silently changes what a proof asserts.
+    for name, mutate in (
+        ("unknown_verification_field",
+         lambda e: e["verifications"][0].__setitem__("future_field", "x")),
+        ("unknown_execution_field",
+         lambda e: e["execution"][0].__setitem__("future_field", "x")),
+        ("unknown_evidence_context_field",
+         lambda e: e["evidence_context"].__setitem__("future_field", "x")),
+    ):
+        t = json.loads(json.dumps(good_hmac))
+        mutate(t)
+        _reseal(t)
+        t["signature"] = hmac_signer.sign(t)
+        add(name, t, "INVALID", ["E_SHAPE"], hmac_key_hex=key_hex)
 
     # Python preserves arbitrary-precision integers while JCS consumes the
     # binary64 I-JSON domain.  Rounding this value would sign a different
