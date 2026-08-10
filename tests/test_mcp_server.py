@@ -141,6 +141,35 @@ def test_continuity_check_answers_the_question_without_the_receipt(tmp_path):
     assert "conclusion" in report and "open_invalidations" in report
 
 
+def test_an_unknown_project_is_an_error_not_an_empty_answer(tmp_path):
+    """Absence of success is never success — including here.
+
+    A caller naming a project that does not exist received "No active
+    assumptions.", a confident negative that conflates *none* with *not
+    found*. An agent could reasonably conclude the project had no assumptions
+    when it had no project.
+    """
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    responses = _drive([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "list_assumptions",
+                    "arguments": {"project_id": "prj_not_a_real_project"}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "resume_packet",
+                    "arguments": {"project_id": "prj_not_a_real_project"}}},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "list_assumptions", "arguments": {}}},
+    ], directory=str(tmp_path))
+    unknown_a, unknown_b, real = (r["result"] for r in responses)
+    assert unknown_a["isError"] is True
+    assert unknown_b["isError"] is True
+    # The project that does exist still answers.
+    assert real["isError"] is False
+
+
 @pytest.mark.parametrize("module", ["causal_continuity_engine.mcp"])
 def test_the_server_adds_no_runtime_dependency(module):
     """Zero third-party imports is the property the hand-rolled server exists
