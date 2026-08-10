@@ -564,8 +564,16 @@ def test_benchmark_run_cleans_workdirs_when_a_scenario_raises(monkeypatch):
         raise RuntimeError("planted scenario failure")
 
     monkeypatch.setattr(runner, "ALL_SCENARIOS", [scenario])
-    with pytest.raises(RuntimeError, match="planted scenario failure"):
-        runner.run()
+    # The raise used to propagate out of run(), which cleaned up correctly but
+    # abandoned the run and emitted no metrics at all. It is now recorded as a
+    # failed scenario instead. Cleanup — the property this test is named for —
+    # is unchanged, and is what the assertions below still pin.
+    report = runner.run()
+
+    (result,) = report["scenarios"]
+    assert result["crashed"] is True
+    assert result["passed"] is False
+    assert "planted scenario failure" in result["checks"][0][0]
 
     assert cleaned == ["failed-workdir"]
     assert runner.scenarios_module._WORKDIRS == []
