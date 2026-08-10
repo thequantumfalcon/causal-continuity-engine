@@ -1620,8 +1620,14 @@ class Engine:
         text = block.get("text") or ""
         authority = block.get("authority", "untrusted_content")
         ref = block.get("ref", "")
-        result = self.extractor.extract(text, source_authority=authority,
-                                        scope={"source_ref": ref})
+        # A project may declare that prose never mandates; the extractor then
+        # records requirements and constraints as claims, exactly as it
+        # already does for an untrusted source.
+        result = self.extractor.extract(
+            text, source_authority=authority, scope={"source_ref": ref},
+            prose_may_mandate=bool(
+                self.policy.project_config(project_id).get(
+                    "prose_may_mandate", True)))
         # Identical statements from different sources converge on one node
         # (AD-004), so a node tracks EVERY source that states it. An edit to
         # one source may only retract that source's claim on the node.

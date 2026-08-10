@@ -147,7 +147,8 @@ class DeterministicExtractor:
     version = EXTRACTOR_VERSION
 
     def extract(self, text: str, *, source_authority: str,
-                scope: dict | None = None) -> ExtractionResult:
+                scope: dict | None = None,
+                prose_may_mandate: bool = True) -> ExtractionResult:
         if not isinstance(text, str):
             raise ValueError("extraction text must be a string")
         if (not isinstance(source_authority, str)
@@ -169,6 +170,12 @@ class DeterministicExtractor:
         if not text or not text.strip():
             return result
         untrusted = source_authority in _UNTRUSTED_SOURCES
+        # A project may decide that no free prose mandates anything, whatever
+        # its author's standing. Published measurements put rule-based
+        # requirements extraction around F1 0.14, so a project that wants its
+        # authority declared rather than inferred can say so and have every
+        # prose match recorded as a claim instead.
+        prose_demoted = not prose_may_mandate
         screened = source_authority in _INJECTION_SCREENED
 
         injection = _INJECTION_PATTERNS.search(text)
@@ -249,10 +256,14 @@ class DeterministicExtractor:
                     "extracted from a text block that attempted to override "
                     "policy; the whole block is treated as hostile")
             # AD-006: untrusted text may propose, never mandate.
-            if untrusted and kind in ("requirement", "constraint"):
+            if (untrusted or prose_demoted) and kind in (
+                    "requirement", "constraint"):
                 item.kind = "claim"
                 item.meta["demoted_from"] = kind
-                item.meta["demotion_reason"] = "untrusted source cannot mandate"
+                item.meta["demotion_reason"] = (
+                    "untrusted source cannot mandate" if untrusted
+                    else "project policy requires declared authority; prose "
+                         "may propose but never mandate")
             result.items.append(item)
 
         # Masking applies to EVERY extractor. Reading raw text here let a

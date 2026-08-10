@@ -284,3 +284,43 @@ class TestCaptureModeIntegration:
         import json as _json
         assert "ghp_" not in _json.dumps(ev["payload"])
         e.close()
+
+
+def test_a_project_can_declare_that_prose_never_mandates(tmp_path):
+    """End to end: the policy setting reaches the extractor.
+
+    Default is unchanged, so every existing project behaves exactly as before.
+    A project that opts in records prose requirements as claims instead —
+    reusing the demotion AD-006 already applies to untrusted sources, rather
+    than introducing a second notion of "not authority".
+    """
+    from causal_continuity_engine.engine import Engine
+
+    body = "The exporter must stream rows instead of buffering the result set."
+
+    def build(prose_may_mandate):
+        engine = Engine(tmp_path / f"cce-{prose_may_mandate}.db",
+                        tenant_id="ten_prose", workdir=tmp_path)
+        engine.create_project(
+            "demo", project_id=PRJ, repository_id=REPOSITORY_ID,
+            repository="octo/demo",
+            config={"prose_may_mandate": prose_may_mandate})
+        engine.ingest_github(PRJ, "issues", "d1", _issue(1, body))
+        return engine
+
+    default = build(True)
+    try:
+        assert len(default.graph.current(PRJ, "requirement")) == 1
+        assert default.graph.current(PRJ, "claim") == []
+    finally:
+        default.close()
+
+    strict = build(False)
+    try:
+        assert strict.graph.current(PRJ, "requirement") == []
+        claims = strict.graph.current(PRJ, "claim")
+        assert len(claims) == 1
+        # The statement survives; only its standing changes.
+        assert "stream rows" in claims[0]["data"]["statement"]
+    finally:
+        strict.close()
