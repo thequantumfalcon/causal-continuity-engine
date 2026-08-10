@@ -1,14 +1,21 @@
 # Going public — the deferred register
 
-This repository is **private**, owned by a personal account on the **Pro** plan. A large part
-of the GitHub security surface is public-repo-only or needs a paid organisation add-on, so it
-could not be enabled at setup time. Rather than leave those gaps implicit, every one of them is
+**This repository became public on 2026-08-08.** It is owned by a personal
+account on the **Pro** plan. The text below was written while it was still
+private and is kept in the past tense it was written in, because it is the
+record of what was deferred and why — rewriting it would destroy the evidence
+it exists to hold.
+
+While the repository was private, a large part of the GitHub security surface was
+public-repo-only or needed a paid organisation add-on, so it could not be enabled at setup
+time. Rather than leave those gaps implicit, every one of them is
 recorded here with what it is, why it is off, and the exact action that turns it on.
 
 This is an evidence-and-action register, not a claim that every desired
 setting is live. Completed items name the observation that supports them;
 pending items are commands to run or decisions to make. Items marked
-**BLOCKER** must be resolved *before* the repository is made public.
+**BLOCKER** were to be resolved *before* the repository was made public; read
+them now as a checklist of what should already be true.
 
 ---
 
