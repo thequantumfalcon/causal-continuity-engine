@@ -292,6 +292,80 @@ def conflicting_human_decisions():
     return {"name": "conflicting_human_decisions", "checks": checks, "metrics": {}}
 
 
+
+def stale_capsule_vs_newer_invalidation():
+    """RESEARCH-ROADMAP adversarial track: old source state must never erase
+    newer target control state.
+
+    A capsule is exported, and only afterwards does the target learn that one
+    of its assumptions was contradicted. Importing the older capsule must not
+    quietly drop that invalidation — the migration would otherwise hand the
+    resuming agent a world in which the contradiction never happened, and the
+    agent would keep building on the assumption exactly as if nothing had been
+    found.
+    """
+    e = _engine()
+    e.ingest_github(PRJ, "issues", "i1", _issue(
+        1, "We assume the upstream feed is ordered by timestamp.\n"
+           "The exporter must stream rows instead of buffering."))
+    assumption = next(
+        n for n in e.graph.current(PRJ, "assumption")
+        if "ordered by timestamp" in n["data"].get("statement", ""))
+    session = e.graph.put_node(entity_type="session", tenant_id=e.tenant_id,
+                               project_id=PRJ, status="ended",
+                               data={"model": "model-a", "runtime": "rt-a"})
+
+    # Export first: the capsule's observable state predates everything below.
+    capsule = e.capsules.export(
+        tenant_id=e.tenant_id, project_id=PRJ, session_id=session.id,
+        source_model="model-a", source_runtime="rt-a",
+        target_adapter="model-b", signer=e.signer)
+    source_open = set(capsule["observable_state"]["open_invalidations"])
+
+    # The target then discovers the assumption was wrong.
+    fired = e.invalidation.fire(
+        tenant_id=e.tenant_id, project_id=PRJ, target_node_id=assumption.id,
+        trigger_type="contradictory_evidence",
+        reason="the feed turned out to be unordered")
+    live_open = {item["node_id"] for item in
+                 e.invalidation.open_invalidations(PRJ)}
+
+    result = e.capsules.import_capsule(
+        capsule, signer=e.signer, target_model="model-b",
+        target_runtime="rt-b")
+    challenge = result["challenge"]
+    # The challenge surfaces invalidations as conflicts, not as a bare list.
+    carried = {c["node_id"] for c in challenge["conflicts"]
+               if c.get("kind") == "open_invalidation"}
+
+    # Negative control. Had the import taken the capsule's own observable
+    # state instead of unioning it with the target's, this is what the agent
+    # would have received: a set that cannot contain an invalidation fired
+    # after the export. The scenario only means anything if that substitute
+    # fails the very check the real path passes.
+    would_pass_if_broken = bool(live_open) and live_open.issubset(source_open)
+
+    checks = [
+        ("the newer target invalidation reaches the challenge",
+         bool(live_open) and live_open.issubset(carried)),
+        ("source state alone could not have carried it (negative control)",
+         not would_pass_if_broken),
+        ("the capsule was genuinely stale about it",
+         not live_open.issubset(source_open)),
+        ("the import does not pass while it is unresolved",
+         challenge["passed"] is False),
+        ("autonomy is capped until the blast radius is reviewed",
+         challenge["max_autonomy_until_resolved"] <= 1
+         and any(fired["node_id"] in q for q in challenge["questions"])),
+        ("the contradiction is still open, not resolved by migrating",
+         any(item["node_id"] == fired["node_id"]
+             for item in e.invalidation.open_invalidations(PRJ))),
+    ]
+    e.close()
+    return {"name": "stale_capsule_vs_newer_invalidation",
+            "checks": checks, "metrics": {}}
+
+
 def model_migration():
     """Portable state preserves objectives/constraints/decisions/evidence."""
     e = _engine()
@@ -537,6 +611,7 @@ ALL_SCENARIOS = [
     dependency_drift,
     conflicting_human_decisions,
     model_migration,
+    stale_capsule_vs_newer_invalidation,
     partial_tool_failure,
     misleading_success_claim,
     prompt_injection,
