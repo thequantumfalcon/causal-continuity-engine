@@ -112,6 +112,14 @@ DEFAULT_CONFIG = {
     # security frontier. Set None only to leave revision continuity explicitly
     # undecidable until a ref is configured or a legacy pinned ref exists.
     "tracked_ref": "refs/heads/main",
+    # Whether prose may mandate. AD-006 already refuses a mandate from an
+    # untrusted source; this extends the same refusal to every source when a
+    # project would rather its authority be declared than inferred. Published
+    # measurements put rule-based requirements extraction near F1 0.14, so a
+    # statement pulled out of an issue body is a proposal about intent, and a
+    # project may reasonably decline to let one bind anything. Default True
+    # preserves existing behaviour exactly; a project opts in.
+    "prose_may_mandate": True,
 }
 
 # Stable trust-state marker for a policy that demands proof but defines no
@@ -379,6 +387,10 @@ class PolicyEngine:
         guarded = merged["guarded_pr_enabled"]
         if not isinstance(guarded, bool):
             raise ValueError("guarded_pr_enabled must be a boolean")
+
+        prose_mandate = merged["prose_may_mandate"]
+        if not isinstance(prose_mandate, bool):
+            raise ValueError("prose_may_mandate must be a boolean")
 
         minimum = merged["min_evidence_grade"]
         if (minimum is not None
