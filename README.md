@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.thequantumfalcon/causal-continuity-engine -->
+
 # Causal Continuity Engine
 
 Continuity, causal invalidation, and proof for long-running coding agents.
@@ -56,6 +58,27 @@ The PyPI distribution name is `causal-continuity-engine`, the import package is
 `causal_continuity_engine`, and the executable is `cce-engine`. Those longer
 names are intentional: the shorter `cce` distribution, import namespace, and
 command are already used by an unrelated published project.
+
+## Use it from an editor
+
+`cce-engine mcp` speaks the Model Context Protocol over stdio, so any MCP client
+— Claude Code, Cursor, VS Code — can read a project's control state directly.
+Four read-only tools: `resume_packet`, `list_assumptions`, `list_invalidations`,
+`continuity_check`.
+
+```json
+{
+  "mcpServers": {
+    "cce": {"command": "cce-engine", "args": ["--dir", ".", "mcp"]}
+  }
+}
+```
+
+The server is read-only by design. An MCP client is an untrusted caller in this
+project's authority model, so nothing exposed here mutates state, mints a proof,
+or grants autonomy — a test fails if a future tool name suggests otherwise. It
+adds no dependencies: the transport is hand-rolled on `json` and `sys` rather
+than the official SDK, which would pull in sixteen packages.
 
 ## Quickstart
 

@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
+## 0.1.4 — 2026-08-10
+
+Adds the surface through which an editor can read a project, and fixes what
+using it revealed.
+
+### Added
+
+- **`cce-engine mcp` — a Model Context Protocol server over stdio.** Any MCP
+  client (Claude Code, Cursor, VS Code) can read a project's control state
+  through four read-only tools: `resume_packet`, `list_assumptions`,
+  `list_invalidations`, `continuity_check`.
+
+  It adds no dependencies. The transport is hand-rolled JSON-RPC 2.0 on `json`
+  and `sys`, because the official SDK pulls sixteen packages including
+  starlette, uvicorn and pyjwt, and that would end this package's
+  zero-runtime-dependency property to save a couple of hundred lines. A test
+  fails if importing the module ever pulls in anything outside the standard
+  library.
+
+  Read-only is a boundary, not an omission. An MCP client is an untrusted
+  caller in this project's authority model, so exposing verification,
+  completion or policy over this transport would let a caller mint authority
+  from outside the trust model — the failure AD-006 exists to prevent. A test
+  fails if a future tool name contains `verify`, `complete`, `policy`, `grant`,
+  `ingest`, `quarantine`, `promote` or `attest`.
+
+### Fixed
+
+- **`token_budget` bounded nothing.** It trimmed each trimmable section to a
+  fixed cap and then stopped, however far over budget the packet remained, so
+  a project with a few months of history returned a byte-identical packet at
+  every budget from 500 to 8000. Sections are now reduced progressively.
+  Authority is still never dropped — that invariant is the point of the design
+  — so a packet whose authority alone exceeds the budget is emitted over
+  budget, and `token_estimate` reports its real size.
+- **`continuity_check` shipped its signed receipt.** The answer to "is this
+  project continuous?" was 10,602 characters on a one-issue project, of which
+  8,244 was cryptographic material for export that no client can act on. Now
+  346 characters of the fields a caller decides on; the receipt remains
+  available through `cce-engine check --export-receipt`.
+- **An unknown project answered as an empty one.** Naming a project that does
+  not exist returned "No active assumptions." — a confident negative that
+  conflates *none* with *not found*. It is now an error, as it is everywhere
+  else in the engine.
+
 ## 0.1.3 — 2026-08-09
 
 The deterministic extractor met real prose for the first time and did badly.
