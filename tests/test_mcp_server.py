@@ -29,6 +29,48 @@ def test_handshake_reports_the_protocol_and_the_package_version():
         "name": mcp.SERVER_NAME, "version": __version__}
 
 
+@pytest.mark.parametrize("revision", mcp.SUPPORTED_PROTOCOL_VERSIONS)
+def test_the_handshake_answers_a_revision_it_speaks_with_that_revision(revision):
+    (response,) = _drive([{
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": revision}}])
+    assert response["result"]["protocolVersion"] == revision
+
+
+@pytest.mark.parametrize("revision", ["2026-07-28", "banana", "", None])
+def test_an_unspoken_revision_falls_back_instead_of_being_echoed(revision):
+    """Echoing the request would claim conformance to any string sent."""
+    (response,) = _drive([{
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": revision}}])
+    answered = response["result"]["protocolVersion"]
+    assert answered != revision
+    assert answered == mcp.PROTOCOL_VERSION
+
+
+def test_no_advertised_revision_is_invented():
+    """Regression: 0.1.4 advertised `2026-07-28`, which no client accepts.
+
+    That value was guessed, not read, and nothing here caught it — the old
+    handshake test compared the constant to itself. Only an external authority
+    settles whether a revision is real, so this checks against the reference
+    SDK's list when that SDK happens to be installed.
+
+    It skips in this project's own CI, which has no dependencies by design.
+    The check that does not skip is the manual client drive in docs/RELEASE.md;
+    a date heuristic was tried here first and rejected, because the revision
+    that actually shipped was in the past and sailed through it.
+    """
+    supported = pytest.importorskip(
+        "mcp.shared.version",
+        reason="reference MCP SDK not installed; RELEASE.md drives a real client",
+    ).SUPPORTED_PROTOCOL_VERSIONS
+    unknown = set(mcp.SUPPORTED_PROTOCOL_VERSIONS) - set(supported)
+    assert not unknown, (
+        f"advertised protocol revisions {sorted(unknown)} are unknown to the "
+        f"reference SDK, which accepts {sorted(supported)}")
+
+
 def test_a_notification_gets_no_response():
     """A request without an id is a notification; replying to one is a bug."""
     responses = _drive([

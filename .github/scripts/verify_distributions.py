@@ -101,6 +101,7 @@ WHEEL_BEHAVIOR_TESTS = (
     "tests/test_trust.py",
     "tests/test_cli.py",
     "tests/test_conformance.py",
+    "tests/test_mcp_server.py",
 )
 WHEEL_EVIDENCE_TREES = {
     "benchmarks": {".py"},

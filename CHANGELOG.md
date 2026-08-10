@@ -35,6 +35,18 @@ using it revealed.
   fails if a future tool name contains `verify`, `complete`, `policy`, `grant`,
   `ingest`, `quarantine`, `promote` or `attest`.
 
+  The handshake negotiates. A client asking for a protocol revision the server
+  speaks gets that revision back; anything else is answered with the newest one
+  it speaks, rather than echoed — echoing would claim conformance to whatever
+  string arrived.
+
+- **`prose_may_mandate`, a project-level policy flag.** Set it `false` and
+  requirements and constraints extracted from repository prose are recorded as
+  claims rather than authority, through the same demotion path AD-006 already
+  applies to untrusted sources. It defaults to `true`, leaving existing
+  behaviour unchanged. There is deliberately no way to promote a claim back to
+  authority yet; who may confirm, and how that is audited, is open in #33.
+
 ### Fixed
 
 - **`token_budget` bounded nothing.** It trimmed each trimmable section to a

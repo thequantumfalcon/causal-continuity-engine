@@ -25,7 +25,18 @@ import sys
 import traceback
 from pathlib import Path
 
-PROTOCOL_VERSION = "2026-07-28"
+# Protocol revisions this server answers, newest first. "Answers" is the whole
+# claim: the four methods it implements — initialize, tools/list, tools/call and
+# notifications — are shaped identically across these revisions, and each is
+# driven in tests/test_mcp_server.py. A revision is not listed until it is.
+#
+# A client asking for one of these gets it back unchanged; anything else is
+# answered with the newest, which is what a server is required to do when it
+# cannot speak the requested revision. Never echo the request blindly: that
+# would claim conformance to any string a client happens to send.
+SUPPORTED_PROTOCOL_VERSIONS = (
+    "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 SERVER_NAME = "causal-continuity-engine"
 
 # JSON-RPC 2.0 reserved codes.
@@ -177,8 +188,11 @@ def _handle(request: dict, session: _Session) -> dict | None:
     notification = request_id is None
 
     if method == "initialize":
+        requested = (request.get("params") or {}).get("protocolVersion")
         return {"jsonrpc": "2.0", "id": request_id, "result": {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": (
+                requested if requested in SUPPORTED_PROTOCOL_VERSIONS
+                else PROTOCOL_VERSION),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "version": _version()}}}
     if method == "tools/list":
