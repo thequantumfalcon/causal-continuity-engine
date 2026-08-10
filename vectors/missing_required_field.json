@@ -1,7 +1,7 @@
 {
   "context": {},
   "envelope": {
-    "action_id": "act_40b2ae1bef32792e85f6ab6f",
+    "action_id": "act_580663b2a5038e01d32f99be",
     "action_intent": {
       "requirement_ids": [],
       "statement": "the exporter is done",
@@ -11,17 +11,17 @@
       "agent": "generator"
     },
     "continuity_links": {
-      "proof_node_id": "act_da23447f4a9c2a04f13105ee",
+      "proof_node_id": "act_ae883b2b14ff0744957d0f91",
       "task_ids": [
-        "tsk_84f67c24102474dfe72635a3"
+        "tsk_eece038141441101234395f0"
       ]
     },
-    "created_at": "2026-08-04T05:22:11.038203Z",
+    "created_at": "2026-08-10T01:14:33.848027Z",
     "environment": {},
     "evidence_context": {
       "determinism": {
         "unit-tests": {
-          "checked_at": "2026-08-04T05:22:12.094277Z",
+          "checked_at": "2026-08-10T01:14:34.839230Z",
           "note": "",
           "results": [
             "passed",
@@ -52,7 +52,7 @@
         ],
         "error": null,
         "inconclusive": [],
-        "ran_at": "2026-08-04T05:22:11.223236Z",
+        "ran_at": "2026-08-10T01:14:34.007054Z",
         "undetected": []
       },
       "policy_pinned": [
@@ -62,23 +62,23 @@
     },
     "execution": [
       {
-        "command_digest": "sha256:f3d824a2e5621ef8460f0e3cae973bac3c94d77d16a01f44a2cbf5b4a88d8ba4",
+        "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
         "exit_code": 0,
         "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
-        "started_at": "2026-08-04T05:22:11.223235Z",
+        "started_at": "2026-08-10T01:14:33.851323Z",
         "tool": "verifier:unit-tests"
       }
     ],
     "inputs": [
       {
-        "digest": "sha256:ca8700155873f81b9b4dca7e3378182bfae43e9ca62b9b56d4150f61c52286f4",
-        "kind": "artifact",
-        "name": "artifact:deliverable.py"
+        "digest": "sha256:75c58642e8cc68781bfbe732603f7346b76db7bb19b0ac7e5cddcbd58941bd0d",
+        "kind": "continuity",
+        "name": "continuity:task_ids:tsk_eece038141441101234395f0"
       },
       {
-        "digest": "sha256:e997c565169d0dbfabe37d7bf4b47636f5b9e589c01d38183eb7f034ff7979f5",
-        "kind": "continuity",
-        "name": "continuity:task_ids:tsk_84f67c24102474dfe72635a3"
+        "digest": "sha256:c773bb8b335e654bcfde86abbfb483a947b5728d0b7fedafb422e1332d5a34ec",
+        "kind": "artifact",
+        "name": "artifact:deliverable.py"
       }
     ],
     "policy_decision": {
@@ -88,9 +88,9 @@
       ],
       "action_type": "run_verifier",
       "applicable_grant_ids": [
-        "grt_1a03249b7b1b81c7e90e950f"
+        "grt_2255d23f11c19f0b378d0e38"
       ],
-      "decided_at": "2026-08-04T05:22:11.041209Z",
+      "decided_at": "2026-08-10T01:14:33.850780Z",
       "decision": "allow",
       "effective_level": 2,
       "policy_config": {
@@ -111,20 +111,20 @@
       ]
     },
     "project_id": "prj_vectors",
-    "proof_digest": "sha256:37971df21500efbe4e742fbf95792941b61138def2205dcbfa3d44fa7d8c16a7",
-    "proof_id": "prf_3b803c1cef3299faefa5fba3",
+    "proof_digest": "sha256:f77ae739fe3040604589166f787d1bf886d03ebd14808d5c8e314c1b5413f87b",
+    "proof_id": "prf_5837c1a9ba7e1c2c8554b73e",
     "schema_version": "cce.proof.v1",
     "signature": {
       "algorithm": "hmac-sha256",
       "key_id": "vectors",
-      "value": "601d4dbaf61aaf68cf6d2c5fb2409e41861235032eafaed3c873774bcff21aeb"
+      "value": "99d6c72dc23ebec9ee63b9a36262dc62c53bdc36cdc0323c8c2d4c072c76b22f"
     },
     "status": "verified",
     "subject": [],
     "tenant_id": "ten_local",
     "verifications": [
       {
-        "command_digest": "sha256:f3d824a2e5621ef8460f0e3cae973bac3c94d77d16a01f44a2cbf5b4a88d8ba4",
+        "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
         "control": {
           "command_present": true,
           "details": "control failed as required",
@@ -132,9 +132,9 @@
           "status": "held"
         },
         "coverage": null,
-        "definition_digest": "sha256:4592ddd4fd78314133fd735a9f90932aff19a1fcb9fd8c49fa2d2529c020054a",
+        "definition_digest": "sha256:11fb07ac56dd4570966a08b5e81193be8ef3ea9bbd24e8acdc90784c820661de",
         "details": "exit 0",
-        "duration_seconds": 0.094,
+        "duration_seconds": 0.076,
         "evidence_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
         "exit_code": 0,
         "kind": "command",
@@ -144,7 +144,7 @@
         "pinned": true,
         "result": "passed",
         "source": "executed",
-        "started_at": "2026-08-04T05:22:11.041211Z",
+        "started_at": "2026-08-10T01:14:33.851323Z",
         "verifier": "unit-tests"
       }
     ]

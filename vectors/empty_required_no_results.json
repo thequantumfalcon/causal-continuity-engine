@@ -3,7 +3,7 @@
     "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
   },
   "envelope": {
-    "action_id": "act_40b2ae1bef32792e85f6ab6f",
+    "action_id": "act_580663b2a5038e01d32f99be",
     "action_intent": {
       "requirement_ids": [],
       "statement": "the exporter is done",
@@ -13,12 +13,12 @@
       "agent": "generator"
     },
     "continuity_links": {
-      "proof_node_id": "act_da23447f4a9c2a04f13105ee",
+      "proof_node_id": "act_ae883b2b14ff0744957d0f91",
       "task_ids": [
-        "tsk_84f67c24102474dfe72635a3"
+        "tsk_eece038141441101234395f0"
       ]
     },
-    "created_at": "2026-08-04T05:22:11.038203Z",
+    "created_at": "2026-08-10T01:14:33.848027Z",
     "environment": {},
     "evidence_context": {
       "determinism": {},
@@ -29,14 +29,14 @@
     "execution": [],
     "inputs": [
       {
-        "digest": "sha256:ca8700155873f81b9b4dca7e3378182bfae43e9ca62b9b56d4150f61c52286f4",
-        "kind": "artifact",
-        "name": "artifact:deliverable.py"
+        "digest": "sha256:75c58642e8cc68781bfbe732603f7346b76db7bb19b0ac7e5cddcbd58941bd0d",
+        "kind": "continuity",
+        "name": "continuity:task_ids:tsk_eece038141441101234395f0"
       },
       {
-        "digest": "sha256:e997c565169d0dbfabe37d7bf4b47636f5b9e589c01d38183eb7f034ff7979f5",
-        "kind": "continuity",
-        "name": "continuity:task_ids:tsk_84f67c24102474dfe72635a3"
+        "digest": "sha256:c773bb8b335e654bcfde86abbfb483a947b5728d0b7fedafb422e1332d5a34ec",
+        "kind": "artifact",
+        "name": "artifact:deliverable.py"
       }
     ],
     "policy_decision": {
@@ -46,9 +46,9 @@
       ],
       "action_type": "run_verifier",
       "applicable_grant_ids": [
-        "grt_1a03249b7b1b81c7e90e950f"
+        "grt_2255d23f11c19f0b378d0e38"
       ],
-      "decided_at": "2026-08-04T05:22:11.041209Z",
+      "decided_at": "2026-08-10T01:14:33.850780Z",
       "decision": "allow",
       "effective_level": 2,
       "policy_config": {
@@ -71,13 +71,13 @@
       ]
     },
     "project_id": "prj_vectors",
-    "proof_digest": "sha256:6a92bf38c09692606f3eca49db1805f2e7d8fd13cbad093880bbfc3f2296ffdd",
-    "proof_id": "prf_3b803c1cef3299faefa5fba3",
+    "proof_digest": "sha256:b448b8f3e96b8a58455db7fdeb88a4c19190c00d93ed2c5c162394a6f2d87556",
+    "proof_id": "prf_5837c1a9ba7e1c2c8554b73e",
     "schema_version": "cce.proof.v1",
     "signature": {
       "algorithm": "hmac-sha256",
       "key_id": "vectors",
-      "value": "fbc9a5ef7657c52577e48b60b447c54fb8d963e30572942421d0d4240a97433f"
+      "value": "d865005f095128025090bcb58129a0dafe9de123a7fe9735fb1d5913aeb6303b"
     },
     "status": "incomplete",
     "subject": [],

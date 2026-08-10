@@ -1,10 +1,9 @@
 {
   "context": {
-    "expect_task": "tsk_not_named_here",
     "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
   },
   "envelope": {
-    "action_id": "act_bf35cd867a6aac5c890184ab",
+    "action_id": "act_580663b2a5038e01d32f99be",
     "action_intent": {
       "requirement_ids": [],
       "statement": "the exporter is done",
@@ -14,14 +13,17 @@
       "agent": "generator"
     },
     "continuity_links": {
-      "proof_node_id": "act_88a33f14c3e96777b8a22e28"
+      "proof_node_id": "act_ae883b2b14ff0744957d0f91",
+      "task_ids": [
+        "tsk_eece038141441101234395f0"
+      ]
     },
-    "created_at": "2026-08-10T01:14:36.471215Z",
+    "created_at": "2026-08-10T01:14:33.848027Z",
     "environment": {},
     "evidence_context": {
       "determinism": {
         "unit-tests": {
-          "checked_at": "2026-08-10T01:14:37.449886Z",
+          "checked_at": "2026-08-10T01:14:34.839230Z",
           "note": "",
           "results": [
             "passed",
@@ -52,7 +54,7 @@
         ],
         "error": null,
         "inconclusive": [],
-        "ran_at": "2026-08-10T01:14:36.629523Z",
+        "ran_at": "2026-08-10T01:14:34.007054Z",
         "undetected": []
       },
       "policy_pinned": [
@@ -64,12 +66,18 @@
       {
         "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
         "exit_code": 0,
+        "future_field": "x",
         "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
-        "started_at": "2026-08-10T01:14:36.472850Z",
+        "started_at": "2026-08-10T01:14:33.851323Z",
         "tool": "verifier:unit-tests"
       }
     ],
     "inputs": [
+      {
+        "digest": "sha256:75c58642e8cc68781bfbe732603f7346b76db7bb19b0ac7e5cddcbd58941bd0d",
+        "kind": "continuity",
+        "name": "continuity:task_ids:tsk_eece038141441101234395f0"
+      },
       {
         "digest": "sha256:c773bb8b335e654bcfde86abbfb483a947b5728d0b7fedafb422e1332d5a34ec",
         "kind": "artifact",
@@ -83,9 +91,9 @@
       ],
       "action_type": "run_verifier",
       "applicable_grant_ids": [
-        "grt_e724b7a8a0c9956f48bcd77c"
+        "grt_2255d23f11c19f0b378d0e38"
       ],
-      "decided_at": "2026-08-10T01:14:36.472374Z",
+      "decided_at": "2026-08-10T01:14:33.850780Z",
       "decision": "allow",
       "effective_level": 2,
       "policy_config": {
@@ -106,13 +114,13 @@
       ]
     },
     "project_id": "prj_vectors",
-    "proof_digest": "sha256:36b6001b5f9539c9d6a30e78412411a60efe392b2a81da70f63f3ce25a621420",
-    "proof_id": "prf_73d525f1aeb7f2a08562da10",
+    "proof_digest": "sha256:b3f6e216121bf58d09d6714700729f37ae6cc088e24316f8b09ad28f15e5f40e",
+    "proof_id": "prf_5837c1a9ba7e1c2c8554b73e",
     "schema_version": "cce.proof.v1",
     "signature": {
       "algorithm": "hmac-sha256",
       "key_id": "vectors",
-      "value": "69c2420a1b6acff66239834efddf4d243371dd60c72d9e25135e45a94b3dd274"
+      "value": "1a9d06aa865583e8a3184680fa317dc367e6043684d52f61953413a4b1032695"
     },
     "status": "verified",
     "subject": [],
@@ -142,7 +150,7 @@
         "coverage": null,
         "definition_digest": "sha256:11fb07ac56dd4570966a08b5e81193be8ef3ea9bbd24e8acdc90784c820661de",
         "details": "exit 0",
-        "duration_seconds": 0.077,
+        "duration_seconds": 0.076,
         "evidence_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
         "exit_code": 0,
         "kind": "command",
@@ -152,14 +160,14 @@
         "pinned": true,
         "result": "passed",
         "source": "executed",
-        "started_at": "2026-08-10T01:14:36.472850Z",
+        "started_at": "2026-08-10T01:14:33.851323Z",
         "verifier": "unit-tests"
       }
     ]
   },
   "expected_errors": [
-    "E_UNBOUND"
+    "E_SHAPE"
   ],
   "expected_verdict": "INVALID",
-  "name": "unbound_task"
+  "name": "unknown_execution_field"
 }

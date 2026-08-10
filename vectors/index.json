@@ -157,6 +157,34 @@
       "E_SHAPE"
     ],
     "expected_verdict": "INVALID",
+    "name": "created_at_missing_timezone"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "created_at_space_separator"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "created_at_lowercase_designators"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "created_at_leap_second"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
     "name": "unknown_schema_version"
   },
   {
@@ -221,6 +249,27 @@
     ],
     "expected_verdict": "INVALID",
     "name": "unknown_action_intent_field"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_verification_field"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_execution_field"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "unknown_evidence_context_field"
   },
   {
     "expected_errors": [
