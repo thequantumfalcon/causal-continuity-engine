@@ -1139,6 +1139,14 @@ def cmd_policy(args):
     engine.close()
 
 
+def cmd_mcp(args):
+    # Nothing may reach stdout but JSON-RPC responses, so this command prints
+    # no banner and emits diagnostics on stderr.
+    from .mcp import serve as serve_mcp
+
+    raise SystemExit(serve_mcp("." if args.dir is None else args.dir))
+
+
 def cmd_serve(args):
     from .api import serve
     engine, meta = _engine(args)
@@ -1285,6 +1293,10 @@ def main(argv=None):
     s = sub.add_parser("serve", help="serve the HTTP API")
     s.add_argument("--port", type=_tcp_port, default=8199)
     s.set_defaults(fn=cmd_serve)
+
+    s = sub.add_parser(
+        "mcp", help="serve the read-only Model Context Protocol tools on stdio")
+    s.set_defaults(fn=cmd_mcp)
 
     args = p.parse_args(argv)
     if (args.cmd == "init" and args.github_installation_id is not None
