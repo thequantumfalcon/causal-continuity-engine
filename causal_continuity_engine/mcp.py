@@ -116,9 +116,16 @@ class _Session:
         return self._engine, self._meta
 
     def project(self, arguments: dict) -> str:
-        _, meta = self._open()
+        engine, meta = self._open()
         requested = arguments.get("project_id")
-        return requested if requested else meta["project_id"]
+        project_id = requested if requested else meta["project_id"]
+        # An unknown project must not answer as an empty one. Returning "no
+        # active assumptions" for a project that does not exist reports
+        # absence as a finding, which is the confusion this project exists to
+        # prevent. `_require_project` also refuses to say whether the id
+        # exists in another tenant.
+        engine._require_project(project_id)
+        return project_id
 
     def call(self, name: str, arguments: dict) -> str:
         engine, _ = self._open()
