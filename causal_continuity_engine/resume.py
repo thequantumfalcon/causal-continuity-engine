@@ -55,6 +55,21 @@ TRIMMABLE = ["recent_context", "environment_detail", "verified_progress_detail",
 
 
 class ResumeComposer:
+    # The Markdown projection is an agent-facing view, so every packet field
+    # is classified mechanically as rendered decision state or disclosed
+    # transport/cryptographic metadata. Adding a schema field without choosing
+    # one of those treatments is a regression, not an implicit omission.
+    MARKDOWN_RENDERED_TOP_LEVEL = frozenset({
+        "target", "mission", "authority", "accepted_decisions",
+        "verified_progress", "invalidations", "assumptions", "open_work",
+        "environment", "trust", "continuity_lineage", "evidence_index",
+        "evidence_coverage", "omissions", "recent_context", "token_estimate",
+    })
+    MARKDOWN_DECLARED_METADATA = frozenset({
+        "schema_version", "packet_id", "generated_at", "project_state_at",
+        "project_state_basis", "packet_digest", "signature",
+    })
+
     def __init__(
             self, store, graph, memory, policy=None, *,
             tenant_id: str | None = None):
@@ -735,6 +750,25 @@ class ResumeComposer:
 
     @staticmethod
     def render_markdown(packet: dict) -> str:
+        def value(value) -> str:
+            if value is None:
+                return "none"
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, ensure_ascii=False, sort_keys=True)
+            return str(value)
+
+        def summaries(lines: list[str], items: list[dict], *, empty: str) -> None:
+            if not items:
+                lines.append(f"- {empty}")
+                return
+            for item in items:
+                label = item.get("summary", "")
+                node_id = item.get("node_id")
+                suffix = f" ({node_id})" if node_id else ""
+                status = item.get("status")
+                prefix = f"[{status}] " if status is not None else ""
+                lines.append(f"- {prefix}{label}{suffix}")
+
         lines = [
             "# CCE Resume Packet",
             f"Packet `{packet['packet_id']}` | generated {packet['generated_at']}"
@@ -743,16 +777,47 @@ class ResumeComposer:
             "## Mission",
             f"**Project:** {packet['mission']['project']}",
             f"**Objective:** {packet['mission']['objective']}",
+            f"**Target:** {value(packet.get('target'))}",
+            "",
+            "## Mission control state",
+            "### Pinned",
+        ]
+        summaries(
+            lines, packet["mission"].get("pinned_control_state") or [],
+            empty="none pinned")
+        lines.append("### Retired")
+        summaries(
+            lines, packet["mission"].get("retired_control_state") or [],
+            empty="none retired")
+        lines += [
             "",
             "## Authority",
         ]
-        for c in packet["authority"]["active_constraints"]:
-            lines.append(f"- [constraint] {c['summary']} ({c.get('criticality')})")
-        for r in packet["authority"]["active_requirements"]:
-            lines.append(f"- [requirement] {r['summary']}")
+        precedence = " > ".join(packet["authority"].get(
+            "instruction_precedence") or [])
+        lines.append(f"- instruction precedence: {precedence or 'none declared'}")
+        lines.append("### Active constraints")
+        constraints = packet["authority"]["active_constraints"]
+        if constraints:
+            for constraint in constraints:
+                lines.append(
+                    f"- {constraint['summary']} ({constraint.get('criticality')})")
+        else:
+            lines.append("- none")
+        lines.append("### Active requirements")
+        requirements = packet["authority"]["active_requirements"]
+        if requirements:
+            for requirement in requirements:
+                lines.append(f"- {requirement['summary']}")
+        else:
+            lines.append("- none")
         lines += ["", "## Accepted decisions"]
-        for d in packet["accepted_decisions"]:
-            lines.append(f"- {d['summary']} ({d['node_id']})")
+        decisions = packet["accepted_decisions"]
+        if decisions:
+            for decision in decisions:
+                lines.append(f"- {decision['summary']} ({decision['node_id']})")
+        else:
+            lines.append("- none")
         lines += ["", "## Invalidated state"]
         if packet["invalidations"]:
             for inv in packet["invalidations"]:
@@ -761,14 +826,19 @@ class ResumeComposer:
                     f" -> {inv['recommended_action']}")
         else:
             lines.append("- none open")
+        lines += ["", "## Assumptions", "### Active"]
+        summaries(lines, packet["assumptions"].get("active") or [], empty="none")
+        lines.append("### Uncertain")
+        summaries(lines, packet["assumptions"].get("uncertain") or [], empty="none")
         lines += ["", "## Verified progress"]
-        for v in packet["verified_progress"]:
-            lines.append(f"- {v['summary']} ({v['node_id']})")
+        summaries(lines, packet["verified_progress"], empty="none")
         lines += ["", "## Open work"]
-        for t in packet["open_work"]["tasks"]:
-            lines.append(f"- [{t.get('status')}] {t['summary']}")
+        summaries(lines, packet["open_work"]["tasks"], empty="none visible")
+        lines.append("### Blockers")
+        summaries(lines, packet["open_work"]["blockers"], empty="none")
         nsa = packet["open_work"]["next_safe_action"]
         lines.append(f"\n**Next safe action:** {nsa['summary']}")
+        lines += ["", "## Environment", f"- {value(packet['environment'])}"]
         lines += ["", "## Trust"]
         trust = packet["trust"]
         lines.append(f"- autonomy level: {trust.get('autonomy_level')}")
@@ -776,11 +846,52 @@ class ResumeComposer:
         lines.append(f"- required verifiers: {required}")
         gaps = trust.get("gaps") or []
         lines.append(f"- verification gaps: {', '.join(gaps) or 'none'}")
+        lines.append("### Completed checks")
+        summaries(lines, trust.get("completed_checks") or [], empty="none")
+        lines.append("### Failed or stale checks")
+        summaries(lines, trust.get("failed_or_stale_checks") or [], empty="none")
+        lines += ["", "## Evidence index"]
+        if packet["evidence_index"]:
+            for evidence in packet["evidence_index"]:
+                identifiers = ", ".join(evidence.get("evidence_ids") or [])
+                lines.append(f"- {evidence['claim_id']}: {identifiers or 'none'}")
+        else:
+            lines.append("- none")
+        lines += ["", "## Recent context"]
+        summaries(lines, packet["recent_context"], empty="none")
+        lineage = packet["continuity_lineage"]
+        lines += [
+            "",
+            "## Continuity lineage",
+            f"- source session: {value(lineage.get('source_session'))}",
+            f"- checkpoints: {value(lineage.get('checkpoints'))}",
+            f"- packet generation time: {value(lineage.get('packet_generation_time'))}",
+        ]
         if packet["omissions"]:
             lines += ["", "## Omissions"]
-            for o in packet["omissions"]:
-                lines.append(f"- {o['section']}: {o['count']} item(s) dropped ({o['reason']})")
-        lines.append("")
-        lines.append(f"Evidence coverage: {packet['evidence_coverage']:.0%}"
-                     f" | ~{packet.get('token_estimate', '?')} tokens")
+            for omission in packet["omissions"]:
+                detail = (
+                    f"- {omission['section']}: {omission['count']} item(s) "
+                    f"dropped ({omission['reason']})")
+                if omission.get("note"):
+                    detail += f" — {omission['note']}"
+                lines.append(detail)
+                for node in omission.get("nodes") or []:
+                    lines.append(
+                        f"  - withheld {node.get('entity_type', 'node')}: "
+                        f"{node.get('node_id', 'unknown')}")
+        else:
+            lines += ["", "## Omissions", "- none"]
+        lines += [
+            "",
+            "## Transport and cryptographic metadata",
+            "- Full canonical values are retained in the JSON packet; the human view "
+            "does not reproduce signatures, digests, or the complete state-basis object.",
+            f"- schema: {packet.get('schema_version')}",
+            f"- packet digest present: {bool(packet.get('packet_digest'))}",
+            f"- signature present: {bool(packet.get('signature'))}",
+            "",
+            f"Evidence coverage: {packet['evidence_coverage']:.0%}"
+            f" | ~{packet.get('token_estimate', '?')} tokens",
+        ]
         return "\n".join(lines)

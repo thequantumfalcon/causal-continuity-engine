@@ -195,32 +195,81 @@ Packet `rsp_...` | generated ... | state at event:evt_...
 ## Mission
 **Project:** octo/demo
 **Objective:** No explicit mission pinned; see open work.
+**Target:** {}
+
+## Mission control state
+### Pinned
+- none pinned
+### Retired
+- none retired
 
 ## Authority
-- [constraint] The exporter must not hold the whole result set in memory (high)
-- [requirement] Exporter must stream rows instead of buffering
+- instruction precedence: tenant_policy > human_decision > repository_authoritative > agent_inference > untrusted_content
+### Active constraints
+- The exporter must not hold the whole result set in memory (high)
+### Active requirements
+- Exporter must stream rows instead of buffering
 
 ## Accepted decisions
+- none
 
 ## Invalidated state
 - none open
 
+## Assumptions
+### Active
+- [active] the upstream feed is ordered by timestamp (asm_...)
+### Uncertain
+- none
+
 ## Verified progress
+- none
 
 ## Open work
+- none visible
+### Blockers
+- none
 
 **Next safe action:** No open tasks; verify project state and await instruction.
+
+## Environment
+- {"note": "no environment fingerprint recorded"}
 
 ## Trust
 - autonomy level: 0
 - required verifiers: none
 - verification gaps: policy:proof-required-without-required-verifiers
+### Completed checks
+- none
+### Failed or stale checks
+- none
 
-Evidence coverage: 100% | ~716 tokens
+## Evidence index
+- asm_...: evt_...
+
+## Recent context
+- none
+
+## Continuity lineage
+- source session: none
+- checkpoints: []
+- packet generation time: ...
+
+## Omissions
+- none
+
+## Transport and cryptographic metadata
+- Full canonical values are retained in the JSON packet; the human view does not reproduce signatures, digests, or the complete state-basis object.
+- schema: cce.resume.v1
+- packet digest present: True
+- signature present: True
+
+Evidence coverage: 100% | ~... tokens
 ```
 
-That is the whole packet, not an excerpt: every section heading renders
-whether or not it has content, so the empty ones above are literal.
+That is the whole human-view shape, with generated identifiers and timestamps
+abbreviated. Every schema field is either rendered or named as metadata kept
+in canonical JSON; empty decision sections are literal rather than silent.
 
 The named verification gap is expected on a fresh project: proof is required
 by default, but CCE cannot safely invent a project-specific verifier
