@@ -12,7 +12,7 @@
 - [ ] `just test` passes.
 - [ ] `just lint` passes.
 - [ ] `just deps` passes — `causal_continuity_engine/` still imports nothing outside the standard library.
-- [ ] `just bench` passes — all ten ContinuityBench scenarios, every metric at target.
+- [ ] `just bench` passes — all eleven ContinuityBench scenarios, every metric at target.
 - [ ] `just corpus` passes — the reference still agrees with the committed vectors in `vectors/`.
 - [ ] `just caps` passes — every capability claim still resolves to real symbols, files, and tests. If the claims changed, `docs/CAPABILITIES.md` was regenerated with `python -m causal_continuity_engine.capabilities --write` rather than hand-edited.
 - [ ] `just build` passes if packaging, generated assets, or release machinery changed — both builds match and the clean-installed wheel audits successfully.

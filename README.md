@@ -644,7 +644,7 @@ a guard on commands that delegate to a program named in their arguments. But a
 test must import the code under test, so the subject can rewrite the runner's
 report. That is what value-oracle checks and mutation probes exist for.
 
-**ContinuityBench is self-scored on curated deterministic fixtures.** All ten
+**ContinuityBench is self-scored on curated deterministic fixtures.** All eleven
 scenarios pass and all six metrics are at target, which demonstrates mechanism
 correctness. It is not evidence about real repositories, and it is not a
 comparison against anything.

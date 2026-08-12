@@ -135,7 +135,7 @@ wheel. The `ci` job fans all those paths into one context.
 | `just test` | `python -m pytest tests/ -q` | The complete regression suite and planted instrument-validation cases pass. |
 | `just corpus` | `python vectors/generate.py --check` | The reference implementation still reaches every committed verdict. Cross-implementation agreement is established by `just test`, not here. |
 | `just caps` | `python -m causal_continuity_engine.capabilities --write` then `git diff --exit-code -- docs/CAPABILITIES.md` | Every capability claim resolves to real symbols, files, and tests, and the committed `docs/CAPABILITIES.md` is identical to what the audit generates. |
-| `just bench` | `python -m benchmarks.continuitybench.run` | All ten ContinuityBench scenarios still pass and all six metrics are still at their gates. |
+| `just bench` | `python -m benchmarks.continuitybench.run` | All eleven ContinuityBench scenarios still pass and all six metrics are still at their gates. |
 | `just build` | the scripts under `.github/scripts/` | Each pass first binds physical source bytes without Git filters to the exact `HEAD`/index blobs, stages only those bytes in an empty disposable source directory, validates a canonical closed-manifest sdist before materializing it, and builds the wheel only from that exact normalized payload; two passes are byte-identical under the locked backend, backend execution leaves source unchanged, the checksum manifest is exact, shipped bytes equal the source tree, the audit surface is present, and an isolated installed wheel passes dependency-free import/CLI probes before exact locked tools run capability and behavioral checks. |
 
 Attribution is not one of these, and it is not a lint rule. It is enforced by

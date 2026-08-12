@@ -53,7 +53,7 @@ lint:
 fmt-check:
     python -m ruff format --check .
 
-# Run ContinuityBench: 10 scenarios, 6 metrics, each against its MVP target.
+# Run ContinuityBench: 11 scenarios, 6 metrics, each against its MVP target.
 bench:
     python -W error benchmarks/continuitybench/run.py
 
