@@ -87,6 +87,16 @@ def test_lock_inputs_match_declared_direct_build_and_development_tools():
         if line.strip() and not line.lstrip().startswith("#")
     }
     assert inputs == declared
+    locked = {
+        block.splitlines()[0].split("==", 1)[0].strip().lower():
+        block.splitlines()[0].split("==", 1)[1].split(None, 1)[0]
+        for block in _requirement_blocks(
+            (ROOT / "requirements-dev.lock").read_text(encoding="utf-8"))
+    }
+    for requirement in inputs:
+        name, version = requirement.split("==", 1)
+        assert locked.get(name.lower()) == version, (
+            f"declared {requirement}, locked {locked.get(name.lower())!r}")
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     assert "include requirements-dev.in requirements-dev.lock" in manifest
 
