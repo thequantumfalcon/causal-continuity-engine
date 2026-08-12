@@ -182,7 +182,7 @@ publication.
 
 The Python interpreter, `venv`, and the interpreter-bundled initial
 `ensurepip`/pip are bootstrap trust. That initial pip is used once to install
-the hash-locked closure, including `pip==26.1.2` itself; the bootstrap then
+the hash-locked closure, including `pip==26.2` itself; the bootstrap then
 requires every installed distribution and pip's import origin to resolve from
 the new environment at the exact locked version. A compromised initial pip
 could bypass those checks, so releases must start from the reviewed hosted

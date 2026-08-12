@@ -54,13 +54,14 @@ do. `just setup` installs every direct and transitive tool from
 source distributions, then installs `causal-continuity-engine` editable without dependency
 resolution or an isolated build environment. The reviewed direct inputs are
 `pytest` 9.1.1, `ruff` 0.16.1, `build` 1.5.0, `jsonschema` 4.26.0,
-`setuptools` 83.0.0, and `pip` 26.1.2. None is imported by the engine; jsonschema validates
+`setuptools` 83.0.0, and `pip` 26.2. None is imported by the engine; jsonschema validates
 emitted receipt instances only in the test/release gate.
 
-The pins were revalidated on 2026-08-04. Setuptools 83.0.0 and pip 26.1.2
-are the first patched releases for
+The pins were revalidated on 2026-08-11. Setuptools 83.0.0 is the first patched
+release for
 [GHSA-h35f-9h28-mq5c](https://github.com/advisories/GHSA-h35f-9h28-mq5c)
-and [GHSA-wf93-45jw-7689](https://github.com/advisories/GHSA-wf93-45jw-7689);
+and pip 26.2 is later than the first patched release for
+[GHSA-wf93-45jw-7689](https://github.com/advisories/GHSA-wf93-45jw-7689);
 pytest 9.1.1 is newer than the 9.0.3 fix for
 [GHSA-6w46-j5rx-g56g](https://github.com/advisories/GHSA-6w46-j5rx-g56g),
 and the lock carries Pygments 2.20.0, the fix for
