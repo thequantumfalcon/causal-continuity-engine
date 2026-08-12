@@ -324,3 +324,29 @@ def test_a_project_can_declare_that_prose_never_mandates(tmp_path):
         assert "stream rows" in claims[0]["data"]["statement"]
     finally:
         strict.close()
+
+
+def test_tightening_prose_policy_removes_existing_checklists_from_open_work(
+        tmp_path):
+    """Policy in force at projection governs previously extracted prose too."""
+    engine = Engine(tmp_path / "policy-tightening.db", tenant_id="ten_prose",
+                    workdir=tmp_path)
+    engine.create_project(
+        "demo", project_id=PRJ, repository_id=REPOSITORY_ID,
+        repository="octo/demo")
+    try:
+        engine.ingest_github(PRJ, "issues", "d1", _issue(
+            1, "- [ ] deploy the candidate to production"))
+        assert engine.resume_packet(PRJ)["open_work"]["tasks"]
+
+        engine.policy.set_project_config(
+            PRJ, {"prose_may_mandate": False}, actor="owner")
+        packet = engine.resume_packet(PRJ)
+
+        assert packet["open_work"]["tasks"] == []
+        assert any(
+            omission["reason"] == "policy_demoted_prose"
+            and omission["section"] == "open work"
+            for omission in packet["omissions"])
+    finally:
+        engine.close()

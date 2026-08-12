@@ -119,22 +119,45 @@ class ResumeComposer:
                 ) from None
         omissions: list[dict] = []
         scope_query = " ".join(str(v) for v in target.values())
+        policy_config = (
+            self.policy.project_config(project_id)
+            if self.policy is not None else {})
+        prose_may_mandate = policy_config.get("prose_may_mandate", True)
 
-        l0_nodes = self.memory.l0(project_id, tenant_id=tenant_id)
+        def may_mandate(node: dict) -> bool:
+            # Extraction provenance distinguishes prose-derived control from
+            # tasks and requirements created through an explicit API. Apply
+            # the policy in force at projection so tightening it also closes
+            # already-stored prose, while the graph retains its history.
+            if not node.get("extractor"):
+                return True
+            if node.get("authority") in (
+                    "untrusted_content", "agent_inference"):
+                return False
+            return bool(
+                prose_may_mandate
+                or node.get("entity_type") not in (
+                    "requirement", "constraint", "decision", "task"))
+
+        l0_candidates = self.memory.l0(project_id, tenant_id=tenant_id)
+        l0_nodes = [node for node in l0_candidates if may_mandate(node)]
+        current_constraints = [n for n in self.graph.current(
+            project_id, "constraint", tenant_id=tenant_id)
+            if n["status"] not in ("invalidated", "superseded")]
+        current_requirements = [n for n in self.graph.current(
+            project_id, "requirement", tenant_id=tenant_id)
+            if n["status"] not in ("invalidated", "superseded")]
         constraints = self._section(
-            [n for n in self.graph.current(
-                project_id, "constraint", tenant_id=tenant_id)
-             if n["status"] not in ("invalidated", "superseded")],
+            [n for n in current_constraints if may_mandate(n)],
             kind="constraint")
         requirements = self._section(
-            [n for n in self.graph.current(
-                project_id, "requirement", tenant_id=tenant_id)
-             if n["status"] not in ("invalidated", "superseded")],
+            [n for n in current_requirements if may_mandate(n)],
             kind="requirement")
+        current_decisions = [n for n in self.graph.current(
+            project_id, "decision", tenant_id=tenant_id)
+            if n["status"] in ("accepted", "active", None)]
         decisions = self._section(
-            [n for n in self.graph.current(
-                project_id, "decision", tenant_id=tenant_id)
-             if n["status"] in ("accepted", "active", None)],
+            [n for n in current_decisions if may_mandate(n)],
             kind="decision")
         assumptions_active = self.graph.current(
             project_id, "assumption", status=["active", "supported"],
@@ -150,8 +173,40 @@ class ResumeComposer:
             project_id, tenant_id=tenant_id)
                     if n["entity_type"] in ("task", "action", "artifact")
                     and n["status"] == "verified"]
-        open_tasks = [t for t in tasks if t["status"] in
-                      ("open", "in_progress", "blocked", None)]
+        candidate_tasks = [t for t in tasks if t["status"] in
+                           ("open", "in_progress", "blocked", None)]
+        open_tasks = [t for t in candidate_tasks if may_mandate(t)]
+        demoted_authority = (
+            len(current_constraints) - len(constraints["nodes"])
+            + len(current_requirements) - len(requirements["nodes"])
+        )
+        demoted_decisions = len(current_decisions) - len(decisions["nodes"])
+        demoted_l0 = len(l0_candidates) - len(l0_nodes)
+        demoted_tasks = len(candidate_tasks) - len(open_tasks)
+        if demoted_authority:
+            omissions.append({
+                "reason": "policy_demoted_prose", "section": "authority",
+                "count": demoted_authority,
+                "note": "prose-derived control is retained as history but is "
+                        "not authority under the current project policy"})
+        if demoted_decisions:
+            omissions.append({
+                "reason": "policy_demoted_prose",
+                "section": "accepted decisions", "count": demoted_decisions,
+                "note": "prose-derived decisions are proposals under the "
+                        "current authority boundary"})
+        if demoted_l0:
+            omissions.append({
+                "reason": "policy_demoted_prose",
+                "section": "mission control state", "count": demoted_l0,
+                "note": "an existing memory assignment cannot elevate prose "
+                        "above its current source and policy authority"})
+        if demoted_tasks:
+            omissions.append({
+                "reason": "policy_demoted_prose", "section": "open work",
+                "count": demoted_tasks,
+                "note": "prose-derived checklist items are proposals, not "
+                        "actionable work under the current authority boundary"})
         env_nodes = self.graph.current(
             project_id, "artifact", tenant_id=tenant_id)
         env = [n for n in env_nodes if n["data"].get("kind") == "environment"]

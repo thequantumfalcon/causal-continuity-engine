@@ -257,7 +257,7 @@ class DeterministicExtractor:
                     "policy; the whole block is treated as hostile")
             # AD-006: untrusted text may propose, never mandate.
             if (untrusted or prose_demoted) and kind in (
-                    "requirement", "constraint"):
+                    "requirement", "constraint", "decision"):
                 item.kind = "claim"
                 item.meta["demoted_from"] = kind
                 item.meta["demotion_reason"] = (
@@ -282,13 +282,22 @@ class DeterministicExtractor:
             # ADR-042 applies to EVERY extractor, not only the pattern loop.
             # A checklist under an override attempt is the worst case: the
             # payload arrives as actionable open work rather than as prose.
+            item_kind = "claim" if untrusted or prose_demoted else "task"
+            demotion = ({
+                "demoted_from": "task",
+                "demotion_reason": (
+                    "untrusted source cannot mandate" if untrusted
+                    else "project policy requires declared authority; prose "
+                         "may propose but never mandate"),
+            } if item_kind == "claim" else {})
             result.items.append(Extracted(
-                kind="task", statement=statement,
+                kind=item_kind, statement=statement,
                 span=text[offsets[m.start()]:offsets[m.end()]].strip(),
                 confidence=_calibrate(0.85, source_authority),
                 criticality="medium", scope=scope,
                 suspected_injection=block_compromised,
                 meta={"done": m.group("done").strip().lower() == "x",
+                      **demotion,
                       **({"quarantine_reason":
                           "checklist item in a text block that attempted to "
                           "override policy"} if block_compromised else {})},

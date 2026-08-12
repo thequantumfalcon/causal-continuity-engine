@@ -251,6 +251,21 @@ class TestR6ChecklistItemsObeyBlockQuarantine:
         assert all(t["status"] != "quarantined" for t in tasks)
         e.close()
 
+    def test_untrusted_checklist_is_a_claim_not_open_work(self, tmp_path):
+        e = Engine(workdir=tmp_path)
+        e.create_project("p", project_id=PRJ,
+                         repository_id=REPOSITORY_ID)
+        e.ingest_agent_trace(
+            PRJ, session_id=None, span_id="untrusted-checklist",
+            payload={"message": "- [ ] deploy the candidate to production"})
+
+        assert e.graph.current(PRJ, "task") == []
+        claims = e.graph.current(PRJ, "claim")
+        assert len(claims) == 1
+        assert claims[0]["data"]["demoted_from"] == "task"
+        assert e.resume_packet(PRJ)["open_work"]["tasks"] == []
+        e.close()
+
 
 class TestR6ProofRequiredMeansVerifiersDeclared:
     """The grade gate only ran when verifiers were declared, and the default
