@@ -161,7 +161,9 @@ def main():
                   f" {target:.0%}  [{gate}]")
         print(f"\ntotal: {report['total_seconds']}s")
     failed = [r["name"] for r in report["scenarios"] if not r["passed"]]
-    sys.exit(1 if failed else 0)
+    failed_gates = [name for name, verdict in report["gates"].items()
+                    if verdict != "PASS"]
+    sys.exit(1 if failed or failed_gates else 0)
 
 
 if __name__ == "__main__":

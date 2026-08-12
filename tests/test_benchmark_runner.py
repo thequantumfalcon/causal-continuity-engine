@@ -7,6 +7,8 @@ floor when one part breaks reports nothing at all.
 
 from __future__ import annotations
 
+import pytest
+
 from benchmarks.continuitybench import run as runner
 
 
@@ -80,3 +82,23 @@ def test_a_clean_run_still_reports_pass_and_fail(monkeypatch):
     assert not any(r.get("crashed") for r in report["scenarios"])
     assert report["gates"]["critical_invalidation_recall"] == "PASS"
     assert report["gates"]["continuity_success_rate"] == "PASS"
+
+
+@pytest.mark.parametrize("verdict", ["FAIL", "incomplete", "no-data"])
+def test_a_nonpassing_metric_gate_makes_the_process_fail(monkeypatch, verdict):
+    """A green scenario list cannot override a nonpassing release metric."""
+    monkeypatch.setattr(runner, "run", lambda: {
+        "scenarios": [{
+            "name": "healthy", "passed": True, "seconds": 0.0,
+            "checks": [("scenario completed", True)],
+        }],
+        "metrics": {"continuity_success_rate": 1.0},
+        "gates": {"continuity_success_rate": verdict},
+        "total_seconds": 0.0,
+    })
+    monkeypatch.setattr(runner.sys, "argv", ["continuitybench", "--json"])
+
+    with pytest.raises(SystemExit) as caught:
+        runner.main()
+
+    assert caught.value.code == 1
