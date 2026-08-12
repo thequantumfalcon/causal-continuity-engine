@@ -79,7 +79,7 @@ from .store import (
 )
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
-PROCESSOR_VERSION = "cce-processor/1.0.0"
+PROCESSOR_VERSION = "cce-processor/1.1.0"
 
 _KIND_PREFIX = {"assumption": "asm", "requirement": "req", "constraint": "cst",
                 "decision": "dec", "claim": "clm", "task": "tsk"}

@@ -28,7 +28,7 @@ from .core import canonical_json, strict_json_loads
 from .ontology import AUTHORITY_RANK, authority_rank
 
 EXTRACTOR_NAME = "cce-deterministic"
-EXTRACTOR_VERSION = "1.0.0"
+EXTRACTOR_VERSION = "1.1.0"
 
 
 @dataclass
@@ -178,7 +178,12 @@ class DeterministicExtractor:
         prose_demoted = not prose_may_mandate
         screened = source_authority in _INJECTION_SCREENED
 
-        injection = _INJECTION_PATTERNS.search(text)
+        # Interpret security markers and extraction patterns over the same
+        # canonical visible text. Unicode format controls render no warning to
+        # a reader, so they cannot be allowed to split a protected keyword.
+        # Original bytes remain the recorded evidence through `offsets`.
+        visible, offsets = _without_invisibles(text)
+        injection = _INJECTION_PATTERNS.search(visible)
         # A block that tries to override policy is compromised as a WHOLE, not
         # merely at the matched span. Quarantining the marker while releasing
         # its neighbouring sentences puts the attacker's actual payload into
@@ -190,7 +195,8 @@ class DeterministicExtractor:
             result.items.append(Extracted(
                 kind="claim",
                 statement=f"Suspected prompt injection: {injection.group(0)!r}",
-                span=_context(text, injection.start(), injection.end()),
+                span=_context(
+                    text, offsets[injection.start()], offsets[injection.end()]),
                 confidence=0.9,
                 criticality="high",
                 scope=scope,
@@ -204,8 +210,9 @@ class DeterministicExtractor:
         # "X must Y").
         # Patterns run over prose only; spans and context still quote the
         # original text, so a report points at what the author actually wrote.
-        # The injection screen above deliberately reads the raw text: a payload
-        # hidden inside a fence is still a payload.
+        # The injection screen above deliberately reads the complete visible
+        # text rather than masked prose: a payload inside a fence is still a
+        # payload.
         # Characters that render as nothing must not change how the text is
         # READ, but they must still be VISIBLE in what is recorded: a reader
         # has to be able to see that a sentence carried them. So matching runs
@@ -213,11 +220,17 @@ class DeterministicExtractor:
         # sliced from the original through `offsets`. A zero-width space
         # inside "not" had re-typed a prohibition as a requirement, so control
         # state mandated what the sentence forbids.
-        visible, offsets = _without_invisibles(text)
         prose = _prose_only(visible)
         candidates = []
         for kind, pattern, base_conf in _PATTERNS:
             for m in pattern.finditer(prose):
+                # The fixed statement cap may land between a base character
+                # and a combining mark or joiner. A partial grapheme is not a
+                # faithful source span, so the deterministic path abstains.
+                raw_after = offsets[m.end("s") - 1] + 1
+                if _continues_grapheme(text, raw_after):
+                    result.abstained += 1
+                    continue
                 statement = _clean(
                     text[offsets[m.start("s")]:offsets[m.end("s")]])
                 if not _plausible(statement):
@@ -246,7 +259,7 @@ class DeterministicExtractor:
             crit = _criticality(statement, kind)
             item = Extracted(
                 kind=kind, statement=statement,
-                span=_context(text, start, end),
+                span=_context(text, offsets[start], offsets[end]),
                 confidence=conf, criticality=crit, scope=scope,
                 suspected_injection=block_compromised or bool(
                     screened and _INJECTION_PATTERNS.search(statement)),
@@ -353,25 +366,39 @@ _NON_PROSE = (
 # Zero-width and bidirectional formatting characters: invisible to a reader,
 # but they broke `\s`-based word boundaries, so "must no<ZWSP>t" no longer
 # matched the prohibition pattern and was recorded as a requirement instead.
-_INVISIBLE = re.compile(
-    r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
-
-
 def _without_invisibles(text: str) -> tuple[str, list[int]]:
-    """Text with zero-width characters removed, plus a map back to the source.
+    """Text with Unicode format controls removed, plus a source offset map.
 
     `offsets[i]` is the index in `text` of character `i` of the returned
     string, with a final entry for the end, so a match on the stripped copy
-    can be sliced out of the original.
+    can be sliced out of the original. Unicode category Cf is the reviewed
+    boundary: these characters control rendering but carry no visible glyph.
+    Removing them may reduce shaping in scripts that use joiners, so the raw
+    statement is always retained and the deterministic extractor remains a
+    proposal mechanism rather than an oracle.
     """
     kept: list[str] = []
     offsets: list[int] = []
     for index, char in enumerate(text):
-        if not _INVISIBLE.match(char):
+        if unicodedata.category(char) != "Cf":
             kept.append(char)
             offsets.append(index)
     offsets.append(len(text))
     return "".join(kept), offsets
+
+
+def _continues_grapheme(text: str, index: int) -> bool:
+    """Whether a source boundary at index would split a grapheme sequence."""
+    while index < len(text):
+        char = text[index]
+        category = unicodedata.category(char)
+        if (category.startswith("M") or char == "\u200d"
+                or "VARIATION SELECTOR" in unicodedata.name(char, "")):
+            return True
+        if category != "Cf":
+            return False
+        index += 1
+    return False
 
 # Markdown that decorates a line rather than forming part of the statement.
 _LEADING_MARKUP = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|\|\s*)+")
