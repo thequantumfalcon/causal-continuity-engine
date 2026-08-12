@@ -285,3 +285,55 @@ def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
 
     assert response["result"]["isError"] is False
     assert _database_dump(tmp_path) == before
+
+
+def test_resume_tool_can_return_the_complete_canonical_packet(tmp_path):
+    from causal_continuity_engine.cli import main
+    from causal_continuity_engine.resume import ResumeComposer
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "resume_packet", "arguments": {"format": "json"}},
+    }], directory=str(tmp_path))
+
+    packet = json.loads(response["result"]["content"][0]["text"])
+    assert set(packet) >= ResumeComposer.MARKDOWN_RENDERED_TOP_LEVEL
+    assert packet["schema_version"] == "cce.resume.v1"
+
+
+def test_list_projections_read_canonical_status_and_nested_data(tmp_path):
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        project_id = meta["project_id"]
+        engine.graph.put_node(
+            entity_type="assumption", tenant_id=engine.tenant_id,
+            project_id=project_id, status="active",
+            data={"statement": "the active feed is ordered"})
+        engine.graph.put_node(
+            entity_type="assumption", tenant_id=engine.tenant_id,
+            project_id=project_id, status="invalidated",
+            data={"statement": "the retired feed is ordered"})
+        engine.graph.put_node(
+            entity_type="invalidation", tenant_id=engine.tenant_id,
+            project_id=project_id, status="open",
+            data={"severity": "critical", "reason": "schema contradicted"})
+    finally:
+        engine.close()
+
+    assumptions, invalidations = _drive_ready([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "list_assumptions", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "list_invalidations", "arguments": {}}},
+    ], directory=str(tmp_path))
+    assumptions_text = assumptions["result"]["content"][0]["text"]
+    invalidations_text = invalidations["result"]["content"][0]["text"]
+    assert "active feed" in assumptions_text
+    assert "retired feed" not in assumptions_text
+    assert "critical: schema contradicted" in invalidations_text

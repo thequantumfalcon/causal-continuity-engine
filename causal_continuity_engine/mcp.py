@@ -70,6 +70,13 @@ TOOLS = [
                         "never dropped, so a large project may exceed this; "
                         "token_estimate reports the real size."),
                 },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "json"],
+                    "description": (
+                        "Human Markdown view or the complete canonical packet. "
+                        "Defaults to markdown."),
+                },
             },
         },
     },
@@ -143,12 +150,16 @@ class _Session:
         project_id = self.project(arguments)
         if name == "resume_packet":
             budget = arguments.get("token_budget", 4000)
-            return engine._resume_packet(
-                project_id, token_budget=budget, fmt="markdown",
-                record_state=False)
+            fmt = arguments.get("format", "markdown")
+            packet = engine._resume_packet(
+                project_id, token_budget=budget, fmt=fmt, record_state=False)
+            if fmt == "json":
+                return json.dumps(packet, indent=2, sort_keys=True)
+            return packet
         if name == "list_assumptions":
             nodes = engine.graph.current(
-                project_id, "assumption", tenant_id=engine.tenant_id)
+                project_id, "assumption", status=["active", "supported"],
+                tenant_id=engine.tenant_id)
             if not nodes:
                 return "No active assumptions."
             return "\n".join(
@@ -160,7 +171,8 @@ class _Session:
             if not open_items:
                 return "No open invalidations."
             return "\n".join(
-                f"- {item.get('severity', '?')}: {item.get('reason', '')}"
+                f"- {item.get('data', {}).get('severity', '?')}: "
+                f"{item.get('data', {}).get('reason', '')}"
                 for item in open_items)
         if name == "continuity_check":
             report = engine.continuity_check(project_id)
