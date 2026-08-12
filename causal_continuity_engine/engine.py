@@ -2080,16 +2080,25 @@ class Engine:
 
     # ------------------------------------------------------------------ resume
 
-    @serialized_access
     def resume_packet(self, project_id: str, *, target: dict | None = None,
                       token_budget: int = 4000, fmt: str = "json"):
+        return self._resume_packet(
+            project_id, target=target, token_budget=token_budget, fmt=fmt,
+            record_state=True)
+
+    @serialized_access
+    def _resume_packet(self, project_id: str, *, target: dict | None = None,
+                       token_budget: int = 4000, fmt: str = "json",
+                       record_state: bool):
         if fmt not in ("json", "markdown"):
             raise ValueError("resume format must be 'json' or 'markdown'")
         # Compose and commit its exact state basis under one snapshot.  The
         # before-basis is deliberately persisted: if an internal callback
         # mutates state while composing, the returned packet fails closed as
         # stale instead of being blessed at a later event sequence.
-        with self.store.transaction():
+        transaction = (self.store.transaction if record_state
+                       else self.store.read_snapshot)
+        with transaction():
             self._require_project(project_id)
             state_basis = self._packet_state_basis(project_id)
             event_seq = state_basis["event_seq"]
@@ -2097,10 +2106,11 @@ class Engine:
             packet = self.composer.compose(
                 tenant_id=self.tenant_id, project_id=project_id, target=target,
                 token_budget=token_budget, signer=self.signer,
-                state_basis=state_basis)
-            self._record_watermark(
-                project_id, packet, last_event_seq=event_seq,
-                control_basis_digest=control_basis_digest)
+                state_basis=state_basis, record_audit=record_state)
+            if record_state:
+                self._record_watermark(
+                    project_id, packet, last_event_seq=event_seq,
+                    control_basis_digest=control_basis_digest)
         if fmt == "markdown":
             return ResumeComposer.render_markdown(packet)
         return packet

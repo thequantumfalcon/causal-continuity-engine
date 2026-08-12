@@ -143,8 +143,9 @@ class _Session:
         project_id = self.project(arguments)
         if name == "resume_packet":
             budget = arguments.get("token_budget", 4000)
-            return engine.resume_packet(
-                project_id, token_budget=budget, fmt="markdown")
+            return engine._resume_packet(
+                project_id, token_budget=budget, fmt="markdown",
+                record_state=False)
         if name == "list_assumptions":
             nodes = engine.graph.current(
                 project_id, "assumption", tenant_id=engine.tenant_id)

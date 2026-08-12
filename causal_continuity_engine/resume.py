@@ -89,6 +89,7 @@ class ResumeComposer:
         signer=None,
         session_id: str | None = None,
         state_basis: dict | None = None,
+        record_audit: bool = True,
     ) -> dict:
         """Compose a model-neutral Resume Packet. Never drops L0 (MIG-002)."""
         if target is not None and not isinstance(target, dict):
@@ -100,6 +101,8 @@ class ResumeComposer:
                 "resume token_budget must be an integer from 1 to 100000")
         if state_basis is not None and not isinstance(state_basis, dict):
             raise ValueError("resume state_basis must be an object or null")
+        if not isinstance(record_audit, bool):
+            raise ValueError("resume record_audit must be a boolean")
         target = dict(target or {})
         state_basis = dict(state_basis) if state_basis is not None else None
         try:
@@ -299,7 +302,8 @@ class ResumeComposer:
         # quarantined leaves in a packet. Every earlier barrier is a filter on
         # one path; this one is on the only exit.
         packet = self._strip_quarantined(
-            project_id, packet, tenant_id=tenant_id)
+            project_id, packet, tenant_id=tenant_id,
+            record_audit=record_audit)
         # Both budget trimming and quarantine stripping happen after the
         # initial action is chosen. Reconcile at the exit so the signed packet
         # never instructs its reader to act on work it simultaneously withholds.
@@ -547,7 +551,8 @@ class ResumeComposer:
 
     def _strip_quarantined(
             self, project_id: str, packet: dict, *,
-            tenant_id: str | None = None) -> dict:
+            tenant_id: str | None = None,
+            record_audit: bool = True) -> dict:
         """Remove any reference to a quarantined node from a composed packet.
 
         Suspected-injection text must not reach an agent's context by ANY
@@ -638,12 +643,13 @@ class ResumeComposer:
                         "too. Either an injection was copied into live state, "
                         "or someone quoted live state to get it suppressed. "
                         "Both need a human."})
-            self.store.audit(
-                actor="resume", action="packet.quarantine_collision",
-                object_id=project_id, authority="verifier_authoritative",
-                detail=f"{len(collisions)} live node(s) withheld for matching "
-                       f"quarantined text: "
-                       f"{','.join(c['node_id'] for c in collisions[:10])}")
+            if record_audit:
+                self.store.audit(
+                    actor="resume", action="packet.quarantine_collision",
+                    object_id=project_id, authority="verifier_authoritative",
+                    detail=f"{len(collisions)} live node(s) withheld for matching "
+                           f"quarantined text: "
+                           f"{','.join(c['node_id'] for c in collisions[:10])}")
         return packet
 
     def _evidence_for(self, node: dict) -> list[str]:
