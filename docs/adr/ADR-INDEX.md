@@ -1945,12 +1945,15 @@ complete state-basis object.
 
 **Decision.** The MCP `resume_packet` tool composes and signs inside a coherent
 read snapshot without writing a packet watermark or quarantine-collision audit
-entry. Collision disclosure remains in the returned packet.
+entry. Collision disclosure remains in the returned packet. The stdio session
+implements the MCP initialization lifecycle, permits ping during initialization,
+never executes a notification, and validates request identifiers, parameter
+objects, and tool arguments before opening project state.
 
 **Rationale.** A transport described as read-only advanced the freshness
 watermark every time a client viewed a packet; the rare quarantine-collision
 path also appended audit state. That makes observation an authority-bearing
-write.
+write and lets notification-shaped input trigger work without a response.
 Read-only means the database is unchanged by a successful read, not merely
 that no mutating tool name is advertised.
 
@@ -1959,3 +1962,45 @@ project's current resume watermark. Use the CLI/API composition path when the
 operator intends packet generation to establish freshness. Opening a legacy
 store may still perform the engine's normal schema compatibility checks before
 the session can answer.
+
+## ADR-109 — Prose authority is evaluated at extraction and projection
+
+**Decision.** Requirements, constraints, decisions, and checklist tasks from
+an untrusted source are claims, never control state. A project with
+`prose_may_mandate=false` applies the same demotion to those four kinds. Resume
+composition re-evaluates stored extractor provenance against the current
+source and project policy before filling mission control, authority, accepted
+decisions, or open work, with every removal disclosed.
+
+**Rationale.** The original demotion covered requirement and constraint
+patterns but not the independent checklist or decision paths. Tightening the
+project setting also affected only future ingestion, leaving earlier prose in
+the packet as live authority. A boundary that depends on which extractor loop
+matched, or on when policy changed, is not an authority boundary.
+
+**Limit.** Historical graph rows retain their original entity type so replay
+and provenance remain intact. The packet barrier prevents them from acting as
+current control; it does not rewrite old event history or provide a workflow
+for promoting a proposal into an explicit human decision.
+
+## ADR-110 — Security matching uses visible text and records raw provenance
+
+**Decision.** Remove Unicode category-Cf format controls for deterministic
+security and extraction matching, while mapping every statement and context
+span back to the original source. Injection screening runs over the complete
+visible block before prose masking. If a fixed character bound would split a
+combining sequence or joiner, the extractor abstains rather than record a
+partial grapheme.
+
+**Rationale.** A bidi or zero-width format character inside "ignore" defeated
+the injection marker while rendering no warning to a reader. Matches later in
+text containing removed characters also used visible-string coordinates to
+slice the raw source, producing a span that did not contain the statement it
+claimed to cite. Security interpretation and audit evidence need different
+representations connected by an explicit offset map.
+
+**Limit.** Category-Cf removal is a deterministic defense against invisible
+formatting, not a complete Unicode spoofing or natural-language injection
+detector. It can reduce shaping distinctions in scripts that use joiners; raw
+source remains inspectable, false positives are quarantined visibly, and novel
+wording still requires structural authority barriers.
