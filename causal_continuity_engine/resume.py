@@ -285,6 +285,10 @@ class ResumeComposer:
         # one path; this one is on the only exit.
         packet = self._strip_quarantined(
             project_id, packet, tenant_id=tenant_id)
+        # Both budget trimming and quarantine stripping happen after the
+        # initial action is chosen. Reconcile at the exit so the signed packet
+        # never instructs its reader to act on work it simultaneously withholds.
+        self._reconcile_open_work(packet)
         packet["token_estimate"] = _tokens(packet)
         # The digest is part of the signed packet. Signing first and then
         # appending this field made every packet fail Signer.verify(): the
@@ -386,12 +390,62 @@ class ResumeComposer:
             next_safe = {
                 "summary": "Resolve open invalidations before continuing implementation.",
             }
+        elif prioritized and next_safe is None:
+            next_safe = {
+                "summary": "All open tasks are blocked; resolve a blocker before continuing.",
+            }
         return {
             "tasks": [self._summ(t) for t in prioritized],
             "blockers": blockers,
             "next_safe_action": next_safe
             or {"summary": "No open tasks; verify project state and await instruction."},
         }
+
+    @staticmethod
+    def _reconcile_open_work(packet: dict) -> None:
+        """Bind next_safe_action to the final, agent-visible task list."""
+        work = packet["open_work"]
+        tasks = work.get("tasks") or []
+        retained_ids = {task.get("node_id") for task in tasks}
+        action = work.get("next_safe_action")
+        if isinstance(action, dict) and action.get("node_id") in retained_ids:
+            return
+
+        actionable = [task for task in tasks if task.get("status") != "blocked"]
+        if actionable:
+            work["next_safe_action"] = actionable[0]
+            return
+        if packet.get("invalidations"):
+            work["next_safe_action"] = {
+                "summary": "Resolve open invalidations before continuing implementation.",
+            }
+            return
+
+        withheld = sum(
+            omission.get("count", 0)
+            for omission in packet.get("omissions", [])
+            if omission.get("section") == "open work detail"
+        )
+        withheld += sum(
+            1
+            for omission in packet.get("omissions", [])
+            if omission.get("reason") == "quarantined_text_collision"
+            for node in omission.get("nodes", [])
+            if node.get("entity_type") == "task"
+            and node.get("status") in ("open", "in_progress", "blocked", None)
+        )
+        if work.get("blockers"):
+            summary = "All visible open work is blocked; resolve a blocker before continuing."
+            if withheld:
+                summary += f" {withheld} additional open task(s) were withheld."
+        elif withheld:
+            summary = (
+                f"{withheld} open task(s) were withheld to meet the requested "
+                "token budget; request a larger packet before choosing work."
+            )
+        else:
+            summary = "No open tasks; verify project state and await instruction."
+        work["next_safe_action"] = {"summary": summary}
 
     def _trust(
             self, project_id: str, *, tenant_id: str | None = None) -> dict:

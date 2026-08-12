@@ -204,6 +204,61 @@ class TestResume:
         md = ResumeComposer.render_markdown(pkt)
         assert "# CCE Resume Packet" in md and "Next safe action" in md
 
+    def test_all_blocked_work_is_not_reported_as_no_open_tasks(self, env):
+        _, graph, _, _, composer = env
+        graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "wait for the schema owner"}, status="blocked")
+
+        packet = composer.compose(tenant_id=TEN, project_id=PRJ)
+
+        action = packet["open_work"]["next_safe_action"]
+        assert "node_id" not in action
+        assert "blocked" in action["summary"].lower()
+        assert "No open tasks" not in action["summary"]
+
+    def test_budgeted_next_action_always_names_a_retained_task(self, env):
+        _, graph, _, _, composer = env
+        graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "blocked migration " + "x" * 80},
+            status="blocked")
+        graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "run the actionable migration " + "y" * 80},
+            status="open")
+
+        partial = None
+        for budget in range(1, 1000):
+            packet = composer.compose(
+                tenant_id=TEN, project_id=PRJ, token_budget=budget)
+            if len(packet["open_work"]["tasks"]) == 1:
+                partial = packet
+                break
+        assert partial is not None, "fixture never reached a one-task packet"
+
+        retained = {task["node_id"] for task in partial["open_work"]["tasks"]}
+        action = partial["open_work"]["next_safe_action"]
+        assert "node_id" not in action or action["node_id"] in retained
+        if "node_id" not in action:
+            assert "withheld" in action["summary"].lower()
+
+    def test_quarantine_collision_does_not_claim_withheld_work_is_absent(self, env):
+        _, graph, _, _, composer = env
+        text = "review the shared deployment instruction " + "x" * 40
+        graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open")
+
+        packet = composer.compose(tenant_id=TEN, project_id=PRJ)
+
+        assert packet["open_work"]["tasks"] == []
+        action = packet["open_work"]["next_safe_action"]["summary"]
+        assert "withheld" in action.lower()
+        assert "No open tasks" not in action
 
 def test_token_budget_bounds_the_packet_rather_than_merely_triggering_a_trim():
     """`token_budget` trimmed each section to a fixed cap and then stopped.
