@@ -45,7 +45,7 @@ def _drive_ready(requests, directory="."):
 def test_handshake_reports_the_protocol_and_the_package_version():
     from causal_continuity_engine import __version__
 
-    (response,) = _drive([{"jsonrpc": "2.0", "id": 1, "method": "initialize"}])
+    (response,) = _drive([_initialize(1)])
     result = response["result"]
     assert result["protocolVersion"] == mcp.PROTOCOL_VERSION
     assert result["serverInfo"] == {
@@ -54,18 +54,14 @@ def test_handshake_reports_the_protocol_and_the_package_version():
 
 @pytest.mark.parametrize("revision", mcp.SUPPORTED_PROTOCOL_VERSIONS)
 def test_the_handshake_answers_a_revision_it_speaks_with_that_revision(revision):
-    (response,) = _drive([{
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": revision}}])
+    (response,) = _drive([_initialize(1, revision)])
     assert response["result"]["protocolVersion"] == revision
 
 
-@pytest.mark.parametrize("revision", ["2026-07-28", "banana", "", None])
+@pytest.mark.parametrize("revision", ["2026-07-28", "banana"])
 def test_an_unspoken_revision_falls_back_instead_of_being_echoed(revision):
     """Echoing the request would claim conformance to any string sent."""
-    (response,) = _drive([{
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": revision}}])
+    (response,) = _drive([_initialize(1, revision)])
     answered = response["result"]["protocolVersion"]
     assert answered != revision
     assert answered == mcp.PROTOCOL_VERSION
@@ -104,7 +100,8 @@ def test_a_notification_gets_no_response():
 
 
 def test_every_advertised_tool_declares_a_schema_and_is_dispatchable():
-    (response,) = _drive([{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}])
+    (response,) = _drive_ready([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}])
     tools = response["result"]["tools"]
     assert {t["name"] for t in tools} == set(mcp._TOOLS_BY_NAME)
     for tool in tools:
@@ -115,12 +112,15 @@ def test_every_advertised_tool_declares_a_schema_and_is_dispatchable():
 def test_malformed_input_and_unknown_names_use_the_reserved_codes():
     responses = _drive([
         "this is not json",
+        _initialize(1),
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "no/such/method"},
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
          "params": {"name": "not_a_tool", "arguments": {}}},
         {"jsonrpc": "1.0", "id": 4, "method": "tools/list"},
     ])
-    assert [r["error"]["code"] for r in responses] == [
+    assert responses[1]["id"] == 1
+    assert [responses[index]["error"]["code"] for index in (0, 2, 3, 4)] == [
         mcp._PARSE_ERROR, mcp._METHOD_NOT_FOUND,
         mcp._INVALID_PARAMS, mcp._INVALID_REQUEST]
 
@@ -140,7 +140,7 @@ def test_the_surface_is_read_only():
 
 def test_a_tool_failure_is_a_result_not_a_protocol_error(tmp_path):
     """The call was well formed; the client needs to see why it failed."""
-    (response,) = _drive(
+    (response,) = _drive_ready(
         [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
           "params": {"name": "list_assumptions", "arguments": {}}}],
         directory=str(tmp_path))          # no project here
@@ -168,7 +168,7 @@ def test_tools_answer_from_a_real_project(tmp_path):
     main(["--dir", str(tmp_path), "ingest", "--event", "issues",
           "--delivery-id", "d1", "--file", str(issue)])
 
-    responses = _drive([
+    responses = _drive_ready([
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": "list_assumptions", "arguments": {}}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -194,7 +194,7 @@ def test_continuity_check_answers_the_question_without_the_receipt(tmp_path):
 
     main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
           "--repo-id", "123"])
-    (response,) = _drive(
+    (response,) = _drive_ready(
         [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
           "params": {"name": "continuity_check", "arguments": {}}}],
         directory=str(tmp_path))
@@ -218,7 +218,7 @@ def test_an_unknown_project_is_an_error_not_an_empty_answer(tmp_path):
 
     main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
           "--repo-id", "123"])
-    responses = _drive([
+    responses = _drive_ready([
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
          "params": {"name": "list_assumptions",
                     "arguments": {"project_id": "prj_not_a_real_project"}}},
@@ -248,6 +248,81 @@ def test_the_server_adds_no_runtime_dependency(module):
         root = name.split(".")[0]
         assert root in sys.stdlib_module_names or root == \
             "causal_continuity_engine", f"{module} pulled in {root}"
+
+
+def test_tools_are_unavailable_until_initialization_finishes():
+    responses = _drive([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        _initialize(2),
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/list"},
+    ])
+
+    assert responses[0]["error"]["code"] == mcp._INVALID_REQUEST
+    assert responses[1]["id"] == 2
+    assert responses[2]["error"]["code"] == mcp._INVALID_REQUEST
+    assert "tools" in responses[3]["result"]
+
+
+def test_ping_is_prompt_and_preserves_the_request_identifier():
+    responses = _drive([
+        {"jsonrpc": "2.0", "id": "before-init", "method": "ping"},
+        _initialize(2),
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}},
+    ])
+    assert responses[0] == {
+        "jsonrpc": "2.0", "id": "before-init", "result": {}}
+    assert responses[-1] == {"jsonrpc": "2.0", "id": 3, "result": {}}
+
+
+@pytest.mark.parametrize("bad_id", [None, True, 1.5, [], {}])
+def test_request_ids_are_strings_or_integers_but_never_null_or_bool(bad_id):
+    (response,) = _drive([
+        {"jsonrpc": "2.0", "id": bad_id, "method": "ping"},
+    ])
+    assert response["error"]["code"] == mcp._INVALID_REQUEST
+    assert response["id"] is None
+
+
+def test_invalid_parameter_shapes_are_protocol_errors():
+    responses = _drive([
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": []},
+        _initialize(2),
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": []},
+        {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+         "params": {"name": "resume_packet", "arguments": []}},
+    ])
+    assert responses[1]["id"] == 2
+    assert [responses[index]["error"]["code"] for index in (0, 2, 3)] == [
+        mcp._INVALID_PARAMS, mcp._INVALID_PARAMS, mcp._INVALID_PARAMS]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [{"unexpected": True}, {"project_id": ""}, {"token_budget": True},
+     {"token_budget": 0}, {"format": "xml"}],
+)
+def test_tool_arguments_are_validated_before_execution(arguments):
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "resume_packet", "arguments": arguments},
+    }])
+    assert response["error"]["code"] == mcp._INVALID_PARAMS
+
+
+def test_a_tool_notification_is_ignored_without_execution():
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("a notification must not execute a tool")
+
+    session = SimpleNamespace(state="ready", call=unexpected)
+    response = mcp._handle({
+        "jsonrpc": "2.0", "method": "tools/call",
+        "params": {"name": "resume_packet", "arguments": {}},
+    }, session)
+    assert response is None
 
 
 def _database_dump(directory):
