@@ -1941,3 +1941,21 @@ state, not that the selected task is strategically correct. Markdown remains a
 human view; canonical JSON is required for exact digests, signatures, and the
 complete state-basis object.
 
+## ADR-108 — MCP reads do not create project state
+
+**Decision.** The MCP `resume_packet` tool composes and signs inside a coherent
+read snapshot without writing a packet watermark or quarantine-collision audit
+entry. Collision disclosure remains in the returned packet.
+
+**Rationale.** A transport described as read-only advanced the freshness
+watermark every time a client viewed a packet; the rare quarantine-collision
+path also appended audit state. That makes observation an authority-bearing
+write.
+Read-only means the database is unchanged by a successful read, not merely
+that no mutating tool name is advertised.
+
+**Limit.** An MCP packet is a signed observation but is not registered as the
+project's current resume watermark. Use the CLI/API composition path when the
+operator intends packet generation to establish freshness. Opening a legacy
+store may still perform the engine's normal schema compatibility checks before
+the session can answer.

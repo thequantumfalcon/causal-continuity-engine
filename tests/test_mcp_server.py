@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,27 @@ def _drive(requests, directory="."):
     stdout = io.StringIO()
     mcp.serve(directory, stdin=stdin, stdout=stdout)
     return [json.loads(line) for line in stdout.getvalue().splitlines() if line]
+
+
+def _initialize(request_id=0, revision=mcp.PROTOCOL_VERSION):
+    return {
+        "jsonrpc": "2.0", "id": request_id, "method": "initialize",
+        "params": {
+            "protocolVersion": revision,
+            "capabilities": {},
+            "clientInfo": {"name": "cce-test", "version": "1.0"},
+        },
+    }
+
+
+def _drive_ready(requests, directory="."):
+    responses = _drive([
+        _initialize(),
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        *requests,
+    ], directory=directory)
+    assert responses[0]["id"] == 0
+    return responses[1:]
 
 
 def test_handshake_reports_the_protocol_and_the_package_version():
@@ -225,3 +248,40 @@ def test_the_server_adds_no_runtime_dependency(module):
         root = name.split(".")[0]
         assert root in sys.stdlib_module_names or root == \
             "causal_continuity_engine", f"{module} pulled in {root}"
+
+
+def _database_dump(directory):
+    connection = sqlite3.connect(directory / ".cce" / "cce.db")
+    try:
+        return tuple(connection.iterdump())
+    finally:
+        connection.close()
+
+
+def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        collision = "the same quarantined payload " + "x" * 40
+        engine.graph.put_node(
+            entity_type="claim", tenant_id=engine.tenant_id,
+            project_id=meta["project_id"], status="quarantined",
+            data={"statement": collision})
+        engine.graph.put_node(
+            entity_type="constraint", tenant_id=engine.tenant_id,
+            project_id=meta["project_id"], status="active",
+            data={"statement": collision})
+    finally:
+        engine.close()
+    before = _database_dump(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "resume_packet", "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is False
+    assert _database_dump(tmp_path) == before
