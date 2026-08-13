@@ -1888,3 +1888,33 @@ are structurally valid at their production boundary.
 database row-level security, operating-system isolation, or protection against
 a privileged concurrent actor rewriting state outside the validated
 transaction. Those controls remain separate deployment and storage concerns.
+
+## ADR-106 — Statement identity has an explicit compatibility version
+
+**Decision.** The normalization contract that feeds `stable_node_id` is named
+`cce.statement-id.v2` and pinned by ASCII and non-ASCII vectors. Extractor
+pattern versions and statement-identity versions are separate: a pattern may
+change what is found without changing the identity of the same statement.
+
+Version 2 is the Unicode-preserving NFKC/casefold algorithm introduced in
+v0.1.3. Version-1 identifiers already present in a store remain immutable
+historical nodes. Re-ingesting their non-ASCII statement creates or converges
+on the version-2 identifier; it does not rewrite the old identifier or pretend
+the two event histories were always one. Pure-ASCII identities are unchanged.
+
+**Rationale.** The v0.1.3 compatibility note disclosed that non-ASCII node ids
+would change, but the algorithm itself still had no name or fixed vectors.
+`EXTRACTOR_VERSION` could not carry that meaning because it versions detection
+behavior, not the durable key contract. An unnamed identity algorithm can
+change again without a reviewer seeing that the migration surface changed.
+
+**Consequence.** Any future edit that changes a pinned identity vector requires
+a new statement-identity version and an explicit compatibility decision before
+implementation. The v1-to-v2 behavior remains additive and rebuildable: old
+nodes remain, newly ingested statements use v2, and no projection row is
+rewritten outside its event history.
+
+**Limit.** The version and vectors make byte identity reviewable; they do not
+claim semantic equivalence between differently worded statements or merge
+pre-v2 and v2 histories automatically. That merge requires an explicit human
+resolution with its own provenance.

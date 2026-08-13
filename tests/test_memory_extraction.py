@@ -607,3 +607,18 @@ class TestExtraction:
 
         assert result.items == []
         assert result.abstained == 1
+
+
+def test_statement_identity_version_and_vectors_are_explicit():
+    from causal_continuity_engine.engine import (
+        STABLE_NODE_ID_VERSION,
+        stable_node_id,
+    )
+
+    assert STABLE_NODE_ID_VERSION == "cce.statement-id.v2"
+    assert stable_node_id(
+        "prj_identity", "requirement", "The API returns JSON."
+    ) == "req_b41d6eb4ebd59c529d62cf55"
+    assert stable_node_id(
+        "prj_identity", "requirement", "The budget must not exceed €500."
+    ) == "req_f6fb09f18bc2c35a88c6c6a0"

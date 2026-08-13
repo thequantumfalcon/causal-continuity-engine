@@ -80,6 +80,11 @@ from .store import (
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
 PROCESSOR_VERSION = "cce-processor/1.1.0"
+# Version of the statement normalization contract that feeds stable_node_id.
+# It is deliberately separate from the extractor version: pattern behavior can
+# change without changing identity, while an identity change survives forever
+# in event history (ADR-106).
+STABLE_NODE_ID_VERSION = "cce.statement-id.v2"
 
 _KIND_PREFIX = {"assumption": "asm", "requirement": "req", "constraint": "cst",
                 "decision": "dec", "claim": "clm", "task": "tsk"}
@@ -893,6 +898,7 @@ def _source_refs(node: dict | None) -> set[str]:
 
 
 def stable_node_id(project_id: str, kind: str, statement: str) -> str:
+    """Derive a v2 statement id; compatibility behavior is pinned in ADR-106."""
     key = f"{project_id}|{kind}|{normalize_statement(statement)}"
     return f"{_KIND_PREFIX.get(kind, 'nod')}_{hashlib.sha256(key.encode()).hexdigest()[:24]}"
 
