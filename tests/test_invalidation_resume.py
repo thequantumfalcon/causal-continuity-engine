@@ -260,6 +260,41 @@ class TestResume:
         assert "withheld" in action.lower()
         assert "No open tasks" not in action
 
+    def test_markdown_contract_covers_every_packet_field(self, env):
+        import json
+        from pathlib import Path
+
+        schema = json.loads((Path(__file__).resolve().parent.parent / "schemas" /
+                             "cce.resume.v1.json").read_text(encoding="utf-8"))
+        covered = (ResumeComposer.MARKDOWN_RENDERED_TOP_LEVEL
+                   | ResumeComposer.MARKDOWN_DECLARED_METADATA)
+        assert covered == set(schema["properties"])
+        assert not (ResumeComposer.MARKDOWN_RENDERED_TOP_LEVEL
+                    & ResumeComposer.MARKDOWN_DECLARED_METADATA)
+
+    def test_markdown_exposes_decision_relevant_sections(self, env):
+        _, graph, _, _, composer = env
+        _chain(graph)
+        graph.put_node(
+            entity_type="assumption", tenant_id=TEN, project_id=PRJ,
+            data={"statement": "the feed remains ordered"}, status="uncertain")
+        graph.put_node(
+            entity_type="verification", tenant_id=TEN, project_id=PRJ,
+            data={"statement": "integration verifier failed"}, status="failed")
+
+        markdown = ResumeComposer.render_markdown(
+            composer.compose(tenant_id=TEN, project_id=PRJ))
+
+        for heading in (
+                "## Mission control state", "## Assumptions",
+                "## Environment", "## Evidence index",
+                "## Recent context", "## Continuity lineage",
+                "## Transport and cryptographic metadata"):
+            assert heading in markdown
+        assert "the feed remains ordered" in markdown
+        assert "integration verifier failed" in markdown
+
+
 def test_token_budget_bounds_the_packet_rather_than_merely_triggering_a_trim():
     """`token_budget` trimmed each section to a fixed cap and then stopped.
 
