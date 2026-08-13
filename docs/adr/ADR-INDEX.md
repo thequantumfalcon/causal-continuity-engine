@@ -1918,3 +1918,19 @@ rewritten outside its event history.
 claim semantic equivalence between differently worded statements or merge
 pre-v2 and v2 histories automatically. That merge requires an explicit human
 resolution with its own provenance.
+
+## ADR-107 — Agent-facing packet instructions bind to the retained view
+
+**Decision.** Reconcile `next_safe_action` after every presentation filter,
+including token-budget trimming and quarantine stripping. A node-backed action
+must name a task still present in `open_work.tasks`; otherwise the packet picks
+a retained non-blocked task or emits a fixed disclosure explaining that work
+is blocked or withheld.
+
+**Rationale.** Choosing an action before trimming produced a signed instruction
+to work on a task the same packet hid. Replacing it with "No open tasks" was no
+safer when tasks existed but were blocked or withheld. The agent-facing view, not the pre-filter object, is the path
+that decides what the reader can act on.
+
+**Limit.** Reconciliation proves referential visibility and truthful mechanical
+state, not that the selected task is strategically correct.
