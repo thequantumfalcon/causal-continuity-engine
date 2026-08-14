@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -34,10 +35,13 @@ CHECKER = _load_release_checker()
 
 
 def _run_git(*args: str) -> str:
+    environment = dict(os.environ)
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         completed = subprocess.run(
-            ["git", *args],
+            ["git", "--no-replace-objects", *args],
             cwd=ROOT,
+            env=environment,
             text=True,
             capture_output=True,
             check=False,
@@ -54,10 +58,13 @@ def _run_git(*args: str) -> str:
 
 
 def _git_status(*args: str) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     try:
         return subprocess.run(
-            ["git", *args],
+            ["git", "--no-replace-objects", *args],
             cwd=ROOT,
+            env=environment,
             text=True,
             capture_output=True,
             check=False,
@@ -169,7 +176,12 @@ def _validate_local_tag(tag: str, head: str) -> str:
     ref = f"refs/tags/{tag}"
     if _run_git("cat-file", "-t", ref) != "tag":
         raise SystemExit("created release ref is not an annotated tag object")
-    body = _run_git("cat-file", "-p", ref)
+    tag_bytes = CHECKER._git_bytes("cat-file", "tag", ref)
+    CHECKER._scan_tag_object(tag, tag_bytes)
+    try:
+        body = tag_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("created release tag object is not valid UTF-8") from exc
     headers = CHECKER._signed_tag_headers(body)
     if headers.get("type") != "commit":
         raise SystemExit("created tag does not directly name a commit")
@@ -180,6 +192,7 @@ def _validate_local_tag(tag: str, head: str) -> str:
     if not any(marker in body for marker in SIGNATURE_MARKERS):
         raise SystemExit("created annotated tag has no PGP or SSH signature")
     tag_object = _run_git("rev-parse", f"{ref}^{{tag}}")
+    CHECKER._verify_git_object_id(tag_object, "tag", tag_bytes)
     if _run_git("rev-parse", ref) != tag_object:
         raise SystemExit("release ref does not exactly resolve to its tag object")
     if _run_git("rev-parse", f"{ref}^{{commit}}") != head:

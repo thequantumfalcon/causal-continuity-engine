@@ -1,5 +1,6 @@
 """Release-control regressions that do not create or push real tags."""
 
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -107,6 +108,30 @@ def test_github_commit_verification_is_exact_and_well_formed(monkeypatch):
     )
     with pytest.raises(SystemExit, match="did not verify the release commit"):
         checker._verify_github_commit(commit, "owner/repository")
+
+
+def test_release_tag_object_content_scan_is_exact_and_strict():
+    checker = _load_release_script("check_release_tag")
+    checker._scan_tag_object("v0.1.0", b"clean annotated tag\n")
+
+    with pytest.raises(SystemExit, match="contains prohibited content"):
+        checker._scan_tag_object(
+            "v0.1.0",
+            "tagger Hidden\u200bIdentity <tagger@example.test> 0 +0000\n".encode(),
+        )
+
+    with pytest.raises(SystemExit, match="scan is incomplete"):
+        checker._scan_tag_object("v0.1.0", b"\xff")
+
+
+def test_release_tag_object_bytes_must_match_their_object_id():
+    checker = _load_release_script("check_release_tag")
+    payload = b"object abc\ntype commit\ntag v0.1.0\n\nrelease\n"
+    oid = hashlib.sha1(f"tag {len(payload)}\0".encode("ascii") + payload).hexdigest()
+
+    checker._verify_git_object_id(oid, "tag", payload)
+    with pytest.raises(SystemExit, match="bytes do not match"):
+        checker._verify_git_object_id("0" * 40, "tag", payload)
 
 
 def test_github_tag_verification_is_exact_and_well_formed(monkeypatch):
@@ -703,14 +728,14 @@ def test_prepare_tag_validates_annotated_signature_and_exact_peeling(monkeypatch
     head = "f" * 40
     tag_object = "1" * 40
     verified = []
+    tag_bytes = (
+        f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
+        "-----BEGIN SSH SIGNATURE-----"
+    ).encode("utf-8")
 
     def git(*args):
         if args[:2] == ("cat-file", "-t"):
             return "tag"
-        if args[:2] == ("cat-file", "-p"):
-            return (
-                f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
-                "-----BEGIN SSH SIGNATURE-----")
         if args == ("rev-parse", "refs/tags/v0.1.0^{tag}"):
             return tag_object
         if args == ("rev-parse", "refs/tags/v0.1.0"):
@@ -723,8 +748,61 @@ def test_prepare_tag_validates_annotated_signature_and_exact_peeling(monkeypatch
         raise AssertionError(args)
 
     monkeypatch.setattr(tool, "_run_git", git)
+    monkeypatch.setattr(tool.CHECKER, "_git_bytes", lambda *args: tag_bytes)
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_scan_tag_object",
+        lambda tag, payload: verified.append(("scan", tag, payload)),
+    )
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_verify_git_object_id",
+        lambda oid, kind, payload: verified.append(("oid", oid, kind, payload)),
+    )
     assert tool._validate_local_tag("v0.1.0", head) == tag_object
-    assert verified == [("verify-tag", "v0.1.0")]
+    assert verified == [
+        ("scan", "v0.1.0", tag_bytes),
+        ("oid", tag_object, "tag", tag_bytes),
+        ("verify-tag", "v0.1.0"),
+    ]
+
+
+def test_prepare_tag_rejects_prohibited_raw_tag_before_push_and_cleans(
+        monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    head = "7" * 40
+    events = []
+    monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+
+    def git(*args):
+        events.append(("git", args))
+        if args[:2] == ("cat-file", "-t"):
+            return "tag"
+        return ""
+
+    monkeypatch.setattr(tool, "_run_git", git)
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_git_bytes",
+        lambda *args: events.append(("raw", args)) or b"marked tag object",
+    )
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_scan_tag_object",
+        lambda tag, payload: (_ for _ in ()).throw(SystemExit("prohibited content")),
+    )
+    monkeypatch.setattr(
+        tool, "_cleanup_created_tag", lambda tag: events.append(("cleanup", tag)))
+
+    with pytest.raises(SystemExit, match="prohibited content"):
+        tool.main(["v0.1.0", "--push"])
+
+    assert ("raw", ("cat-file", "tag", "refs/tags/v0.1.0")) in events
+    assert ("cleanup", "v0.1.0") in events
+    assert not any(
+        event[0] == "git" and event[1][0] == "push"
+        for event in events if isinstance(event, tuple)
+    )
 
 
 def test_prepare_tag_never_pushes_without_flag_and_rechecks_before_push(
