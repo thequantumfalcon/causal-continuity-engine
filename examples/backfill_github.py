@@ -28,6 +28,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 if not (ROOT / "causal_continuity_engine").is_dir():  # pragma: no cover
@@ -169,14 +170,26 @@ def main(argv: list[str] | None = None) -> int:
     holder = args.dir or tempfile.mkdtemp(prefix="cce-backfill-")
     workdir = Path(holder)
     workdir.mkdir(parents=True, exist_ok=True)
-    engine = Engine(workdir / "cce.db", tenant_id="ten_backfill",
-                    workdir=workdir)
-    try:
+    if args.dir:
+        # A kept project must use the trust root and database layout every
+        # public consumer opens. A bare <dir>/cce.db cannot be resumed later.
+        from causal_continuity_engine.cli import _engine as _open_project
+        from causal_continuity_engine.cli import main as _cli
+
+        if not (workdir / ".cce").exists():
+            _cli(["--dir", str(workdir), "init", "--repo", meta["full_name"],
+                  "--repo-id", str(meta["id"])])
+        engine, project_meta = _open_project(SimpleNamespace(dir=str(workdir)))
+        project_id = project_meta["project_id"]
+    else:
+        engine = Engine(workdir / "cce.db", tenant_id="ten_backfill",
+                        workdir=workdir)
         project = engine.create_project(
             meta["name"], project_id="prj_backfill",
             repository=meta["full_name"], repository_id=meta["id"])
         project_id = project["project_id"] if isinstance(project, dict) \
             else "prj_backfill"
+    try:
 
         events: list[tuple[str, str, dict]] = [
             ("push", f"backfill-frontier-{head_sha[:8]}",
