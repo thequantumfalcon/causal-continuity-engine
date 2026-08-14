@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,34 @@ API = "https://api.github.com"
 PAGE_SIZE = 100
 
 
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep GitHub authorization on HTTPS API redirects and nowhere else."""
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str | None, int | None] | None:
+        parsed = urllib.parse.urlsplit(url)
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        return parsed.scheme.lower(), parsed.hostname, port
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old_origin = self._origin(req.full_url)
+        new_origin = self._origin(newurl)
+        if (old_origin is None or new_origin is None
+                or old_origin[0] != "https" or new_origin[0] != "https"
+                or old_origin[1] is None or old_origin[1] != new_origin[1]
+                or (old_origin[2] or 443) != (new_origin[2] or 443)):
+            raise urllib.error.URLError("unsafe GitHub API redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_SameOriginRedirectHandler())
+
+
 def _get(path: str, token: str | None) -> object:
     request = urllib.request.Request(
         f"{API}{path}",
@@ -50,7 +79,7 @@ def _get(path: str, token: str | None) -> object:
             **({"Authorization": f"Bearer {token}"} if token else {}),
         })
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _OPENER.open(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
