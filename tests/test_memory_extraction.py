@@ -460,17 +460,19 @@ class TestExtraction:
             return [i.kind for i in extractor.extract(
                 text, source_authority="human_intent").items]
 
+        zero_width_space = chr(0x200B)
+        word_joiner = chr(0x2060)
         assert kinds("The exporter must not write credentials to disk.") \
             == ["constraint"]
-        assert kinds("The exporter must no​t write credentials to disk.") \
+        assert kinds(f"The exporter must no{zero_width_space}t write credentials to disk.") \
             == ["constraint"]
-        assert kinds("The pipeline must ne⁠ver write to production.") \
+        assert kinds(f"The pipeline must ne{word_joiner}ver write to production.") \
             == ["constraint"]
         # The character survives into the statement rather than being erased.
         item = extractor.extract(
-            "The exporter must no​t write credentials to disk.",
+            f"The exporter must no{zero_width_space}t write credentials to disk.",
             source_authority="human_intent").items[0]
-        assert "​" in item.statement
+        assert zero_width_space in item.statement
 
     def test_hidden_checklists_are_not_open_work(self):
         """The checklist scan read raw text while every other pattern read the
