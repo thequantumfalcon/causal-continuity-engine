@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 GATE_TIMEOUT_SECONDS = {
+    "content integrity": 120,
+    "commit metadata integrity": 60,
     "release metadata": 60,
     "tests": 900,
     "lint": 300,
@@ -26,6 +28,24 @@ GATE_TIMEOUT_SECONDS = {
 }
 
 BASE_GATES = (
+    (
+        "content integrity",
+        (
+            sys.executable,
+            ".github/scripts/check_content_marks.py",
+            "--tree",
+            "HEAD",
+        ),
+    ),
+    (
+        "commit metadata integrity",
+        (
+            sys.executable,
+            ".github/scripts/check_content_marks.py",
+            "--commit",
+            "HEAD",
+        ),
+    ),
     (
         "release metadata",
         (sys.executable, ".github/scripts/check_release_metadata.py"),

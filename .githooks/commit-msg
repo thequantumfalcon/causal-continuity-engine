@@ -4,6 +4,14 @@ identity_input="$(mktemp)" || exit 1
 trap 'rm -f "$identity_input"' EXIT HUP INT TERM
 cat "$1" > "$identity_input" || exit 1
 git var GIT_AUTHOR_IDENT >> "$identity_input" || exit 1
+git var GIT_COMMITTER_IDENT >> "$identity_input" || exit 1
+python3 .github/scripts/check_content_marks.py \
+    --stdin '<commit-message-and-identities>' < "$identity_input"
+content_status=$?
+if [ "$content_status" -ne 0 ]; then
+    echo "ERROR: commit metadata content-integrity scan did not pass." >&2
+    exit "$content_status"
+fi
 grep_status=0
 grep -nEi "$PATTERN" "$identity_input" || grep_status=$?
 case "$grep_status" in

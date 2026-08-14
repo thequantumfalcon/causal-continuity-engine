@@ -1,0 +1,167 @@
+name: content-integrity-pr-advisory
+
+# pull_request_target keeps the scanner on the trusted base revision. Candidate
+# bytes are read as inert Git objects and are never imported or executed. This
+# job is defense in depth; it is not a spoof-resistant required check.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: content-integrity-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  POLICY_LABEL: content-integrity-policy-change
+
+jobs:
+  scan:
+    name: content-integrity-pr-advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_LFS_SKIP_SMUDGE: "1"
+      GIT_NO_REPLACE_OBJECTS: "1"
+      GIT_TERMINAL_PROMPT: "0"
+
+    steps:
+      - name: Validate immutable event identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          jq -e \
+            --arg head "$HEAD_SHA" \
+            --arg base "$BASE_SHA" \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --argjson number "$PR_NUMBER" \
+            '
+              .number == $number
+              and .repository.full_name == $repo
+              and .pull_request.head.sha == $head
+              and .pull_request.base.sha == $base
+              and .pull_request.base.ref == "main"
+              and .pull_request.base.repo.id == .repository.id
+            ' "$GITHUB_EVENT_PATH" >/dev/null
+
+      - name: Check out trusted scanner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          set-safe-directory: false
+
+      - name: Check out candidate as inert data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          set-safe-directory: false
+          allow-unsafe-pr-checkout: true
+
+      - name: Scan exact candidate bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$(git -C trusted rev-parse --verify 'HEAD^{commit}')" = "$BASE_SHA"
+          test "$(git -C candidate rev-parse --verify 'HEAD^{commit}')" = "$HEAD_SHA"
+          git -C candidate cat-file -e "${BASE_SHA}^{commit}"
+
+          scanner="$GITHUB_WORKSPACE/trusted/.github/scripts/check_content_marks.py"
+          test -f "$scanner"
+          (
+            cd candidate
+            python3 -I "$scanner" --tree "$HEAD_SHA"
+          )
+          commits="$(git -C candidate rev-list "$BASE_SHA..$HEAD_SHA")"
+          for commit in $commits; do
+            [[ "$commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+            (
+              cd candidate
+              python3 -I "$scanner" --commit "$commit"
+            )
+          done
+
+      - name: Scan mutable pull-request metadata as an advisory tripwire
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scanner="$GITHUB_WORKSPACE/trusted/.github/scripts/check_content_marks.py"
+          jq -j '.pull_request.title, "\n", (.pull_request.body // ""), "\n"' \
+            "$GITHUB_EVENT_PATH" \
+            | python3 -I "$scanner" --stdin '<pull-request-metadata>'
+
+      - name: Require exact-head owner authorization for control changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          protected=(
+            .github/workflows
+            .github/actions
+            .github/scripts
+            .github/ruleset.json
+            .github/tag-ruleset.json
+            .githooks
+            .pre-commit-config.yaml
+            MANIFEST.in
+            justfile
+            pyproject.toml
+            requirements-dev.in
+            requirements-dev.lock
+          )
+
+          set +e
+          git -C candidate diff --quiet \
+            "$BASE_SHA" "$HEAD_SHA" -- "${protected[@]}"
+          diff_status=$?
+          set -e
+
+          case "$diff_status" in
+            0)
+              ;;
+            1)
+              jq -e \
+                --arg head "$HEAD_SHA" \
+                --arg label "$POLICY_LABEL" \
+                '
+                  .action == "labeled"
+                  and .label.name == $label
+                  and .pull_request.head.sha == $head
+                  and .sender.id == .repository.owner.id
+                  and .pull_request.user.id == .repository.owner.id
+                  and .pull_request.head.repo.id == .repository.id
+                ' "$GITHUB_EVENT_PATH" >/dev/null || {
+                  echo "Protected controls require an exact-head owner authorization event." >&2
+                  exit 1
+                }
+              ;;
+            *)
+              echo "Could not determine the protected-path diff." >&2
+              exit 2
+              ;;
+          esac

@@ -1,6 +1,7 @@
 #!/bin/sh
-# Repository pre-commit gate. Attribution is blocking; gitleaks is blocking
-# when installed and emits an explicit warning when unavailable.
+# Repository pre-commit gate. Content integrity and attribution are blocking;
+# gitleaks is blocking when installed and emits an explicit warning when
+# unavailable.
 #
 # WHY BOTH LIVE HERE: git honours exactly one hook path. This repository sets
 # `core.hooksPath = .githooks`, and the pre-commit framework refuses to install
@@ -14,6 +15,17 @@
 # framework: unset core.hooksPath first. CI enforces the attribution rule
 # independently (.github/workflows/no-ai-attribution.yml), so a contributor who
 # runs neither hook path is still caught before merge.
+
+# ---------------------------------------------------------- content integrity
+# Scan the complete proposed index, including unchanged staged blobs. A diff or
+# working-tree scan can miss a marked blob that is already staged, and an
+# incomplete scan is not clean.
+python3 .github/scripts/check_content_marks.py --index
+content_status=$?
+if [ "$content_status" -ne 0 ]; then
+    echo "ERROR: staged content-integrity scan did not pass." >&2
+    exit "$content_status"
+fi
 
 # ---------------------------------------------------------------- attribution
 # The three enforcement files necessarily contain the expression they search
