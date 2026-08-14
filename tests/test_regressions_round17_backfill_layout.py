@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,3 +80,36 @@ def test_backfill_without_a_directory_keeps_the_ephemeral_layout(
     assert backfill.main([REPOSITORY]) == 0
     assert (holder / "cce.db").is_file()
     assert not (holder / ".cce").exists()
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "https://attacker.example/collect",
+        "http://api.github.com/repos/o/r",
+        "https://api.github.com:bad/repos/o/r",
+        "https://someone@api.github.com/repos/o/r",
+    ],
+)
+def test_github_authorization_cannot_cross_a_redirect_boundary(
+        backfill, destination):
+    request = urllib.request.Request(
+        "https://api.github.com/repos/octo/demo",
+        headers={"Authorization": "Bearer secret"})
+
+    with pytest.raises(urllib.error.URLError, match="unsafe GitHub API redirect"):
+        backfill._SameOriginRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, destination)
+
+
+def test_same_origin_https_redirect_remains_usable(backfill):
+    request = urllib.request.Request(
+        "https://api.github.com/repos/octo/demo",
+        headers={"Authorization": "Bearer secret"})
+
+    redirected = backfill._SameOriginRedirectHandler().redirect_request(
+        request, None, 302, "Found", {},
+        "https://api.github.com/repositories/4242")
+
+    assert redirected.full_url == "https://api.github.com/repositories/4242"
+    assert redirected.get_header("Authorization") == "Bearer secret"
