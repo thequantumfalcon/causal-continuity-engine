@@ -31,6 +31,10 @@ setup:
 test:
     python -m pytest tests/ -q
 
+# Scan the exact proposed Git index for known carriers and hidden content.
+content-integrity:
+    python .github/scripts/check_content_marks.py --index
+
 # The lint scope is pinned in pyproject.toml under [tool.ruff.lint], NOT on the
 # command line here. An implicit rule set can change independently of this
 # repository's reviewed policy, while an explicit selection changes only when

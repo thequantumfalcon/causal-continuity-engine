@@ -1,0 +1,64 @@
+name: content-integrity-push
+
+# This is a push-time tripwire, not the merge authority. A hard required check
+# needs a single-purpose GitHub App whose scanner and credentials live outside
+# this repository; every in-repository workflow shares the Actions App identity.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: content-integrity-push-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: content-integrity-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BEFORE_SHA: ${{ github.event.before }}
+      HEAD_SHA: ${{ github.sha }}
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_LFS_SKIP_SMUDGE: "1"
+      GIT_NO_REPLACE_OBJECTS: "1"
+      GIT_TERMINAL_PROMPT: "0"
+
+    steps:
+      - name: Check out exact pushed commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          set-safe-directory: false
+
+      - name: Scan pushed tree and commit metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+          [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+          test "$(git rev-parse --verify 'HEAD^{commit}')" = "$HEAD_SHA"
+
+          scanner="$GITHUB_WORKSPACE/.github/scripts/check_content_marks.py"
+          python3 -I "$scanner" --tree "$HEAD_SHA"
+
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            range="$HEAD_SHA"
+          else
+            git cat-file -e "${BEFORE_SHA}^{commit}"
+            range="$BEFORE_SHA..$HEAD_SHA"
+          fi
+          commits="$(git rev-list "$range")"
+          for commit in $commits; do
+            [[ "$commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+            python3 -I "$scanner" --commit "$commit"
+          done

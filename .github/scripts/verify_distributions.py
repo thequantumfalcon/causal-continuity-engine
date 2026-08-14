@@ -173,6 +173,63 @@ _ZIP_LOCAL_HEADER = struct.Struct("<4s5H3L2H")
 _ZIP_CENTRAL_HEADER = struct.Struct("<4s6H3L5H2L")
 _ZIP_END_OF_CENTRAL_DIRECTORY = struct.Struct("<4s4H2LH")
 
+_CONTENT_MARK_SCANNER = None
+
+
+def _content_mark_scanner():
+    """Load the repository's single scanner without importing package code."""
+    global _CONTENT_MARK_SCANNER
+    if _CONTENT_MARK_SCANNER is not None:
+        return _CONTENT_MARK_SCANNER
+    path = Path(__file__).with_name("check_content_marks.py")
+    spec = importlib.util.spec_from_file_location(
+        "causal_continuity_engine_content_mark_scanner", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("cannot load the content-integrity scanner")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise SystemExit("cannot initialize the content-integrity scanner") from exc
+    if not callable(getattr(module, "scan_blob", None)):
+        raise SystemExit("content-integrity scanner has no scan_blob API")
+    _CONTENT_MARK_SCANNER = module
+    return module
+
+
+def _scan_distribution_payloads(payloads: dict[str, bytes], *, label: str) -> None:
+    """Require complete clean scans of member names and uncompressed bytes."""
+    scanner = _content_mark_scanner()
+    allowed_statuses = {
+        scanner.PRESENT,
+        scanner.MALFORMED,
+        scanner.INCONCLUSIVE,
+        scanner.SUSPICIOUS,
+    }
+    for name, body in sorted(payloads.items()):
+        try:
+            name_findings = scanner.scan_blob(
+                "<archive-member-name>", name.encode("utf-8"), text_required=True)
+            body_findings = scanner.scan_blob(name, body)
+        except Exception as exc:
+            raise SystemExit(
+                f"{label} content-integrity scan did not complete for {name}"
+            ) from exc
+        findings = name_findings + body_findings
+        if not isinstance(findings, tuple) or any(
+            getattr(finding, "status", None) not in allowed_statuses
+            or not isinstance(getattr(finding, "code", None), str)
+            for finding in findings
+        ):
+            raise SystemExit(f"{label} content-integrity scanner returned an invalid result")
+        if any(finding.status == scanner.INCONCLUSIVE for finding in findings):
+            raise SystemExit(
+                f"{label} content-integrity scan is incomplete for {name}"
+            )
+        if findings:
+            raise SystemExit(f"{label} contains prohibited content in {name}")
+
 
 def _venv_python(root: Path) -> Path:
     return root / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
@@ -454,6 +511,7 @@ def _verify_wheel_envelope(
     except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as exc:
         raise SystemExit("wheel is not a valid bounded ZIP archive") from exc
     _verify_wheel_semantic_envelope(raw, infos, payloads, epoch)
+    _scan_distribution_payloads(payloads, label="wheel")
     if verify_recompression_bytes and raw != _canonical_wheel_bytes(payloads, epoch):
         raise SystemExit("wheel complete ZIP envelope is not canonical")
 
@@ -1315,6 +1373,7 @@ def _validated_sdist_payload(
         and path.read_bytes() != _canonical_gzip_bytes(raw_tar, epoch)
     ):
         raise SystemExit("sdist complete gzip envelope is not canonical")
+    _scan_distribution_payloads(payload, label="sdist")
     return root, directories, payload
 
 

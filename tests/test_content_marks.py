@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / ".github" / "scripts" / "check_content_marks.py"
+DIST_SCRIPT = ROOT / ".github" / "scripts" / "verify_distributions.py"
 
 
 def _load_scanner():
@@ -26,9 +27,24 @@ def _load_scanner():
     return module
 
 
+def _load_distribution_verifier():
+    name = "cce_content_marks_distribution_test"
+    spec = importlib.util.spec_from_file_location(name, DIST_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture(scope="module")
 def scanner():
     return _load_scanner()
+
+
+@pytest.fixture(scope="module")
+def distribution_verifier():
+    return _load_distribution_verifier()
 
 
 def _box(kind, payload):
@@ -799,3 +815,81 @@ def test_cli_unmerged_index_entry_is_inconclusive(tmp_path):
     result = _run_scanner(tmp_path, "--index")
     assert result.returncode == 2
     assert b"index entry is unmerged" in result.stderr
+
+
+def test_distribution_payload_gate_rejects_marks_and_incomplete_scans(
+    distribution_verifier,
+):
+    distribution_verifier._scan_distribution_payloads(
+        {"plain.txt": b"visible text\n"}, label="fixture"
+    )
+
+    marked = ("visible" + _text_wrapper()).encode("utf-8")
+    with pytest.raises(SystemExit, match="contains prohibited content"):
+        distribution_verifier._scan_distribution_payloads(
+            {"marked.txt": marked}, label="fixture"
+        )
+
+    with pytest.raises(SystemExit, match="scan is incomplete"):
+        distribution_verifier._scan_distribution_payloads(
+            {"wide.dat": b"\xff\xfev\x00"}, label="fixture"
+        )
+
+
+def test_canonical_wheel_payload_is_scanned_before_acceptance(
+    tmp_path, distribution_verifier
+):
+    epoch = 1_700_000_000
+    wheel = tmp_path / "content-mark-fixture.whl"
+    marked = ("visible" + _text_wrapper()).encode("utf-8")
+    wheel.write_bytes(
+        distribution_verifier._canonical_wheel_bytes({"marked.txt": marked}, epoch)
+    )
+
+    with pytest.raises(SystemExit, match="wheel contains prohibited content"):
+        distribution_verifier._verify_wheel_envelope(wheel, expected_epoch=epoch)
+
+
+def test_both_distribution_deciding_paths_call_the_same_payload_gate(
+    distribution_verifier,
+):
+    wheel_names = set(distribution_verifier._verify_wheel_envelope.__code__.co_names)
+    sdist_names = set(distribution_verifier._validated_sdist_payload.__code__.co_names)
+
+    assert "_scan_distribution_payloads" in wheel_names
+    assert "_scan_distribution_payloads" in sdist_names
+
+
+def test_repository_deciding_paths_are_wired_without_false_hosted_authority():
+    run_gates = (ROOT / ".github" / "scripts" / "run_gates.py").read_text()
+    pre_commit = (ROOT / ".githooks" / "pre-commit").read_text()
+    commit_msg = (ROOT / ".githooks" / "commit-msg").read_text()
+    pre_commit_config = (ROOT / ".pre-commit-config.yaml").read_text()
+    justfile = (ROOT / "justfile").read_text()
+    push_workflow = (
+        ROOT / ".github" / "workflows" / "content-integrity.yml"
+    ).read_text()
+    pr_workflow = (
+        ROOT / ".github" / "workflows" / "content-integrity-pr.yml"
+    ).read_text()
+    ruleset = (ROOT / ".github" / "ruleset.json").read_text()
+
+    assert '"content integrity"' in run_gates
+    assert '"--tree",\n            "HEAD"' in run_gates
+    assert '"commit metadata integrity"' in run_gates
+    assert '"--commit",\n            "HEAD"' in run_gates
+    assert "check_content_marks.py --index" in pre_commit
+    assert "git var GIT_AUTHOR_IDENT" in commit_msg
+    assert "git var GIT_COMMITTER_IDENT" in commit_msg
+    assert "--stdin '<commit-message-and-identities>'" in commit_msg
+    assert "check_content_marks.py --index" in pre_commit_config
+    assert "content-integrity:" in justfile
+    assert "push:" in push_workflow
+    assert "pull_request_target" not in push_workflow
+    assert "pull_request_target:" in pr_workflow
+    assert "allow-unsafe-pr-checkout: true" in pr_workflow
+    assert "python3 -I \"$scanner\"" in pr_workflow
+    assert '--commit "$commit"' in push_workflow
+    assert '--commit "$commit"' in pr_workflow
+    assert "checks: write" not in pr_workflow
+    assert '"context": "content-integrity"' not in ruleset

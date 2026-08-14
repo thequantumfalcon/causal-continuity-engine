@@ -105,9 +105,10 @@ the same file is still caught.
 `.pre-commit-config.yaml` remains supported for contributors who prefer the
 framework, with one constraint: git honours exactly one hook path, and
 pre-commit refuses to install while `core.hooksPath` is set. Unset it first
-(`git config --unset core.hooksPath`). That path covers gitleaks, `ruff check` (the same
-lint gate as `just lint` and CI) and file hygiene, but not the attribution
-scan. It deliberately carries no `ruff-format` hook — see the `fmt-check` note
+(`git config --unset core.hooksPath`). That path covers the complete staged
+content-integrity scan, gitleaks, `ruff check` (the same lint gate as `just
+lint` and CI), and file hygiene, but not the attribution scan. It deliberately
+carries no `ruff-format` hook — see the `fmt-check` note
 in the `justfile`. CI enforces the attribution rule independently either way
 (`.github/workflows/no-ai-attribution.yml`), so nothing that reaches a pull
 request depends on which hook path you chose.
@@ -131,6 +132,7 @@ wheel. The `ci` job fans all those paths into one context.
 | Recipe | Direct equivalent | What it establishes |
 |---|---|---|
 | `just setup` | `python -m pip install --force-reinstall --require-hashes --only-binary=:all: -r requirements-dev.lock`, then `python -m pip check`, then `python -m pip install --no-deps --no-build-isolation -e .` | Nothing on its own. It installs the reviewed, hash-locked tool closure, checks dependency consistency, and installs the local package without undeclared resolution. |
+| `just content-integrity` | `python .github/scripts/check_content_marks.py --index` | Every staged Git blob was inspected completely and contains no recognized carrier or repository-disallowed hidden control. It does not detect an unpublished statistical text mark. |
 | `just lint` | `python -m ruff check .` | Ruff passes under the rule set pinned in `pyproject.toml` `[tool.ruff.lint]` — `E`, `F`, `W`, `I`, line length 100. That set, and nothing wider: it is not passed on the command line, so widening the gate means editing `pyproject.toml`. |
 | `just deps` | `python .github/scripts/check_stdlib.py` | `causal_continuity_engine/` imports nothing outside the standard library. It parses the AST instead of importing, so a lazy, guarded, or function-local import is caught too. This is the gate behind the zero-runtime-dependency claim. |
 | `just test` | `python -m pytest tests/ -q` | The complete regression suite and planted instrument-validation cases pass. |
