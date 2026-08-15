@@ -65,10 +65,11 @@ command are already used by an unrelated published project.
 can read a project's control state directly. Four read-only tools:
 `resume_packet`, `list_assumptions`, `list_invalidations`, `continuity_check`.
 
-**Not in a published release yet.** The subcommand exists on `main` and is not
-in any version on PyPI, so install from source to use it. It has been driven
-end to end from a built wheel with the reference MCP SDK; other clients are
-expected to work over the same transport but have not been exercised here.
+The subcommand is included in the 0.1.5 source. Published versions through
+0.1.3 do not include it; 0.1.4 was prepared but never published. The current
+`main` lifecycle hardening has been driven end to end from a built wheel with
+the reference MCP SDK; other clients are expected to work over the same
+transport but have not been exercised here.
 
 ```json
 {

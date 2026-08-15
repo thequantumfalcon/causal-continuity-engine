@@ -8,8 +8,7 @@ authors:
   - given-names: Thomas
     family-names: Albrecht
     alias: The Quantum Falcon
-version: 0.1.4
-date-released: 2026-08-10
+version: 0.1.5
 license: Apache-2.0
 repository-code: https://github.com/thequantumfalcon/causal-continuity-engine
 url: https://github.com/thequantumfalcon/causal-continuity-engine

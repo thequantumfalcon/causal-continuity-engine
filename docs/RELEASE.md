@@ -48,7 +48,7 @@ which maintainer signed.
    reintroduce another package-version source.
 2. Regenerate `docs/CAPABILITIES.md` only with
    `python -m causal_continuity_engine.capabilities --write`.
-3. Run `python .github/scripts/check_release_metadata.py --release v0.1.0`,
+3. Run `python .github/scripts/check_release_metadata.py --release v0.1.5`,
    then `just setup` and `just release` from a clean checkout.
 4. Drive the MCP server by hand from the built wheel with a real client, and
    read the responses. Install the wheel into an empty virtual environment,
@@ -57,9 +57,10 @@ which maintainer signed.
    accepts, `tools/list` returns all four tools, and one `tools/call` returns
    real content. No gate can do this: the packaged tests drive `serve()`
    in-process, and `tests/test_mcp_server.py` skips its protocol-revision check
-   unless the reference SDK happens to be installed. Version 0.1.4 advertised
-   `2026-07-28` — a revision that does not exist — and every automated check
-   passed while no client could complete a handshake.
+   unless the reference SDK happens to be installed. The prepared — never
+   published — 0.1.4 tree advertised `2026-07-28`, a revision that does not
+   exist, and every automated check passed while no client could complete a
+   handshake.
 5. Land the release commit on `main`. Require GitHub's exact commit API to
    report `commit.verification.verified == true`, and wait for the `ci`,
    `attribution`, and `secrets` push checks on that exact SHA to succeed. Each
@@ -106,7 +107,7 @@ package version and pushes it only because `--push` is explicit:
 ```bash
 git switch main
 git pull --ff-only origin main
-GH_TOKEN="$(gh auth token)" just prepare-release-tag v0.1.0 --push
+GH_TOKEN="$(gh auth token)" just prepare-release-tag v0.1.5 --push
 ```
 
 The command refuses a dirty tree, a non-`main` checkout, a wrong origin, any
@@ -218,7 +219,7 @@ ruleset immediately even if deletion fails, and read it back:
 ```bash
 REPO=thequantumfalcon/causal-continuity-engine
 RULESET=20590968
-TAG=v0.1.0
+TAG=v0.1.5
 ENDPOINT="repos/$REPO/rulesets/$RULESET"
 
 gh api "$ENDPOINT" --jq '{id,name,target,enforcement,bypass_actors,rules}'

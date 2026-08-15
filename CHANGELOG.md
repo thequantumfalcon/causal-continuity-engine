@@ -9,7 +9,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## 0.1.4 — 2026-08-10
+## 0.1.5 — not yet released
+
+Closes the trust and release-boundary findings discovered during the post-0.1.4
+audit, with each defect pinned against the 0.1.4 source baseline.
+
+### Added
+
+- **A content-ingress firewall for repository and release bytes.** The same
+  fail-closed scanner covers exact Git objects, commit and tag metadata,
+  distributions, local hooks, and advisory CI. A Git-free isolated-review
+  launcher and provisioning specification are included, but the privileged
+  macOS boundary and dedicated external GitHub App remain explicit deployment
+  prerequisites rather than claimed active controls.
+
+### Changed
+
+- **MCP sessions now implement the initialization lifecycle.** Normal tools are
+  unavailable until `initialize` and `notifications/initialized` complete;
+  `ping`, notification silence, request identifiers, parameter shapes, and
+  tool arguments are validated before project state opens. Resume packets are
+  available as exhaustive Markdown or canonical JSON.
+- **MCP resume reads are logically read-only.** The database is compared before
+  and after packet composition, including the quarantine-collision path. An MCP
+  observation does not advance the resume watermark or append an audit row.
+- **`prose_may_mandate=false` covers every extracted control kind.**
+  Requirements, constraints, decisions, and checklist tasks become claims.
+  Packet composition also applies the current policy to older extracted prose,
+  so tightening the setting does not leave latent authority behind.
+
+### Fixed
+
+- **The owner tag helper could push before scanning the raw tag object.** It now
+  disables replacement objects, scans the exact annotated-tag bytes, binds them
+  back to their Git object identifier, and cleans the local tag on any finding
+  before a remote push can occur.
+
+- **A budgeted packet could instruct work it withheld.** The next safe action
+  is reconciled after trimming and quarantine stripping. It either names a
+  retained actionable task or truthfully discloses blocked or withheld work.
+- **The Markdown packet silently omitted decision-relevant sections.** It now
+  renders mission control, assumptions, environment, verifier outcomes,
+  evidence, recent context, lineage, and explicit cryptographic-metadata
+  treatment. A schema-backed test makes the projection exhaustive.
+- **Named-directory backfill wrote an orphan layout.** `--dir` now initializes
+  the canonical `.cce` project. GitHub authorization follows only same-origin
+  HTTPS redirects and malformed origins fail closed.
+- **Benchmark metric failures could exit zero.** The process now fails when any
+  scenario fails or any metric verdict is not `PASS`.
+- **The development lock disagreed with its direct inputs.** Pip 26.2 and its
+  reviewed wheel/source hashes are locked; a regression compares every direct
+  declaration with the compiled closure.
+- **Unicode format controls bypassed injection screening and corrupted source
+  spans.** Matching uses canonical visible text while evidence maps to original
+  coordinates. The extractor abstains at a split grapheme boundary, including
+  format controls before combining marks. Behavior is versioned as extractor
+  1.1.0 and processor 1.1.0.
+- **MCP list projections read the wrong state.** Assumptions now include only
+  active/supported nodes; invalidation severity and reason come from canonical
+  nested data.
+- **Durable statement identity was unnamed.** The v2 normalization contract is
+  explicit and pinned by ASCII and non-ASCII vectors; historical v1 nodes are
+  retained rather than rewritten.
+
+## 0.1.4 — prepared 2026-08-10, never published
+
+This version was prepared and validated but never tagged or published.
+Its changes were carried forward into the 0.1.5 line. The section is retained
+because the changes are real even though no 0.1.4 distribution exists.
 
 Adds the surface through which an editor can read a project, and fixes what
 using it revealed.
