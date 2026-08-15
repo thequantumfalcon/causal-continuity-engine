@@ -820,8 +820,13 @@ def _scan_xmp(path: str, data: bytes, offset: int, host: str) -> list[Finding]:
     try:
         parser.Parse(data, True)
     except (_ParseError, expat.ExpatError) as exc:
-        if not records:
-            return []
+        # An XMP packet this scanner cannot finish reading is a packet it
+        # cannot clear. Returning clean here let a real external-manifest
+        # locator through: prefixing the packet with a DOCTYPE raises before
+        # the first element is seen, so `records` was empty and the carrier
+        # was never reported, while a stock XML parser still reads the
+        # locator. SVG already fails closed on the same construct; this makes
+        # PNG and JPEG match the scanner's stated contract.
         return [
             _finding(
                 path,

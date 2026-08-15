@@ -275,6 +275,29 @@ def test_xmp_requires_exact_namespaced_provenance(scanner):
     assert scanner.scan_blob("image.png", _png(_png_xmp(literal))) == ()
 
 
+def test_unreadable_xmp_cannot_hide_a_locator(scanner):
+    """A packet the scanner cannot finish reading is never clean.
+
+    Prefixing the XMP with a DOCTYPE raises before the first element is seen,
+    so no locator was recorded and the carrier was reported as absent while a
+    stock XML parser still read it. SVG already failed closed on the same
+    construct; PNG and JPEG did not.
+    """
+    hidden = _xmp("asset.c2pa").replace(
+        b"<x:xmpmeta", b"<!DOCTYPE x [ <!ENTITY e \'v\'> ]><x:xmpmeta", 1)
+
+    jpeg_header = b"http://ns.adobe.com/xap/1.0/\x00"
+    for host, blob in (
+        ("image.png", _png(_png_xmp(hidden))),
+        ("image.jpg",
+         b"\xFF\xD8" + _jpeg_segment(0xE1, jpeg_header + hidden) + b"\xFF\xD9"),
+    ):
+        findings = scanner.scan_blob(host, blob)
+        assert _statuses(findings) == {scanner.INCONCLUSIVE}, host
+        assert "content.scan.xmp.malformed" in _codes(findings), host
+        assert scanner._result_code(list(findings)) == 2, host
+
+
 def test_jpeg_xt_fragments_reconstruct_one_store(scanner):
     findings = scanner.scan_blob("image.jpg", _jpeg_with_store())
     assert _statuses(findings) == {scanner.PRESENT}
