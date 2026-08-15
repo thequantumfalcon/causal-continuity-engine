@@ -181,10 +181,19 @@ def test_noisy_verifier_output_is_bounded_deterministic_and_persisted(tmp_path):
 
 
 def test_timeout_kills_the_verifier_descendant_tree(tmp_path):
+    # The descendant must be killed before it can act, so it sleeps well past
+    # the 1s timeout and the assertion waits past its write time: a survivor
+    # WOULD have written by then, which is what makes the check meaningful.
+    # The original 2s/2.5s pair left the tree kill under one second of margin
+    # and failed intermittently on loaded Windows runners, where taskkill /T
+    # needs longer. Widening the margin removes the race without weakening
+    # the property being proven.
+    child_sleep = 6
+    settle = child_sleep + 2
     marker = tmp_path / "descendant-survived.txt"
     (tmp_path / "timeout_child.py").write_text(
         "import pathlib, sys, time\n"
-        "time.sleep(2)\n"
+        f"time.sleep({child_sleep})\n"
         "pathlib.Path(sys.argv[1]).write_text('survived', encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -202,5 +211,5 @@ def test_timeout_kills_the_verifier_descendant_tree(tmp_path):
 
     assert outcome.result == "inconclusive"
     assert "timeout after 1s" in outcome.details
-    time.sleep(2.5)
+    time.sleep(settle)
     assert not marker.exists()
