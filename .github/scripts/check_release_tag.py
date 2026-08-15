@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 import re
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -159,9 +161,59 @@ def _required_checks(source_root: Path = ROOT) -> dict[str, tuple[int, str]]:
 def _git(*args: str) -> str:
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=ROOT, text=True, timeout=30).strip()
+            ["git", "--no-replace-objects", *args], cwd=ROOT, text=True, timeout=30).strip()
     except subprocess.TimeoutExpired as exc:
         raise SystemExit("release Git identity check timed out after 30s") from exc
+
+
+def _git_bytes(*args: str) -> bytes:
+    environment = dict(os.environ)
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
+    try:
+        return subprocess.check_output(
+            ["git", "--no-replace-objects", *args],
+            cwd=ROOT,
+            env=environment,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit("release Git object read timed out after 30s") from exc
+
+
+def _verify_git_object_id(oid: str, kind: str, payload: bytes) -> None:
+    algorithms = {40: hashlib.sha1, 64: hashlib.sha256}
+    algorithm = algorithms.get(len(oid))
+    if algorithm is None or any(character not in "0123456789abcdef" for character in oid):
+        raise SystemExit("release Git object has an unsupported identifier")
+    header = f"{kind} {len(payload)}\0".encode("ascii")
+    if algorithm(header + payload).hexdigest() != oid:
+        raise SystemExit("release Git object bytes do not match their identifier")
+
+
+def _content_scanner():
+    path = ROOT / ".github" / "scripts" / "check_content_marks.py"
+    name = "causal_continuity_engine_release_content_marks"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("cannot load the release content-integrity scanner")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _scan_tag_object(tag: str, payload: bytes) -> None:
+    scanner = _content_scanner()
+    findings = scanner.scan_blob(f"<tag:{tag}>", payload, text_required=True)
+    incomplete = [finding for finding in findings if finding.status == scanner.INCONCLUSIVE]
+    if incomplete:
+        raise SystemExit(
+            f"release tag object content-integrity scan is incomplete: {incomplete[0].code}"
+        )
+    if findings:
+        raise SystemExit(
+            f"release tag object contains prohibited content: {findings[0].code}"
+        )
 
 
 def _validated_repository(repository: object) -> str:
@@ -530,7 +582,12 @@ def main(argv: list[str] | None = None) -> int:
     tag_type = _git("cat-file", "-t", f"refs/tags/{args.tag}")
     if tag_type != "tag":
         raise SystemExit("release tags must be annotated, not lightweight")
-    tag_body = _git("cat-file", "-p", f"refs/tags/{args.tag}")
+    tag_bytes = _git_bytes("cat-file", "tag", f"refs/tags/{args.tag}")
+    _scan_tag_object(args.tag, tag_bytes)
+    try:
+        tag_body = tag_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("release tag object is not valid UTF-8") from exc
     headers = _signed_tag_headers(tag_body)
     if headers.get("type") != "commit":
         raise SystemExit("release tag object must directly name a commit")
@@ -541,6 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     if not any(marker in tag_body for marker in SIGNATURE_MARKERS):
         raise SystemExit("release tags must carry a PGP or SSH signature")
     tag_object = _git("rev-parse", f"refs/tags/{args.tag}^{{tag}}")
+    _verify_git_object_id(tag_object, "tag", tag_bytes)
     tagged = _git("rev-parse", f"refs/tags/{args.tag}^{{commit}}")
     if headers.get("object") != tagged:
         raise SystemExit(

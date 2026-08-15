@@ -2099,11 +2099,14 @@ def test_release_rejects_unsigned_annotated_tag(monkeypatch):
     def fake_git(*args):
         if args[:2] == ("cat-file", "-t"):
             return "tag"
-        if args[:2] == ("cat-file", "-p"):
-            return f"object abc\ntype commit\ntag {tag}\n\nCCE {tag}"
         raise AssertionError(args)
 
     monkeypatch.setattr(checker, "_git", fake_git)
+    monkeypatch.setattr(
+        checker,
+        "_git_bytes",
+        lambda *args: f"object abc\ntype commit\ntag {tag}\n\nCCE {tag}".encode(),
+    )
     with pytest.raises(SystemExit, match="must carry a PGP or SSH signature"):
         checker.main([tag])
 
@@ -2118,14 +2121,18 @@ def test_release_rejects_signed_tag_object_aliased_under_another_name(
     def fake_git(*args):
         if args[:2] == ("cat-file", "-t"):
             return "tag"
-        if args[:2] == ("cat-file", "-p"):
-            return (
-                "object abc\ntype commit\ntag v0.0.9\ntagger Maintainer "
-                "<maintainer@example.test> 0 +0000\n\nrelease\n"
-                "-----BEGIN SSH SIGNATURE-----")
         raise AssertionError(args)
 
     monkeypatch.setattr(checker, "_git", fake_git)
+    monkeypatch.setattr(
+        checker,
+        "_git_bytes",
+        lambda *args: (
+            "object abc\ntype commit\ntag v0.0.9\ntagger Maintainer "
+            "<maintainer@example.test> 0 +0000\n\nrelease\n"
+            "-----BEGIN SSH SIGNATURE-----"
+        ).encode(),
+    )
     with pytest.raises(SystemExit, match="signed tag object names"):
         checker.main([f"v{version}"])
 
