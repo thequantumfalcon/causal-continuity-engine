@@ -48,11 +48,11 @@ def _verified(reason="valid"):
     }
 
 
-def test_current_metadata_is_tag_ready_in_both_modes():
+def test_current_metadata_is_consistent_but_not_pretending_to_be_released():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT) == ("0.1.4", "2026-08-10")
-    assert metadata.check(
-        ROOT, release_tag="v0.1.4") == ("0.1.4", "2026-08-10")
+    assert metadata.check(ROOT) == ("0.1.5", None)
+    with pytest.raises(SystemExit, match="not yet released"):
+        metadata.check(ROOT, release_tag="v0.1.5")
 
 
 def test_release_metadata_requires_matching_dates_and_reset_unreleased(tmp_path):
