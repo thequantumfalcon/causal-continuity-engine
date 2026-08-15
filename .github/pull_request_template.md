@@ -16,7 +16,7 @@
 - [ ] `just corpus` passes — the reference still agrees with the committed vectors in `vectors/`.
 - [ ] `just caps` passes — every capability claim still resolves to real symbols, files, and tests. If the claims changed, `docs/CAPABILITIES.md` was regenerated with `python -m causal_continuity_engine.capabilities --write` rather than hand-edited.
 - [ ] `just build` passes if packaging, generated assets, or release machinery changed — both builds match and the clean-installed wheel audits successfully.
-- [ ] Every commit carries a `Signed-off-by` trailer (`git commit -s`). Asked for, not enforced — nothing blocks a PR without it today.
+- [ ] Every commit carries a `Signed-off-by` trailer (`git commit -s`). Enforced: the `DCO` check is a required status on `main`, so a pull request with any commit missing the trailer cannot merge.
 - [ ] No gate was weakened, skipped, or made conditional in order to get a test to pass. If a gate had to change, that change is the subject of this PR and is argued for above.
 - [ ] No AI attribution anywhere in the diff, commit messages, or PR title or body.
 
