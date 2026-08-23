@@ -100,15 +100,92 @@ GitHub-generated source archives likewise retain `.github/` and `tests/`.
 
 ## Sign and publish
 
-On the owner's Mac, authenticate GitHub CLI and run the fail-closed tag
-command. It creates a signed annotated tag whose name is exactly `v` plus the
-package version and pushes it only because `--push` is explicit:
+On the owner's Mac, use a dedicated clean checkout whose exact origin is
+`ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git`. Verify the
+GitHub host key in `known_hosts` and select the explicit public keys that the
+SSH agent holds for signing and GitHub transport. Then authenticate GitHub CLI
+and run the fail-closed tag command. It creates a signed annotated tag whose
+name is exactly `v` plus the package version and pushes it only because
+`--push` is explicit:
+
+On macOS the launchd agent socket normally enters the shell through the
+root-owned `/var` alias and may itself be mode `0666`; the command resolves
+that alias and accepts the socket only when the resolved socket is owned by
+the operator inside an operator-owned mode-`0700` launchd directory. A socket
+without that containing-directory boundary is rejected.
+
+Create the dedicated checkout before placing an API token in the environment.
+The following clone uses only the selected agent identity and host-key file,
+ignores ambient Git and SSH configuration, and disables repository hooks:
 
 ```bash
-git switch main
-git pull --ff-only origin main
-GH_TOKEN="$(gh auth token)" just prepare-release-tag v0.1.5 --push
+(
+  set -eu
+  if [ -e "$HOME/cce-release" ]; then
+    printf '%s\n' 'Refusing to reuse an existing release checkout.' >&2
+    exit 1
+  fi
+  release_ssh_command="/usr/bin/ssh -F /dev/null -oBatchMode=yes \
+  -oPasswordAuthentication=no -oKbdInteractiveAuthentication=no \
+  -oStrictHostKeyChecking=yes -oUpdateHostKeys=no -oClearAllForwardings=yes \
+  -oPermitLocalCommand=no -oProxyCommand=none \
+  -oUserKnownHostsFile=$HOME/.ssh/known_hosts -oGlobalKnownHostsFile=/dev/null \
+  -oIdentitiesOnly=yes -oIdentityAgent=$SSH_AUTH_SOCK \
+  -oIdentityFile=$HOME/.ssh/id_ed25519.pub"
+  /usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin SSH_AUTH_SOCK="$SSH_AUTH_SOCK" \
+    GIT_CONFIG_COUNT=0 GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 \
+    GIT_SSH_COMMAND="$release_ssh_command" \
+    /usr/bin/git --no-pager --no-replace-objects \
+    -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+    -c credential.helper= -c credential.interactive=never \
+    -c protocol.allow=never -c protocol.ssh.allow=always \
+    clone --branch main \
+    ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git \
+    "$HOME/cce-release"
+)
 ```
+
+Run the setup, complete release gate, and the manual built-wheel MCP exercise
+described above in that checkout before creating any tag:
+
+```bash
+cd "$HOME/cce-release"
+just setup
+just release
+# Complete the real-client MCP exercise from step 4 before continuing.
+```
+
+Only after those checks pass, obtain one fresh owner token without allowing an
+ambient token or `PATH` entry to choose the credential source:
+
+```bash
+(
+  set -eu
+  release_token="$(/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin \
+    /opt/homebrew/bin/gh auth token)"
+  /usr/bin/env -i GH_TOKEN="$release_token" LANG=C LC_ALL=C \
+    /opt/homebrew/bin/python3 -I \
+    .github/scripts/prepare_release_tag.py v0.1.5 --push \
+    --git-executable /usr/bin/git \
+    --tagger-name "Thomas Albrecht" \
+    --tagger-email "thequantumfalcon@users.noreply.github.com" \
+    --signing-key "$HOME/.ssh/thequantumfalcon_signing.pub" \
+    --ssh-keygen-executable /usr/bin/ssh-keygen \
+    --allowed-signers-file "$HOME/.ssh/allowed_signers" \
+    --ssh-executable /usr/bin/ssh \
+    --known-hosts-file "$HOME/.ssh/known_hosts" \
+    --transport-key "$HOME/.ssh/id_ed25519.pub" \
+    --ssh-auth-sock "$SSH_AUTH_SOCK"
+)
+```
+
+The fresh clone records only the structural core, origin, and `main` tracking
+keys that the profile admits. The existing development checkout is
+expected to fail admission because it contains historical branch and local
+signing configuration; do not delete those settings or broaden the allowlist
+to make it pass.
 
 The command refuses a dirty tree, a non-`main` checkout, a wrong origin, any
 divergence from freshly fetched and remotely observed `origin/main`, an
@@ -124,8 +201,30 @@ object, type, signature, and peeled SHA with both `git cat-file` and
 `git verify-tag`, and rechecks remote main and tag absence immediately before
 an explicit push. Omitting `--push` deliberately leaves a validated local tag
 and performs no network write. If post-creation validation fails, the command
-deletes only the local tag it created; if the explicit remote push itself
-fails, it retains the already validated local tag and reports that fact.
+deletes only the local tag it created. After any push-attempt failure, remote
+state is unknown: stop, do not retry or recreate the tag, and reconcile the
+exact remote reference through a read-only owner observation before taking any
+further action. The validated local tag is retained and blocks an automatic
+rerun.
+
+The release profile does not inherit `PATH`, global/system/environment Git
+configuration, credential helpers, SSH configuration, askpass programs, or
+signing settings. It admits only a narrow structural `.git/config`, disables
+hooks and filesystem monitors, and gives the Git child either the signing agent
+capability or the SSH transport capability required for that operation.
+It also refuses shallow history, a redirected common Git directory, grafts,
+alternate object stores, replacement refs, and active `.git/info/exclude` or
+`.git/info/attributes` rules.
+`GH_TOKEN` remains available only to the Python GitHub API verifier, which
+disables proxies and uses the interpreter's compiled system trust locations.
+A prohibited-config diagnostic is a stop signal, not permission to broaden the
+allowlist; prepare a fresh dedicated checkout.
+This boundary assumes no concurrent process running as the owner is modifying
+the repository or explicit profile inputs. It does not defend against a
+compromised owner account, SSH agent, trusted executable, or operating system.
+It also assumes the checked-out release helpers and imported Python modules
+were owner-reviewed before process start; code already modified in the
+checkout can act before a clean-tree check could establish anything.
 
 `.github/workflows/release.yml` verifies all of the following before it
 publishes anything:

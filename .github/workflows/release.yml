@@ -49,6 +49,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
           python .github/scripts/check_release_tag.py "$GITHUB_REF_NAME"
+          --git-executable /usr/bin/git
           --verify-github --verify-required-checks
 
       # These stable TypeURI URLs are part of the public protocol. They remain
