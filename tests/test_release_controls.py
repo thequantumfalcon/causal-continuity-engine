@@ -894,6 +894,53 @@ def test_prepare_tag_never_runs_repository_pre_push_hook_with_api_token(
 
 
 @_POSIX_RELEASE_GIT
+def test_prepare_tag_rejects_an_executable_url_rewrite_before_token_exposure(
+        private_release_tmp, monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    repository = private_release_tmp / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["/usr/bin/git", "init", "--quiet"], cwd=repository, check=True)
+    sentinel = private_release_tmp / "captured-token"
+    helper = private_release_tmp / "capture-helper"
+    helper.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\' "$GH_TOKEN" > "$CCE_R04_SENTINEL"\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    helper.chmod(helper.stat().st_mode | stat.S_IXUSR)
+    subprocess.run(
+        [
+            "/usr/bin/git", "config", f"url.ext::{helper} .insteadOf",
+            "ssh://git@github.com/",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["/usr/bin/git", "config", "protocol.ext.allow", "always"],
+        cwd=repository,
+        check=True,
+    )
+    monkeypatch.setattr(tool, "ROOT", repository)
+    monkeypatch.setenv("GH_TOKEN", "r04-planted-token")
+    monkeypatch.setenv("CCE_R04_SENTINEL", os.fspath(sentinel))
+
+    with pytest.raises((SystemExit, subprocess.CalledProcessError)):
+        if hasattr(tool.CHECKER, "ReleaseGit"):
+            tool.CHECKER.ReleaseGit.checker(
+                root=repository, git_executable="/usr/bin/git")
+        else:  # The pinned pre-fix helper executes the rewritten ext transport.
+            tool._run_git(
+                "ls-remote",
+                "ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git",
+            )
+
+    assert not sentinel.exists()
+
+
+@_POSIX_RELEASE_GIT
 def test_prepare_tag_rejects_a_repository_signing_program_before_execution(
         private_release_tmp, monkeypatch):
     tmp_path = private_release_tmp
@@ -1001,6 +1048,82 @@ def test_prepare_tag_never_resolves_git_through_inherited_path(
             runner.close()
     else:  # The pinned pre-fix helper resolves and executes the planted shim.
         tool._require_clean_tree()
+
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize(
+    "wrapper_name, arguments",
+    [
+        ("_git", ("rev-parse", "HEAD")),
+        ("_git_bytes", ("cat-file", "-t", "refs/tags/v0.1.0")),
+    ],
+)
+@_POSIX_RELEASE_GIT
+def test_release_checker_wrappers_never_resolve_git_through_inherited_path(
+        private_release_tmp, monkeypatch, wrapper_name, arguments):
+    checker = _load_release_script("check_release_tag")
+    repository = private_release_tmp / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["/usr/bin/git", "init", "--quiet"], cwd=repository, check=True)
+    (repository / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(
+        ["/usr/bin/git", "add", "tracked.txt"], cwd=repository, check=True)
+    identity = [
+        "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+    ]
+    subprocess.run(
+        [
+            "/usr/bin/git", *identity, "-c", "commit.gpgsign=false",
+            "commit", "--quiet", "--message", "fixture",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "/usr/bin/git", *identity, "-c", "tag.gpgSign=false",
+            "tag", "--annotate", "v0.1.0", "--message", "fixture",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "/usr/bin/git", "remote", "add", "origin",
+            "ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    shim_directory = private_release_tmp / "shim"
+    shim_directory.mkdir()
+    sentinel = private_release_tmp / "captured-token"
+    shim = shim_directory / "git"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\' "$GH_TOKEN" > "$CCE_R04_SENTINEL"\n'
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(checker, "ROOT", repository)
+    monkeypatch.setenv("PATH", os.fspath(shim_directory))
+    monkeypatch.setenv("GH_TOKEN", "r04-planted-token")
+    monkeypatch.setenv("CCE_R04_SENTINEL", os.fspath(sentinel))
+
+    if hasattr(checker, "ReleaseGit"):
+        runner = checker.ReleaseGit.checker(
+            root=repository, git_executable="/usr/bin/git")
+        previous = checker._set_release_git(runner)
+        try:
+            getattr(checker, wrapper_name)(*arguments)
+        finally:
+            checker._set_release_git(previous)
+            runner.close()
+    else:  # The pinned pre-fix wrapper executes the planted PATH shim.
+        getattr(checker, wrapper_name)(*arguments)
 
     assert not sentinel.exists()
 
