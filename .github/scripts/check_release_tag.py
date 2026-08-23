@@ -822,8 +822,17 @@ class ReleaseGit:
         if not args:
             raise SystemExit("release Git command is empty")
         command = args[0]
+        object_id = r"(?:[0-9a-f]{40}|[0-9a-f]{64})"
+        stable_tag = r"v[0-9]+\.[0-9]+\.[0-9]+"
+        stable_ref = rf"refs/tags/{stable_tag}"
+
+        def is_object_id(value: str) -> bool:
+            return (
+                re.fullmatch(object_id, value) is not None
+                and any(character != "0" for character in value)
+            )
+
         if command in self._NETWORK_COMMANDS:
-            tag_ref = re.compile(r"refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)\Z")
             exact = False
             if command == "fetch":
                 exact = args == (
@@ -838,16 +847,15 @@ class ReleaseGit:
                 if len(args) == 5 and args[:4] == (
                     "ls-remote", "--exit-code", "--tags", RELEASE_SSH_ORIGIN,
                 ):
-                    exact = tag_ref.fullmatch(args[4]) is not None
+                    exact = re.fullmatch(stable_ref, args[4]) is not None
             elif command == "push" and len(args) == 5 and args[:4] == (
                 "push", "--porcelain", "--no-verify", RELEASE_SSH_ORIGIN,
             ):
                 source, separator, destination = args[4].partition(":")
-                source_match = tag_ref.fullmatch(source)
                 exact = (
                     separator == ":"
-                    and source_match is not None
-                    and destination == source
+                    and is_object_id(source)
+                    and re.fullmatch(stable_ref, destination) is not None
                 )
             if not self.prepare or not exact:
                 raise SystemExit("release network Git requires the exact explicit SSH origin")
@@ -856,7 +864,7 @@ class ReleaseGit:
             if (
                 not self.prepare
                 or len(args) != 2
-                or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args[1]) is None
+                or not is_object_id(args[1])
             ):
                 raise SystemExit("release signature verification requires an owner profile")
             return "verify"
@@ -873,19 +881,17 @@ class ReleaseGit:
                 ):
                     raise SystemExit("release Git refuses an unclassified tag operation")
                 return "sign"
-            if "--delete" in args:
-                if (
-                    not self.prepare
-                    or len(args) != 3
-                    or args[:2] != ("tag", "--delete")
-                    or re.fullmatch(
-                        r"v[0-9]+\.[0-9]+\.[0-9]+", args[2]) is None
-                ):
-                    raise SystemExit("release Git refuses an unclassified tag operation")
-                return "write"
             raise SystemExit("release Git refuses an unclassified tag operation")
-        stable_tag = r"v[0-9]+\.[0-9]+\.[0-9]+"
-        stable_ref = rf"refs/tags/{stable_tag}"
+        if command == "update-ref":
+            if (
+                not self.prepare
+                or len(args) != 5
+                or args[:3] != ("update-ref", "--no-deref", "-d")
+                or re.fullmatch(stable_ref, args[3]) is None
+                or not is_object_id(args[4])
+            ):
+                raise SystemExit("release Git refuses an unclassified ref update")
+            return "write"
         exact_read = args in {
             ("status", "--porcelain=v1", "--untracked-files=all"),
             ("symbolic-ref", "--short", "HEAD"),
@@ -900,11 +906,27 @@ class ReleaseGit:
         elif command == "cat-file" and len(args) == 3:
             exact_read = (
                 args[1] in {"-t", "tag"}
-                and re.fullmatch(stable_ref, args[2]) is not None
+                and (
+                    re.fullmatch(stable_ref, args[2]) is not None
+                    or is_object_id(args[2])
+                )
             )
-        elif command == "rev-parse" and len(args) == 2:
-            exact_read = exact_read or re.fullmatch(
-                rf"{stable_ref}(?:\^\{{(?:tag|commit)\}})?", args[1]) is not None
+        elif command == "rev-parse":
+            if len(args) == 2:
+                exact_read = (
+                    exact_read
+                    or re.fullmatch(
+                        rf"{stable_ref}(?:\^\{{(?:tag|commit)\}})?", args[1]) is not None
+                    or (
+                        args[1].endswith("^{commit}")
+                        and is_object_id(args[1][:-9])
+                    )
+                )
+            elif len(args) == 4:
+                exact_read = (
+                    args[:3] == ("rev-parse", "--verify", "--quiet")
+                    and re.fullmatch(stable_ref, args[3]) is not None
+                )
         if not exact_read:
             raise SystemExit("release Git refuses an unclassified read operation")
         return "read"

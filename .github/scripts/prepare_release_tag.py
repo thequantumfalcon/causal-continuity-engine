@@ -12,6 +12,8 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_REPOSITORY = "thequantumfalcon/causal-continuity-engine"
 TAG_RE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+\Z")
+GIT_OBJECT_RE = re.compile(
+    r"(?!(?:0{40}|0{64})\Z)(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 
 def _load_release_checker() -> ModuleType:
@@ -108,12 +110,26 @@ def _require_current_origin_main() -> str:
     return head
 
 
-def _local_tag_exists(tag: str) -> bool:
+def _local_tag_object(tag: str) -> str | None:
+    ref = f"refs/tags/{tag}"
     completed = _git_status(
-        "show-ref", "--verify", "--quiet", f"refs/tags/{tag}")
-    if completed.returncode not in (0, 1):
+        "rev-parse", "--verify", "--quiet", ref)
+    if (
+        completed.returncode == 1
+        and not completed.stdout
+        and not completed.stderr
+    ):
+        return None
+    if completed.returncode != 0:
         raise SystemExit("cannot determine whether the local release tag exists")
-    return completed.returncode == 0
+    lines = [line for line in completed.stdout.splitlines() if line]
+    if len(lines) != 1 or GIT_OBJECT_RE.fullmatch(lines[0]) is None:
+        raise SystemExit("local release tag has an ambiguous object identifier")
+    return lines[0]
+
+
+def _local_tag_exists(tag: str) -> bool:
+    return _local_tag_object(tag) is not None
 
 
 def _require_remote_tag_absent(tag: str) -> None:
@@ -145,11 +161,12 @@ def _verify_commit_and_checks(head: str) -> None:
     )
 
 
-def _validate_local_tag(tag: str, head: str) -> str:
-    ref = f"refs/tags/{tag}"
-    if _run_git("cat-file", "-t", ref) != "tag":
+def _validate_local_tag(tag: str, head: str, tag_object: str) -> str:
+    if GIT_OBJECT_RE.fullmatch(tag_object) is None:
+        raise SystemExit("created release tag has an unsupported object identifier")
+    if _run_git("cat-file", "-t", tag_object) != "tag":
         raise SystemExit("created release ref is not an annotated tag object")
-    tag_bytes = CHECKER._git_bytes("cat-file", "tag", ref)
+    tag_bytes = CHECKER._git_bytes("cat-file", "tag", tag_object)
     CHECKER._scan_tag_object(tag, tag_bytes)
     try:
         body = tag_bytes.decode("utf-8")
@@ -164,20 +181,38 @@ def _validate_local_tag(tag: str, head: str) -> str:
         raise SystemExit("created tag object records a commit other than exact HEAD")
     if "-----BEGIN SSH SIGNATURE-----" not in body:
         raise SystemExit("created annotated tag has no SSH signature")
-    tag_object = _run_git("rev-parse", f"{ref}^{{tag}}")
     CHECKER._verify_git_object_id(tag_object, "tag", tag_bytes)
-    if _run_git("rev-parse", ref) != tag_object:
-        raise SystemExit("release ref does not exactly resolve to its tag object")
-    if _run_git("rev-parse", f"{ref}^{{commit}}") != head:
+    if _run_git("rev-parse", f"{tag_object}^{{commit}}") != head:
         raise SystemExit("release tag does not peel to exact HEAD")
-    _run_git("verify-tag", tag)
+    _run_git("verify-tag", tag_object)
+    if _local_tag_object(tag) != tag_object:
+        raise SystemExit("release tag ref changed after its object was captured")
     return tag_object
 
 
-def _cleanup_created_tag(tag: str) -> None:
-    _run_git("tag", "--delete", tag)
-    if _local_tag_exists(tag):
-        raise SystemExit(f"failed to remove locally created tag {tag}")
+def _cleanup_created_tag(tag: str, expected_object: str) -> None:
+    if GIT_OBJECT_RE.fullmatch(expected_object) is None:
+        raise SystemExit("cannot clean up a tag without its exact object identifier")
+    ref = f"refs/tags/{tag}"
+    try:
+        _run_git("update-ref", "--no-deref", "-d", ref, expected_object)
+    except (Exception, SystemExit, KeyboardInterrupt) as exc:
+        current = _local_tag_object(tag)
+        if current is None:
+            raise SystemExit(
+                f"local release tag {tag} is absent after cleanup failed; "
+                "the cleanup outcome remains indeterminate") from exc
+        if current != expected_object:
+            raise SystemExit(
+                f"local release tag {tag} changed; its replacement was preserved") from exc
+        raise SystemExit(f"failed to remove locally created tag {tag}") from exc
+    current = _local_tag_object(tag)
+    if current is None:
+        return
+    if current != expected_object:
+        raise SystemExit(
+            f"local release tag {tag} changed during cleanup; its replacement remains")
+    raise SystemExit(f"failed to remove locally created tag {tag}")
 
 
 def _preflight(tag: str) -> tuple[str, str]:
@@ -257,35 +292,51 @@ def main(
     previous = _set_release_git(release_git)
     try:
         head, version = _preflight(args.tag)
-        created = False
+        created_object = None
         creation_attempted = False
+        capture_attempted = False
         try:
             creation_attempted = True
             _run_git(
                 "tag", "--sign", "--annotate", args.tag,
                 "--message", f"Release {args.tag}",
             )
-            created = True
-            tag_object = _validate_local_tag(args.tag, head)
+            capture_attempted = True
+            try:
+                created_object = _local_tag_object(args.tag)
+            except (Exception, SystemExit, KeyboardInterrupt) as inspect_exc:
+                raise SystemExit(
+                    "the local tag may exist and its object could not be captured: "
+                    f"{inspect_exc}") from inspect_exc
+            if created_object is None:
+                raise SystemExit(
+                    "tag creation returned without an observable release object; "
+                    "local tag state is indeterminate and no cleanup was attempted")
+            tag_object = _validate_local_tag(args.tag, head, created_object)
             if args.push:
                 if _remote_main_sha() != head:
                     raise SystemExit("origin/main advanced before tag push")
                 # Keep this the final remote observation before the push below.
                 _require_remote_tag_absent(args.tag)
         # Once this process attempts to create the previously absent ref, every
-        # failure must inspect and remove it if it exists. A signal or lost child
-        # response can follow the ref update even when Git never returns success.
+        # failure gets at most one initial object observation. Cleanup refuses
+        # deletion when the current ref resolves to a different object.
         except (Exception, SystemExit, KeyboardInterrupt) as exc:
-            if creation_attempted and not created:
+            if creation_attempted and not capture_attempted:
+                capture_attempted = True
                 try:
-                    created = _local_tag_exists(args.tag)
+                    created_object = _local_tag_object(args.tag)
                 except (Exception, SystemExit, KeyboardInterrupt) as inspect_exc:
                     raise SystemExit(
                         f"{exc}; the local tag may exist and could not be inspected: "
                         f"{inspect_exc}") from inspect_exc
-            if created:
+                if created_object is None:
+                    raise SystemExit(
+                        f"{exc}; tag creation completion is indeterminate after an "
+                        "absent object observation and no cleanup was attempted") from exc
+            if created_object is not None:
                 try:
-                    _cleanup_created_tag(args.tag)
+                    _cleanup_created_tag(args.tag, created_object)
                 except (Exception, SystemExit, KeyboardInterrupt) as cleanup_exc:
                     raise SystemExit(
                         f"{exc}; local tag cleanup failed and the local tag may remain: "
@@ -296,12 +347,12 @@ def main(
             try:
                 _run_git(
                     "push", "--porcelain", "--no-verify", RELEASE_SSH_ORIGIN,
-                    f"refs/tags/{args.tag}:refs/tags/{args.tag}",
+                    f"{tag_object}:refs/tags/{args.tag}",
                 )
             except (Exception, SystemExit, KeyboardInterrupt) as exc:
                 raise SystemExit(
-                    f"{exc}; the remote tag may already exist and validated local tag "
-                    f"{args.tag} was retained") from exc
+                    f"{exc}; the remote tag may already exist and no local tag cleanup "
+                    "was attempted") from exc
             print(
                 f"pushed signed annotated {args.tag} ({tag_object}) "
                 f"for package {version} at {head}")

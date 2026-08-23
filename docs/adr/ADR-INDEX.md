@@ -2039,9 +2039,42 @@ the worktree, Git metadata, explicit profile inputs, or the process itself; run
 the release only after all untrusted review processes have stopped. Offline
 regressions prove capability separation but not live GitHub SSH authentication,
 agent integrity, host-key correctness, or operating-system integrity. The
-separate immutable-object push binding remains a later release-control repair.
+immutable-object push and compare-delete binding are a separate decision in
+ADR-112.
 The release profile is implemented for POSIX owner and workflow hosts, not
 Windows release operation. The helper and every imported working-tree module
 must already be owner-reviewed at process start; this profile neutralizes Git
 metadata execution and inherited authority, not malicious Python already being
 executed.
+
+## ADR-112 — Release tag effects bind to one captured object
+
+**Decision.** Immediately after creating the previously absent release ref,
+capture its full lowercase Git object identifier once. Read the tag type and
+bytes, recompute its object identity, inspect its signed headers, peel it to the
+release commit, and verify its signature using that identifier rather than the
+mutable ref name. Recheck the named ref against the captured identifier before
+the final remote observations, then push the identifier directly to the fixed
+release-tag destination. If pre-push validation fails, delete only with Git's
+old-value compare-and-delete operation using the captured identifier. A
+different-object replacement ref is preserved and makes cleanup fail closed.
+
+**Rationale.** Validating `refs/tags/vX.Y.Z` and later pushing or deleting that
+same name allowed another local ref update between the operations to substitute
+a different object. A valid object could therefore authorize pushing an
+unvalidated replacement, while cleanup after a failed validation could delete
+a replacement it did not create. The immutable object identifier is the value
+the checks established; it must also be the source of the remote effect and the
+expected old value of the local cleanup effect.
+
+**Limit.** This binding does not isolate the release process from another
+process running as the owner, protect the object database from mutation, or
+establish which process created a ref before the first successful object
+capture. If that first capture is unavailable or ambiguous, cleanup is not
+attempted. Once a push starts, its remote result remains unknown on any local
+failure; no local deletion resolves that ambiguity. Remote-main equality and
+remote-tag absence are observations from separate SSH sessions, not atomic
+push predicates, and a concurrently created same-object tag may be reported as
+already up to date. Compare-delete cannot distinguish delete-and-recreate at
+the same object identifier. ADR-111's explicit Git profile and the owner
+stop-and-reconcile procedure remain required.
