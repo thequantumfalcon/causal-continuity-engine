@@ -1,4 +1,4 @@
-"""Release-control regressions that do not create or push real tags."""
+"""Release-control regressions that never contact or mutate a real remote."""
 
 import hashlib
 import json
@@ -1472,6 +1472,7 @@ def test_release_git_purpose_profiles_reject_side_effects_and_extra_arguments(
         ("tag", "--sign", "--annotate", "v0.1.5", "--message", "Release v0.1.5"),
         ("tag", "--delete", "v0.1.5"),
         ("verify-tag", "v0.1.5"),
+        ("verify-tag", "0" * 40),
         (
             "fetch", "--no-tags", checker.RELEASE_SSH_ORIGIN,
             "refs/heads/main:refs/remotes/origin/main",
@@ -1488,6 +1489,57 @@ def test_release_git_purpose_profiles_reject_side_effects_and_extra_arguments(
         with pytest.raises(SystemExit):
             read_only.run(*args)
     assert child_calls == []
+
+
+def test_release_git_purpose_binds_tag_operations_to_full_object_ids():
+    checker = _load_release_script("check_release_tag")
+    owner = object.__new__(checker.ReleaseGit)
+    owner.prepare = True
+    tag_object = "a" * 40
+    tag_ref = "refs/tags/v0.1.5"
+
+    assert owner._purpose((
+        "rev-parse", "--verify", "--quiet", tag_ref)) == "read"
+    assert owner._purpose(("cat-file", "-t", tag_object)) == "read"
+    assert owner._purpose(("cat-file", "tag", tag_object)) == "read"
+    assert owner._purpose((
+        "rev-parse", f"{tag_object}^{{commit}}")) == "read"
+    assert owner._purpose(("verify-tag", tag_object)) == "verify"
+    assert owner._purpose((
+        "update-ref", "--no-deref", "-d", tag_ref, tag_object)) == "write"
+    assert owner._purpose((
+        "push", "--porcelain", "--no-verify", checker.RELEASE_SSH_ORIGIN,
+        f"{tag_object}:{tag_ref}",
+    )) == "transport"
+
+    for args in (
+        ("verify-tag", "v0.1.5"),
+        ("tag", "--delete", "v0.1.5"),
+        (
+            "push", "--porcelain", "--no-verify", checker.RELEASE_SSH_ORIGIN,
+            f"{tag_ref}:{tag_ref}",
+        ),
+        (
+            "update-ref", "--no-deref", "-d", tag_ref, "a" * 39,
+        ),
+        (
+            "update-ref", "--no-deref", "-d", tag_ref, "A" * 40,
+        ),
+        (
+            "update-ref", "--no-deref", "-d", tag_ref, "0" * 40,
+        ),
+        (
+            "update-ref", "-d", tag_ref, tag_object,
+        ),
+        (
+            "update-ref", "--no-deref", "-d", tag_ref, tag_object, "extra",
+        ),
+        (
+            "update-ref", "--no-deref", "-d", tag_ref,
+        ),
+    ):
+        with pytest.raises(SystemExit):
+            owner._purpose(args)
 
 
 def test_release_git_wrappers_route_text_status_and_bytes_through_one_runner():
@@ -1686,18 +1738,21 @@ def test_release_git_profiles_are_absolute_and_token_free(
         return result
 
     monkeypatch.setattr(checker, "_bounded_process", run)
+    tag_object = "a" * 40
+    tag_ref = "refs/tags/v0.1.5"
     try:
         runner.output("status", "--porcelain=v1", "--untracked-files=all")
         runner.output(
             "tag", "--sign", "--annotate", "v0.1.5", "--message", "Release v0.1.5")
-        runner.output("verify-tag", "v0.1.5")
+        runner.output("verify-tag", tag_object)
         runner.output(
             "fetch", "--no-tags", checker.RELEASE_SSH_ORIGIN,
             "refs/heads/main:refs/remotes/origin/main")
         runner.output(
             "push", "--porcelain", "--no-verify", checker.RELEASE_SSH_ORIGIN,
-            "refs/tags/v0.1.5:refs/tags/v0.1.5")
-        runner.output("tag", "--delete", "v0.1.5")
+            f"{tag_object}:{tag_ref}")
+        runner.output(
+            "update-ref", "--no-deref", "-d", tag_ref, tag_object)
     finally:
         runner.close()
 
@@ -1823,21 +1878,22 @@ def test_prepare_tag_validates_annotated_signature_and_exact_peeling(monkeypatch
     ).encode("utf-8")
 
     def git(*args):
-        if args[:2] == ("cat-file", "-t"):
+        if args == ("cat-file", "-t", tag_object):
             return "tag"
-        if args == ("rev-parse", "refs/tags/v0.1.0^{tag}"):
-            return tag_object
-        if args == ("rev-parse", "refs/tags/v0.1.0"):
-            return tag_object
-        if args == ("rev-parse", "refs/tags/v0.1.0^{commit}"):
+        if args == ("rev-parse", f"{tag_object}^{{commit}}"):
             return head
-        if args == ("verify-tag", "v0.1.0"):
+        if args == ("verify-tag", tag_object):
             verified.append(args)
             return ""
         raise AssertionError(args)
 
     monkeypatch.setattr(tool, "_run_git", git)
-    monkeypatch.setattr(tool.CHECKER, "_git_bytes", lambda *args: tag_bytes)
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_git_bytes",
+        lambda *args: tag_bytes if args == ("cat-file", "tag", tag_object) else None,
+    )
     monkeypatch.setattr(
         tool.CHECKER,
         "_scan_tag_object",
@@ -1848,20 +1904,499 @@ def test_prepare_tag_validates_annotated_signature_and_exact_peeling(monkeypatch
         "_verify_git_object_id",
         lambda oid, kind, payload: verified.append(("oid", oid, kind, payload)),
     )
-    assert tool._validate_local_tag("v0.1.0", head) == tag_object
+    assert tool._validate_local_tag("v0.1.0", head, tag_object) == tag_object
     assert verified == [
         ("scan", "v0.1.0", tag_bytes),
         ("oid", tag_object, "tag", tag_bytes),
-        ("verify-tag", "v0.1.0"),
+        ("verify-tag", tag_object),
     ]
+
+
+def test_prepare_tag_validation_uses_the_captured_object_id(monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    head = "f" * 40
+    tag_object = "1" * 40
+    events = []
+    tag_bytes = (
+        f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
+        "-----BEGIN SSH SIGNATURE-----"
+    ).encode("utf-8")
+
+    def git(*args):
+        events.append(("git", args))
+        if args == ("cat-file", "-t", tag_object):
+            return "tag"
+        if args == ("rev-parse", f"{tag_object}^{{commit}}"):
+            return head
+        if args == ("verify-tag", tag_object):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tool, "_run_git", git)
+    monkeypatch.setattr(
+        tool,
+        "_local_tag_object",
+        lambda tag: events.append(("ref", tag)) or tag_object,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_git_bytes",
+        lambda *args: events.append(("raw", args)) or tag_bytes,
+    )
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_scan_tag_object",
+        lambda tag, payload: events.append(("scan", tag, payload)),
+    )
+    monkeypatch.setattr(
+        tool.CHECKER,
+        "_verify_git_object_id",
+        lambda oid, kind, payload: events.append(("oid", oid, kind, payload)),
+    )
+
+    assert tool._validate_local_tag("v0.1.0", head, tag_object) == tag_object
+    assert ("raw", ("cat-file", "tag", tag_object)) in events
+    assert ("git", ("verify-tag", tag_object)) in events
+    assert ("ref", "v0.1.0") in events
+    assert not any(
+        event == ("git", ("verify-tag", "v0.1.0"))
+        or event == ("raw", ("cat-file", "tag", "refs/tags/v0.1.0"))
+        for event in events
+    )
+
+
+def test_prepare_tag_validation_rejects_a_changed_ref(monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    head = "f" * 40
+    tag_object = "1" * 40
+    replacement = "2" * 40
+    tag_bytes = (
+        f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
+        "-----BEGIN SSH SIGNATURE-----"
+    ).encode("utf-8")
+
+    def git(*args):
+        if args == ("cat-file", "-t", tag_object):
+            return "tag"
+        if args == ("rev-parse", f"{tag_object}^{{commit}}"):
+            return head
+        if args == ("verify-tag", tag_object):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tool, "_run_git", git)
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: replacement)
+    monkeypatch.setattr(tool.CHECKER, "_git_bytes", lambda *args: tag_bytes)
+    monkeypatch.setattr(tool.CHECKER, "_scan_tag_object", lambda *args: None)
+    monkeypatch.setattr(tool.CHECKER, "_verify_git_object_id", lambda *args: None)
+
+    with pytest.raises(SystemExit, match="ref changed"):
+        tool._validate_local_tag("v0.1.0", head, tag_object)
+
+
+def test_prepare_tag_push_binds_the_validated_object_id(monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    head = "2" * 40
+    tag_object = "3" * 40
+    replacement = "4" * 40
+    current = {"oid": tag_object}
+    events = []
+    monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+    monkeypatch.setattr(
+        tool,
+        "_local_tag_object",
+        lambda tag: current["oid"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tool,
+        "_validate_local_tag",
+        lambda *args: events.append(("validate", args)) or tag_object,
+    )
+    monkeypatch.setattr(tool, "_remote_main_sha", lambda: head)
+    monkeypatch.setattr(
+        tool,
+        "_require_remote_tag_absent",
+        lambda tag: current.update(oid=replacement),
+    )
+
+    def git(*args):
+        events.append(("git", args))
+        if args[0] == "push":
+            source = args[-1].partition(":")[0]
+            outgoing = current["oid"] if source.startswith("refs/") else source
+            events.append(("outgoing", outgoing))
+        return ""
+
+    monkeypatch.setattr(tool, "_run_git", git)
+
+    assert tool.main(["v0.1.0", "--push"], release_git=object()) == 0
+    assert (
+        "git",
+        (
+            "push",
+            "--porcelain",
+            "--no-verify",
+            tool.RELEASE_SSH_ORIGIN,
+            f"{tag_object}:refs/tags/v0.1.0",
+        ),
+    ) in events
+    assert ("outgoing", tag_object) in events
+    assert not any(
+        event == (
+            "git",
+            (
+                "push",
+                "--porcelain",
+                "--no-verify",
+                tool.RELEASE_SSH_ORIGIN,
+                "refs/tags/v0.1.0:refs/tags/v0.1.0",
+            ),
+        )
+        for event in events
+    )
+
+
+@_POSIX_RELEASE_GIT
+def test_prepare_tag_cleanup_compare_deletes_only_the_expected_object(
+        tmp_path, monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    repository = tmp_path / "repository"
+    home = tmp_path / "home"
+    template = tmp_path / "empty-template"
+    home.mkdir()
+    template.mkdir()
+    environment = {
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": os.fspath(home),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": os.fspath(tmp_path),
+        "XDG_CONFIG_HOME": os.fspath(home),
+    }
+    git_prefix = [
+        "/usr/bin/git",
+        "--no-pager",
+        "--no-replace-objects",
+        "-c", f"init.templateDir={template}",
+        "-c", "core.hooksPath=/dev/null",
+        "-c", "core.fsmonitor=false",
+        "-c", "credential.helper=",
+        "-c", "protocol.allow=never",
+    ]
+    subprocess.run(
+        [*git_prefix, "init", "--quiet", repository],
+        check=True,
+        env=environment,
+    )
+
+    def git(*args, input_bytes=None, check=True):
+        return subprocess.run(
+            [*git_prefix, "-C", repository, *args],
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=check,
+            env=environment,
+        )
+
+    expected = git(
+        "hash-object", "-w", "--stdin", input_bytes=b"expected").stdout.decode().strip()
+    replacement = git(
+        "hash-object", "-w", "--stdin", input_bytes=b"replacement").stdout.decode().strip()
+    ref = "refs/tags/v0.1.0"
+    remote = tmp_path / "remote.git"
+    subprocess.run(
+        [*git_prefix, "init", "--quiet", "--bare", remote],
+        check=True,
+        env=environment,
+    )
+    git(
+        "-c", "protocol.file.allow=always", "push", "--porcelain",
+        os.fspath(remote), f"{expected}:{ref}",
+    )
+    remote_object = subprocess.run(
+        [*git_prefix, "--git-dir", remote, "show-ref", "--hash", ref],
+        check=True,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+    assert remote_object == expected
+    git("update-ref", ref, replacement)
+
+    def run_git(*args):
+        completed = git(*args, check=False)
+        if completed.returncode != 0:
+            raise tool.CHECKER.ReleaseGitCompletedError(
+                completed.stderr.decode().strip(), returncode=completed.returncode)
+        return completed.stdout.decode().strip()
+
+    def git_status(*args):
+        return subprocess.run(
+            [*git_prefix, "-C", repository, *args],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+
+    monkeypatch.setattr(tool, "_run_git", run_git)
+    monkeypatch.setattr(tool, "_git_status", git_status)
+
+    with pytest.raises(SystemExit, match="changed|replacement"):
+        tool._cleanup_created_tag("v0.1.0", expected)
+    assert run_git("show-ref", "--verify", "--hash", ref) == replacement
+
+    git("update-ref", ref, expected)
+    tool._cleanup_created_tag("v0.1.0", expected)
+    assert git("show-ref", "--verify", "--quiet", ref, check=False).returncode == 1
+
+
+@pytest.mark.parametrize(
+    ("completed", "expected", "diagnostic"),
+    [
+        (SimpleNamespace(
+            returncode=0, stdout="a" * 40 + "\n", stderr=""), "a" * 40, None),
+        (SimpleNamespace(returncode=1, stdout="", stderr=""), None, None),
+        (SimpleNamespace(
+            returncode=0, stdout="A" * 40 + "\n", stderr=""),
+         None, "ambiguous"),
+        (SimpleNamespace(
+            returncode=0, stdout="0" * 40 + "\n", stderr=""),
+         None, "ambiguous"),
+        (SimpleNamespace(
+            returncode=0, stdout="a" * 40 + "\n" + "b" * 40 + "\n", stderr=""),
+         None, "ambiguous"),
+        (SimpleNamespace(returncode=2, stdout="", stderr="failed"),
+         None, "cannot determine"),
+    ],
+)
+def test_prepare_local_tag_object_is_exact_and_fail_closed(
+        monkeypatch, completed, expected, diagnostic):
+    tool = _load_release_script("prepare_release_tag")
+    monkeypatch.setattr(tool, "_git_status", lambda *args: completed)
+
+    if diagnostic is None:
+        assert tool._local_tag_object("v0.1.0") == expected
+    else:
+        with pytest.raises(SystemExit, match=diagnostic):
+            tool._local_tag_object("v0.1.0")
+
+
+@pytest.mark.parametrize(
+    ("current", "diagnostic"),
+    [
+        (None, "indeterminate"),
+        ("6" * 40, "failed to remove"),
+        ("7" * 40, "changed"),
+    ],
+)
+def test_prepare_cleanup_command_failure_never_becomes_success(
+        monkeypatch, current, diagnostic):
+    tool = _load_release_script("prepare_release_tag")
+    monkeypatch.setattr(
+        tool,
+        "_run_git",
+        lambda *args: (_ for _ in ()).throw(
+            tool.CHECKER.ReleaseGitCompletedError(
+                "cleanup command failed", returncode=128)),
+    )
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: current)
+
+    with pytest.raises(SystemExit, match=diagnostic):
+        tool._cleanup_created_tag("v0.1.0", "6" * 40)
+
+
+@pytest.mark.parametrize("capture", [None, RuntimeError("capture failed")])
+def test_prepare_never_deletes_when_initial_object_capture_is_indeterminate(
+        monkeypatch, capture):
+    tool = _load_release_script("prepare_release_tag")
+    cleaned = []
+    monkeypatch.setattr(
+        tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
+    monkeypatch.setattr(tool, "_run_git", lambda *args: "")
+
+    def local_object(tag):
+        if isinstance(capture, Exception):
+            raise capture
+        return capture
+
+    monkeypatch.setattr(tool, "_local_tag_object", local_object)
+    monkeypatch.setattr(
+        tool, "_cleanup_created_tag", lambda *args: cleaned.append(args))
+
+    with pytest.raises(SystemExit, match="indeterminate|could not be captured"):
+        tool.main(["v0.1.0"], release_git=object())
+    assert cleaned == []
+
+
+def test_prepare_uncertain_creation_with_absent_observation_is_indeterminate(
+        monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    cleaned = []
+    monkeypatch.setattr(
+        tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
+    monkeypatch.setattr(
+        tool,
+        "_run_git",
+        lambda *args: (_ for _ in ()).throw(
+            tool.CHECKER.ReleaseGitCompletedError(
+                "tag response lost after possible ref write", returncode=1)),
+    )
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: None)
+    monkeypatch.setattr(
+        tool, "_cleanup_created_tag", lambda *args: cleaned.append(args))
+
+    with pytest.raises(
+            SystemExit,
+            match="completion is indeterminate.*no cleanup was attempted"):
+        tool.main(["v0.1.0"], release_git=object())
+    assert cleaned == []
+
+
+def test_prepare_validation_failure_never_deletes_a_replacement_ref(monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    expected = "6" * 40
+    replacement = "7" * 40
+    current = {"oid": None}
+    monkeypatch.setattr(
+        tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
+    monkeypatch.setattr(
+        tool,
+        "_local_tag_object",
+        lambda tag: current["oid"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tool,
+        "_local_tag_exists",
+        lambda tag: current["oid"] is not None,
+    )
+
+    def git(*args):
+        if args[:2] == ("tag", "--sign"):
+            current["oid"] = expected
+            return ""
+        if args[:2] == ("tag", "--delete"):
+            current["oid"] = None
+            return ""
+        if args[:4] == ("update-ref", "--no-deref", "-d", "refs/tags/v0.1.0"):
+            if current["oid"] != args[4]:
+                raise tool.CHECKER.ReleaseGitCompletedError(
+                    "reference changed", returncode=128)
+            current["oid"] = None
+            return ""
+        raise AssertionError(args)
+
+    def reject_after_swap(*args):
+        current["oid"] = replacement
+        raise SystemExit("validation failed after ref replacement")
+
+    monkeypatch.setattr(tool, "_run_git", git)
+    monkeypatch.setattr(tool, "_validate_local_tag", reject_after_swap)
+
+    with pytest.raises(SystemExit, match="validation failed"):
+        tool.main(["v0.1.0"], release_git=object())
+    assert current["oid"] == replacement
+
+
+def test_prepare_uncertain_creation_never_deletes_a_replacement_ref(monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    expected = "6" * 40
+    replacement = "7" * 40
+    current = {"oid": None}
+    observations = {"object": 0, "exists": 0}
+    monkeypatch.setattr(
+        tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
+
+    def local_object(tag):
+        observed = current["oid"]
+        observations["object"] += 1
+        if observations["object"] == 1:
+            current["oid"] = replacement
+        return observed
+
+    def local_exists(tag):
+        observed = current["oid"] is not None
+        observations["exists"] += 1
+        if observations["exists"] == 1:
+            current["oid"] = replacement
+        return observed
+
+    monkeypatch.setattr(tool, "_local_tag_object", local_object, raising=False)
+    monkeypatch.setattr(tool, "_local_tag_exists", local_exists)
+
+    def git(*args):
+        if args[:2] == ("tag", "--sign"):
+            current["oid"] = expected
+            raise tool.CHECKER.ReleaseGitCompletedError(
+                "tag response lost after ref write", returncode=1)
+        if args[:2] == ("tag", "--delete"):
+            current["oid"] = None
+            return ""
+        if args[:4] == ("update-ref", "--no-deref", "-d", "refs/tags/v0.1.0"):
+            if current["oid"] != args[4]:
+                raise tool.CHECKER.ReleaseGitCompletedError(
+                    "reference changed", returncode=128)
+            current["oid"] = None
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tool, "_run_git", git)
+
+    with pytest.raises(SystemExit, match="response lost"):
+        tool.main(["v0.1.0"], release_git=object())
+    assert current["oid"] == replacement
+
+
+def test_prepare_tag_ambiguous_creation_cleans_only_the_observed_object(
+        monkeypatch):
+    tool = _load_release_script("prepare_release_tag")
+    head = "4" * 40
+    observed = "5" * 40
+    cleaned = []
+    monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+
+    def git(*args):
+        if args[:2] == ("tag", "--sign"):
+            raise tool.CHECKER.ReleaseGitCompletedError(
+                "tag response lost after ref write", returncode=1)
+        raise AssertionError(args)
+
+    monkeypatch.setattr(tool, "_run_git", git)
+    monkeypatch.setattr(
+        tool,
+        "_local_tag_object",
+        lambda tag: observed,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tool, "_cleanup_created_tag", lambda *args: cleaned.append(args))
+
+    with pytest.raises(SystemExit, match="response lost"):
+        tool.main(["v0.1.0"], release_git=object())
+    assert cleaned == [("v0.1.0", observed)]
 
 
 def test_prepare_tag_rejects_prohibited_raw_tag_before_push_and_cleans(
         monkeypatch):
     tool = _load_release_script("prepare_release_tag")
     head = "7" * 40
+    tag_object = "8" * 40
     events = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
 
     def git(*args):
         events.append(("git", args))
@@ -1881,13 +2416,16 @@ def test_prepare_tag_rejects_prohibited_raw_tag_before_push_and_cleans(
         lambda tag, payload: (_ for _ in ()).throw(SystemExit("prohibited content")),
     )
     monkeypatch.setattr(
-        tool, "_cleanup_created_tag", lambda tag: events.append(("cleanup", tag)))
+        tool,
+        "_cleanup_created_tag",
+        lambda tag, oid: events.append(("cleanup", tag, oid)),
+    )
 
     with pytest.raises(SystemExit, match="prohibited content"):
         tool.main(["v0.1.0", "--push"], release_git=object())
 
-    assert ("raw", ("cat-file", "tag", "refs/tags/v0.1.0")) in events
-    assert ("cleanup", "v0.1.0") in events
+    assert ("raw", ("cat-file", "tag", tag_object)) in events
+    assert ("cleanup", "v0.1.0", tag_object) in events
     assert not any(
         event[0] == "git" and event[1][0] == "push"
         for event in events if isinstance(event, tuple)
@@ -1898,13 +2436,16 @@ def test_prepare_tag_never_pushes_without_flag_and_rechecks_before_push(
         monkeypatch):
     tool = _load_release_script("prepare_release_tag")
     head = "2" * 40
+    tag_object = "3" * 40
     events = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
         tool, "_run_git", lambda *args: events.append(("git", args)) or "")
     monkeypatch.setattr(
         tool, "_validate_local_tag",
-        lambda tag, commit: events.append(("validate", tag, commit)) or "3" * 40)
+        lambda tag, commit, oid: (
+            events.append(("validate", tag, commit, oid)) or tag_object))
     monkeypatch.setattr(
         tool, "_remote_main_sha",
         lambda: events.append("remote-main") or head)
@@ -1922,7 +2463,7 @@ def test_prepare_tag_never_pushes_without_flag_and_rechecks_before_push(
     push_index = events.index((
         "git",
         ("push", "--porcelain", "--no-verify", tool.RELEASE_SSH_ORIGIN,
-         "refs/tags/v0.1.0:refs/tags/v0.1.0"),
+         f"{tag_object}:refs/tags/v0.1.0"),
     ))
     assert events[push_index - 1] == ("remote-absent", "v0.1.0")
     assert events[push_index - 2] == "remote-main"
@@ -1931,27 +2472,30 @@ def test_prepare_tag_never_pushes_without_flag_and_rechecks_before_push(
 def test_prepare_tag_cleans_only_a_tag_it_created_on_validation_failure(
         monkeypatch):
     tool = _load_release_script("prepare_release_tag")
+    tag_object = "6" * 40
     cleaned = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
     monkeypatch.setattr(tool, "_run_git", lambda *args: "")
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
         tool, "_validate_local_tag",
-        lambda tag, head: (_ for _ in ()).throw(SystemExit("bad tag")))
+        lambda tag, head, oid: (_ for _ in ()).throw(SystemExit("bad tag")))
     monkeypatch.setattr(
-        tool, "_cleanup_created_tag", lambda tag: cleaned.append(tag))
+        tool, "_cleanup_created_tag", lambda tag, oid: cleaned.append((tag, oid)))
 
     with pytest.raises(SystemExit, match="bad tag"):
         tool.main(["v0.1.0"], release_git=object())
-    assert cleaned == ["v0.1.0"]
+    assert cleaned == [("v0.1.0", tag_object)]
 
     cleaned.clear()
     monkeypatch.setattr(tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
     monkeypatch.setattr(
         tool, "_validate_local_tag",
-        lambda tag, head: (_ for _ in ()).throw(RuntimeError("unexpected failure")))
+        lambda tag, head, oid: (
+            _ for _ in ()).throw(RuntimeError("unexpected failure")))
     with pytest.raises(RuntimeError, match="unexpected failure"):
         tool.main(["v0.1.0"], release_git=object())
-    assert cleaned == ["v0.1.0"]
+    assert cleaned == [("v0.1.0", tag_object)]
 
     cleaned.clear()
     monkeypatch.setattr(
@@ -1966,6 +2510,7 @@ def test_prepare_tag_cleans_only_a_tag_it_created_on_validation_failure(
 def test_prepare_tag_cleans_when_creation_may_have_completed_before_failure(
         monkeypatch, returncode):
     tool = _load_release_script("prepare_release_tag")
+    tag_object = "6" * 40
     cleaned = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
 
@@ -1976,18 +2521,19 @@ def test_prepare_tag_cleans_when_creation_may_have_completed_before_failure(
         raise AssertionError(args)
 
     monkeypatch.setattr(tool, "_run_git", git)
-    monkeypatch.setattr(tool, "_local_tag_exists", lambda tag: True)
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
-        tool, "_cleanup_created_tag", lambda tag: cleaned.append(tag))
+        tool, "_cleanup_created_tag", lambda tag, oid: cleaned.append((tag, oid)))
 
     with pytest.raises(SystemExit, match="postflight failed"):
         tool.main(["v0.1.0"], release_git=object())
-    assert cleaned == ["v0.1.0"]
+    assert cleaned == [("v0.1.0", tag_object)]
 
 
 def test_prepare_tag_cleans_when_creation_is_interrupted_after_ref_write(
         monkeypatch):
     tool = _load_release_script("prepare_release_tag")
+    tag_object = "6" * 40
     cleaned = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
 
@@ -1997,29 +2543,31 @@ def test_prepare_tag_cleans_when_creation_is_interrupted_after_ref_write(
         raise AssertionError(args)
 
     monkeypatch.setattr(tool, "_run_git", git)
-    monkeypatch.setattr(tool, "_local_tag_exists", lambda tag: True)
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
-        tool, "_cleanup_created_tag", lambda tag: cleaned.append(tag))
+        tool, "_cleanup_created_tag", lambda tag, oid: cleaned.append((tag, oid)))
 
     with pytest.raises(KeyboardInterrupt):
         tool.main(["v0.1.0"], release_git=object())
-    assert cleaned == ["v0.1.0"]
+    assert cleaned == [("v0.1.0", tag_object)]
 
 
 def test_prepare_tag_reports_unknown_local_state_when_cleanup_is_interrupted(
         monkeypatch):
     tool = _load_release_script("prepare_release_tag")
+    tag_object = "6" * 40
     monkeypatch.setattr(tool, "_preflight", lambda tag: ("4" * 40, "0.1.0"))
     monkeypatch.setattr(tool, "_run_git", lambda *args: "")
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
         tool,
         "_validate_local_tag",
-        lambda tag, head: (_ for _ in ()).throw(SystemExit("invalid tag")),
+        lambda tag, head, oid: (_ for _ in ()).throw(SystemExit("invalid tag")),
     )
     monkeypatch.setattr(
         tool,
         "_cleanup_created_tag",
-        lambda tag: (_ for _ in ()).throw(KeyboardInterrupt()),
+        lambda tag, oid: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
 
     with pytest.raises(SystemExit, match="local tag may remain"):
@@ -2031,11 +2579,16 @@ def test_prepare_tag_reports_that_attempted_push_may_have_created_remote_ref(
         monkeypatch, returncode):
     tool = _load_release_script("prepare_release_tag")
     head = "4" * 40
+    tag_object = "5" * 40
+    cleaned = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
-        tool, "_validate_local_tag", lambda tag, commit: "5" * 40)
+        tool, "_validate_local_tag", lambda tag, commit, oid: tag_object)
     monkeypatch.setattr(tool, "_remote_main_sha", lambda: head)
     monkeypatch.setattr(tool, "_require_remote_tag_absent", lambda tag: None)
+    monkeypatch.setattr(
+        tool, "_cleanup_created_tag", lambda *args: cleaned.append(args))
 
     def git(*args):
         if args[0] == "tag":
@@ -2049,6 +2602,7 @@ def test_prepare_tag_reports_that_attempted_push_may_have_created_remote_ref(
 
     with pytest.raises(SystemExit, match="remote tag may already exist"):
         tool.main(["v0.1.0", "--push"], release_git=object())
+    assert cleaned == []
 
 
 @pytest.mark.parametrize("failure_type", [KeyboardInterrupt, RuntimeError])
@@ -2056,11 +2610,16 @@ def test_prepare_tag_reports_unknown_remote_state_when_push_fails_unexpectedly(
         monkeypatch, failure_type):
     tool = _load_release_script("prepare_release_tag")
     head = "4" * 40
+    tag_object = "5" * 40
+    cleaned = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+    monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
     monkeypatch.setattr(
-        tool, "_validate_local_tag", lambda tag, commit: "5" * 40)
+        tool, "_validate_local_tag", lambda tag, commit, oid: tag_object)
     monkeypatch.setattr(tool, "_remote_main_sha", lambda: head)
     monkeypatch.setattr(tool, "_require_remote_tag_absent", lambda tag: None)
+    monkeypatch.setattr(
+        tool, "_cleanup_created_tag", lambda *args: cleaned.append(args))
 
     def git(*args):
         if args[0] == "tag":
@@ -2073,6 +2632,7 @@ def test_prepare_tag_reports_unknown_remote_state_when_push_fails_unexpectedly(
 
     with pytest.raises(SystemExit, match="remote tag may already exist"):
         tool.main(["v0.1.0", "--push"], release_git=object())
+    assert cleaned == []
 
 
 def test_signature_audit_is_exact_sha_detective_control():

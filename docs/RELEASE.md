@@ -198,14 +198,24 @@ attestations. Any other future branch context fails closed until its event and
 workflow-path semantics are reviewed in `check_release_tag.py`. The command
 creates the tag only after those checks, verifies the tag object's exact name,
 object, type, signature, and peeled SHA with both `git cat-file` and
-`git verify-tag`, and rechecks remote main and tag absence immediately before
-an explicit push. Omitting `--push` deliberately leaves a validated local tag
-and performs no network write. If post-creation validation fails, the command
-deletes only the local tag it created. After any push-attempt failure, remote
-state is unknown: stop, do not retry or recreate the tag, and reconcile the
-exact remote reference through a read-only owner observation before taking any
-further action. The validated local tag is retained and blocks an automatic
-rerun.
+`git verify-tag` against one full object identifier captured immediately after
+creation. It rechecks the named ref against that identifier before the final
+remote observations, then pushes the identifier rather than the mutable ref
+name. Omitting `--push` deliberately leaves a validated local tag and performs
+no network write. If post-creation validation fails, the command compare-deletes
+only the captured object; a different-object replacement ref is preserved and
+stops cleanup. If the initial object cannot be captured exactly, no cleanup is
+attempted. After
+any push-attempt failure, remote state is unknown: stop, do not retry, recreate,
+or delete the tag, and reconcile both the exact remote and local references
+through read-only owner observations before taking any further action. No local
+cleanup is attempted after a push starts.
+
+The remote-main and remote-tag-absence checks are separate SSH observations,
+not atomic conditions on the push. Another actor can change remote state between
+them, and Git may report a concurrently created identical tag as already up to
+date. Compare-delete likewise cannot distinguish replacement with the same
+object identifier. These outcomes still require the stop-and-reconcile path.
 
 The release profile does not inherit `PATH`, global/system/environment Git
 configuration, credential helpers, SSH configuration, askpass programs, or

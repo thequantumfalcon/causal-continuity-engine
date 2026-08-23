@@ -49,6 +49,10 @@ audit, with each defect pinned against the 0.1.4 source baseline.
   disables replacement objects, scans the exact annotated-tag bytes, binds them
   back to their Git object identifier, and cleans the local tag on any finding
   before a remote push can occur.
+- **A validated release tag could be replaced before push or cleanup.** The
+  helper now captures the full tag-object identifier once, validates and
+  verifies that object directly, pushes that identifier, and removes a failed
+  local tag only through an identifier-matched reference update.
 
 - **A budgeted packet could instruct work it withheld.** The next safe action
   is reconciled after trimming and quarantine stripping. It either names a
