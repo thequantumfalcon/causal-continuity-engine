@@ -2108,7 +2108,7 @@ def test_release_rejects_unsigned_annotated_tag(monkeypatch):
         lambda *args: f"object abc\ntype commit\ntag {tag}\n\nCCE {tag}".encode(),
     )
     with pytest.raises(SystemExit, match="must carry a PGP or SSH signature"):
-        checker.main([tag])
+        checker.main([tag], release_git=object())
 
 
 def test_release_rejects_signed_tag_object_aliased_under_another_name(
@@ -2134,7 +2134,7 @@ def test_release_rejects_signed_tag_object_aliased_under_another_name(
         ).encode(),
     )
     with pytest.raises(SystemExit, match="signed tag object names"):
-        checker.main([f"v{version}"])
+        checker.main([f"v{version}"], release_git=object())
 
 
 def _trusted_check_api(commit, *, ci_path=".github/workflows/ci.yml"):

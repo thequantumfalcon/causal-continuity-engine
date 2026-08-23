@@ -2004,3 +2004,44 @@ formatting, not a complete Unicode spoofing or natural-language injection
 detector. It can reduce shaping distinctions in scripts that use joiners; raw
 source remains inspectable, false positives are quarantined visibly, and novel
 wording still requires structural authority barriers.
+
+## ADR-111 — Release Git receives only an explicit SSH capability
+
+**Decision.** Owner-side release Git uses one admitted SSH-only profile. The
+Git, SSH, and SSH-signing executables; signer identity and public key; allowed
+signers; host-key file; transport public key; and agent socket are explicit
+absolute inputs. Local Git configuration is admitted against a narrow
+structural allowlist before any operational command. Every Git child starts
+from a fixed environment with hooks, filesystem monitors, credential helpers,
+replacement objects, ambient configuration, prompts, and non-SSH protocols
+disabled. Shallow history, redirected common Git storage, grafts, alternate
+object stores, replacement refs, and active repository-local exclude or
+attribute rules are refused. Signing receives the agent socket but no transport
+configuration;
+signature verification receives no secret; fetch and push receive only the
+fixed SSH transport capability. The GitHub API token remains in the Python
+process and is never copied into a Git child; its HTTPS client disables proxies
+and loads only the interpreter's compiled system trust locations. A separate
+transport public key lets `IdentitiesOnly=yes` constrain GitHub authentication
+without assuming that the signing and transport identities are the same.
+
+**Rationale.** The previous helper resolved `git` through inherited `PATH` and
+copied the complete owner environment into commands that interpreted local Git
+configuration. A configured filesystem monitor, hook, credential helper,
+signing program, SSH command, or URL rewrite could therefore execute with the
+release process's API credential before the tag checks ran. Environment
+scrubbing alone cannot suppress repository-local configuration, so admission
+and command-line neutralization are both required.
+
+**Limit.** This is a static contaminated-metadata boundary, not isolation from
+another process running concurrently as the owner. Such a process can replace
+the worktree, Git metadata, explicit profile inputs, or the process itself; run
+the release only after all untrusted review processes have stopped. Offline
+regressions prove capability separation but not live GitHub SSH authentication,
+agent integrity, host-key correctness, or operating-system integrity. The
+separate immutable-object push binding remains a later release-control repair.
+The release profile is implemented for POSIX owner and workflow hosts, not
+Windows release operation. The helper and every imported working-tree module
+must already be owner-reviewed at process start; this profile neutralizes Git
+metadata execution and inherited authority, not malicious Python already being
+executed.

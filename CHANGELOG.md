@@ -40,6 +40,11 @@ audit, with each defect pinned against the 0.1.4 source baseline.
 
 ### Fixed
 
+- **Release Git inherited repository programs and API credentials.** The owner
+  tag helper now rejects unadmitted local Git configuration and uses an
+  explicit SSH-only signing and transport profile. Every Git child uses a
+  fixed absolute executable and a purpose-specific environment without the
+  GitHub API token.
 - **The owner tag helper could push before scanning the raw tag object.** It now
   disables replacement objects, scans the exact annotated-tag bytes, binds them
   back to their Git object identifier, and cleans the local tag on any finding

@@ -385,7 +385,7 @@ in `.github/workflows/release.yml`:
 
 ```bash
 just release
-GH_TOKEN="$(gh auth token)" just prepare-release-tag v0.1.0 --push
+# Follow the explicit SSH-only owner command in docs/RELEASE.md.
 ```
 
 Release immutability is already enabled and was read back on 2026-08-04. Verify

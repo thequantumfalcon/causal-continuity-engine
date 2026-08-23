@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
 import os
 import re
+import selectors
+import signal
+import ssl
+import stat
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,6 +24,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_REPOSITORY = "thequantumfalcon/causal-continuity-engine"
+RELEASE_SSH_ORIGIN = (
+    "ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git"
+)
+RELEASE_HTTPS_ORIGINS = frozenset({
+    "https://github.com/thequantumfalcon/causal-continuity-engine",
+    "https://github.com/thequantumfalcon/causal-continuity-engine.git",
+})
 WORKFLOW_PATHS = {
     "ci": ".github/workflows/ci.yml",
     "attribution": ".github/workflows/no-ai-attribution.yml",
@@ -33,12 +48,19 @@ SIGNATURE_MARKERS = (
 )
 MAX_GITHUB_JSON_BYTES = 8 * 1024 * 1024
 MAX_RULESET_BYTES = 256 * 1024
+MAX_GIT_CONFIG_BYTES = 256 * 1024
+MAX_GIT_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_GIT_DIAGNOSTIC_BYTES = 4096
+GIT_OPERATION_TIMEOUT_SECONDS = 120
 GITHUB_REQUIRED_CHECK_MAX_AGE = timedelta(days=7)
 GITHUB_REQUIRED_CHECK_MAX_FUTURE_SKEW = timedelta(minutes=5)
 _GITHUB_UTC_TIMESTAMP = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
     r"(?:\.[0-9]{1,6})?Z")
 _GITHUB_REPOSITORY_COMPONENT = re.compile(r"[A-Za-z0-9_.-]{1,100}")
+_SSH_COMMAND_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
+_SSH_PUBLIC_KEY_TYPE = re.compile(
+    r"(?:ssh-(?:ed25519|rsa)|ecdsa-sha2-nistp(?:256|384|521)|sk-ssh-ed25519@openssh.com)\Z")
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -47,7 +69,31 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_GITHUB_OPENER = urllib.request.build_opener(_RejectRedirects())
+def _github_tls_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    paths = ssl.get_default_verify_paths()
+    cafile = paths.openssl_cafile
+    capath = paths.openssl_capath
+    if os.name == "posix":
+        if not (
+            (cafile and Path(cafile).is_file())
+            or (capath and Path(capath).is_dir())
+        ):
+            raise SystemExit("GitHub verification has no system TLS trust store")
+        context.load_verify_locations(
+            cafile=cafile if cafile and Path(cafile).is_file() else None,
+            capath=capath if capath and Path(capath).is_dir() else None,
+        )
+    else:
+        context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+    return context
+
+
+_GITHUB_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=_github_tls_context()),
+    _RejectRedirects(),
+)
 
 
 def _strict_json_object(payload: bytes, *, label: str) -> dict:
@@ -158,26 +204,836 @@ def _required_checks(source_root: Path = ROOT) -> dict[str, tuple[int, str]]:
     return derived
 
 
-def _git(*args: str) -> str:
+def _path_snapshot(path: Path) -> tuple[int, int, int, int, int, int]:
+    metadata = path.stat(follow_symlinks=False)
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _reject_writable_path_chain(path: Path, *, label: str) -> None:
+    for parent in (path.parent, *path.parents):
+        metadata = parent.stat(follow_symlinks=False)
+        if metadata.st_uid not in {0, os.getuid()}:
+            raise SystemExit(f"{label} has an untrusted parent owner")
+        if metadata.st_mode & 0o022:
+            if metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX:
+                continue
+            raise SystemExit(f"{label} has a group- or world-writable parent")
+
+
+def _trusted_regular_path(
+    value: str,
+    *,
+    label: str,
+    root: Path,
+    executable: bool,
+) -> tuple[Path, tuple[int, int, int, int, int, int]]:
+    path = Path(value)
     try:
-        return subprocess.check_output(
-            ["git", "--no-replace-objects", *args], cwd=ROOT, text=True, timeout=30).strip()
-    except subprocess.TimeoutExpired as exc:
-        raise SystemExit("release Git identity check timed out after 30s") from exc
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit(f"{label} is unavailable") from exc
+    if not path.is_absolute() or path != resolved:
+        raise SystemExit(f"{label} must be one canonical absolute path")
+    if path.is_symlink() or path == root or root in path.parents:
+        raise SystemExit(f"{label} must be a non-repository regular file")
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        _reject_writable_path_chain(path, label=label)
+    except OSError as exc:
+        raise SystemExit(f"{label} is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or (not executable and metadata.st_nlink != 1):
+        raise SystemExit(f"{label} must be a trusted regular file")
+    if metadata.st_mode & 0o022:
+        raise SystemExit(f"{label} must not be group- or world-writable")
+    allowed_owners = {0} if executable else {0, os.getuid()}
+    if metadata.st_uid not in allowed_owners:
+        raise SystemExit(f"{label} has an untrusted owner")
+    if executable and not metadata.st_mode & 0o111:
+        raise SystemExit(f"{label} is not executable")
+    return path, _path_snapshot(path)
+
+
+def _trusted_socket_path(
+    value: str,
+    *,
+    root: Path,
+) -> tuple[Path, tuple[int, int, int, int, int, int]]:
+    path = Path(value)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit("SSH agent socket is unavailable") from exc
+    if not path.is_absolute():
+        raise SystemExit("SSH agent socket must be an absolute path")
+    if path.is_symlink() or resolved == root or root in resolved.parents:
+        raise SystemExit("SSH agent socket must be outside the repository")
+    try:
+        metadata = resolved.stat(follow_symlinks=False)
+        parent_metadata = resolved.parent.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SystemExit("SSH agent socket is unavailable") from exc
+    private_owner_parent = (
+        parent_metadata.st_uid == os.getuid()
+        and stat.S_ISDIR(parent_metadata.st_mode)
+        and not parent_metadata.st_mode & 0o077
+    )
+    if not private_owner_parent:
+        try:
+            _reject_writable_path_chain(resolved, label="SSH agent socket")
+        except OSError as exc:
+            raise SystemExit("SSH agent socket is unavailable") from exc
+    if (
+        not stat.S_ISSOCK(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or (metadata.st_mode & 0o022 and not private_owner_parent)
+    ):
+        raise SystemExit(
+            "SSH agent socket must be owner-controlled directly or by its private parent")
+    return resolved, _path_snapshot(resolved)
+
+
+def _private_temp_base() -> Path:
+    path = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tmp")
+    try:
+        metadata = path.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise SystemExit("release Git temporary directory is unavailable") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or not metadata.st_mode & stat.S_ISVTX
+    ):
+        raise SystemExit("release Git requires a trusted sticky temporary directory")
+    return path
+
+
+def _valid_identity(value: str, *, label: str, email: bool = False) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        or "<" in value
+        or ">" in value
+        or (email and value.count("@") != 1)
+    ):
+        raise SystemExit(f"{label} is not a valid explicit release identity")
+    return value
+
+
+def _require_public_key(path: Path, *, label: str) -> None:
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise SystemExit(f"{label} is unavailable") from exc
+    if len(payload) > 16 * 1024:
+        raise SystemExit(f"{label} exceeds the public-key size limit")
+    try:
+        text = payload.decode("ascii").strip()
+        key_type, encoded, *_ = text.split()
+        base64.b64decode(encoded, validate=True)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise SystemExit(f"{label} is not one OpenSSH public key") from exc
+    if _SSH_PUBLIC_KEY_TYPE.fullmatch(key_type) is None or "\n" in text:
+        raise SystemExit(f"{label} is not one OpenSSH public key")
+
+
+def _bounded_private_git_file(path: Path, *, label: str, limit: int) -> bytes:
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        before = _path_snapshot(path)
+    except OSError as exc:
+        raise SystemExit(f"{label} is unavailable") from exc
+    mode = before[2]
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(mode)
+        or metadata.st_nlink != 1
+        or before[3] not in {0, os.getuid()}
+        or mode & 0o022
+        or before[4] > limit
+    ):
+        raise SystemExit(f"{label} is not a bounded private regular file")
+    try:
+        payload = path.read_bytes()
+        after = _path_snapshot(path)
+    except OSError as exc:
+        raise SystemExit(f"{label} is unavailable") from exc
+    if before != after:
+        raise SystemExit(f"{label} changed while it was inspected")
+    return payload
+
+
+def _reject_git_object_indirection(git_directory: Path) -> None:
+    forbidden = (
+        (git_directory / "objects" / "info" / "alternates", "Git object alternates"),
+        (git_directory / "info" / "grafts", "Git grafts"),
+        (git_directory / "shallow", "shallow Git history"),
+        (git_directory / "commondir", "a redirected common Git directory"),
+        (git_directory / "refs" / "replace", "Git replacement refs"),
+    )
+    for path, label in forbidden:
+        if os.path.lexists(path):
+            raise SystemExit(f"release Git refuses {label}")
+    packed_refs = git_directory / "packed-refs"
+    if os.path.lexists(packed_refs):
+        payload = _bounded_private_git_file(
+            packed_refs, label="packed Git references", limit=MAX_GIT_OUTPUT_BYTES)
+        if any(
+            b" refs/replace/" in line
+            for line in payload.splitlines()
+            if line and not line.startswith((b"#", b"^"))
+        ):
+            raise SystemExit("release Git refuses packed replacement refs")
+    for name in ("exclude", "attributes"):
+        path = git_directory / "info" / name
+        if not os.path.lexists(path):
+            continue
+        payload = _bounded_private_git_file(
+            path, label=f"Git info {name}", limit=MAX_GIT_CONFIG_BYTES)
+        if any(
+            line.strip() and not line.lstrip().startswith(b"#")
+            for line in payload.splitlines()
+        ):
+            raise SystemExit(f"release Git refuses active info/{name} rules")
+
+
+class ReleaseGitCompletedError(SystemExit):
+    """A Git child completed, but its bounded postflight could not pass."""
+
+    def __init__(self, message: str, *, returncode: int) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
+def _bounded_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    temporary_directory: Path,
+    timeout: int,
+    limit: int,
+    text: bool,
+) -> subprocess.CompletedProcess:
+    del temporary_directory
+
+    def stop_group(process: subprocess.Popen) -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    assert process.stdout is not None and process.stderr is not None
+    stdout_descriptor = process.stdout.fileno()
+    stderr_descriptor = process.stderr.fileno()
+    selector = selectors.DefaultSelector()
+    streams = {
+        stdout_descriptor: process.stdout,
+        stderr_descriptor: process.stderr,
+    }
+    buffers = {descriptor: bytearray() for descriptor in streams}
+    totals = {descriptor: 0 for descriptor in streams}
+    for descriptor in streams:
+        os.set_blocking(descriptor, False)
+        selector.register(descriptor, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    output_limit_exceeded = False
+    stopped = False
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop_group(process)
+                process.wait()
+                raise subprocess.TimeoutExpired(command, timeout)
+            for key, _ in selector.select(min(remaining, 0.25)):
+                descriptor = key.fd
+                try:
+                    chunk = os.read(descriptor, 64 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(descriptor)
+                    streams[descriptor].close()
+                    continue
+                totals[descriptor] += len(chunk)
+                remaining_capacity = max(0, limit - len(buffers[descriptor]))
+                buffers[descriptor].extend(chunk[:remaining_capacity])
+                if totals[descriptor] > limit:
+                    output_limit_exceeded = True
+                    if not stopped:
+                        stop_group(process)
+                        stopped = True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            stop_group(process)
+            process.wait()
+            raise subprocess.TimeoutExpired(command, timeout)
+        process.wait(timeout=remaining)
+    except BaseException:
+        if process.poll() is None:
+            stop_group(process)
+            process.wait()
+        raise
+    finally:
+        selector.close()
+        for stream in streams.values():
+            stream.close()
+    stdout_value = bytes(buffers[stdout_descriptor])
+    stderr_value = bytes(buffers[stderr_descriptor])
+    if text:
+        stdout_value = stdout_value.decode("utf-8", "surrogateescape")
+        stderr_value = stderr_value.decode("utf-8", "replace")
+    result = subprocess.CompletedProcess(
+        command, process.returncode, stdout_value, stderr_value)
+    result.output_limit_exceeded = output_limit_exceeded
+    return result
+
+
+class ReleaseGit:
+    """Run fixed release Git operations without inherited authority."""
+
+    _COMMON_CONFIG = (
+        ("core.hooksPath", "/dev/null"),
+        ("core.fsmonitor", "false"),
+        ("credential.helper", ""),
+        ("credential.interactive", "never"),
+        ("protocol.allow", "never"),
+        ("maintenance.auto", "false"),
+        ("gc.auto", "0"),
+        ("submodule.recurse", "false"),
+    )
+    _NETWORK_COMMANDS = frozenset({"fetch", "ls-remote", "push"})
+
+    def __init__(
+        self,
+        *,
+        root: Path,
+        git_executable: str,
+        prepare: bool,
+        tagger_name: str | None = None,
+        tagger_email: str | None = None,
+        signing_key: str | None = None,
+        ssh_keygen_executable: str | None = None,
+        allowed_signers_file: str | None = None,
+        ssh_executable: str | None = None,
+        known_hosts_file: str | None = None,
+        transport_key: str | None = None,
+        ssh_auth_sock: str | None = None,
+    ) -> None:
+        if os.name != "posix" or not hasattr(os, "getuid"):
+            raise SystemExit("release Git profiles require a POSIX platform")
+        try:
+            self.root = root.resolve(strict=True)
+        except OSError as exc:
+            raise SystemExit("release repository root is unavailable") from exc
+        self.prepare = prepare
+        self.git_executable, git_snapshot = _trusted_regular_path(
+            git_executable,
+            label="Git executable",
+            root=self.root,
+            executable=True,
+        )
+        self._trusted_paths = [("Git executable", self.git_executable, git_snapshot)]
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="cce-release-git-", dir=_private_temp_base())
+        os.chmod(self._temporary.name, 0o700)
+        self._private_home = Path(self._temporary.name)
+        self.tagger_name = None
+        self.tagger_email = None
+        self.signing_key = None
+        self.ssh_keygen_executable = None
+        self.allowed_signers_file = None
+        self.ssh_executable = None
+        self.known_hosts_file = None
+        self.transport_key = None
+        self.ssh_auth_sock = None
+        try:
+            if prepare:
+                fields = {
+                    "tagger name": tagger_name,
+                    "tagger email": tagger_email,
+                    "signing key": signing_key,
+                    "SSH signing executable": ssh_keygen_executable,
+                    "allowed signers file": allowed_signers_file,
+                    "SSH executable": ssh_executable,
+                    "known hosts file": known_hosts_file,
+                    "transport public key": transport_key,
+                    "SSH agent socket": ssh_auth_sock,
+                }
+                missing = [label for label, value in fields.items() if value is None]
+                if missing:
+                    raise SystemExit(
+                        "explicit SSH release profile is missing: " + ", ".join(missing))
+                self.tagger_name = _valid_identity(
+                    tagger_name or "", label="tagger name")
+                self.tagger_email = _valid_identity(
+                    tagger_email or "", label="tagger email", email=True)
+                self.signing_key = self._add_regular(
+                    signing_key or "", "signing key", executable=False)
+                _require_public_key(self.signing_key, label="signing key")
+                self.ssh_keygen_executable = self._add_regular(
+                    ssh_keygen_executable or "", "SSH signing executable", executable=True)
+                self.allowed_signers_file = self._add_regular(
+                    allowed_signers_file or "", "allowed signers file", executable=False)
+                self.ssh_executable = self._add_regular(
+                    ssh_executable or "", "SSH executable", executable=True)
+                self.known_hosts_file = self._add_regular(
+                    known_hosts_file or "", "known hosts file", executable=False)
+                self.transport_key = self._add_regular(
+                    transport_key or "", "transport public key", executable=False)
+                _require_public_key(
+                    self.transport_key, label="transport public key")
+                self.ssh_auth_sock, snapshot = _trusted_socket_path(
+                    ssh_auth_sock or "", root=self.root)
+                self._trusted_paths.append(
+                    ("SSH agent socket", self.ssh_auth_sock, snapshot))
+                for path in (
+                    self.ssh_executable,
+                    self.known_hosts_file,
+                    self.transport_key,
+                    self.ssh_auth_sock,
+                ):
+                    if _SSH_COMMAND_PATH.fullmatch(os.fspath(path)) is None:
+                        raise SystemExit(
+                            "SSH transport paths may contain only portable path characters")
+            self._config_path, self._config_digest, self.origin_url = (
+                self._admit_local_config())
+        except BaseException:
+            self.close()
+            raise
+
+    @classmethod
+    def checker(cls, *, root: Path, git_executable: str) -> ReleaseGit:
+        return cls(root=root, git_executable=git_executable, prepare=False)
+
+    @classmethod
+    def owner_profile(cls, **kwargs) -> ReleaseGit:
+        return cls(prepare=True, **kwargs)
+
+    def _add_regular(self, value: str, label: str, *, executable: bool) -> Path:
+        path, snapshot = _trusted_regular_path(
+            value, label=label, root=self.root, executable=executable)
+        self._trusted_paths.append((label, path, snapshot))
+        return path
+
+    def close(self) -> None:
+        temporary = getattr(self, "_temporary", None)
+        if temporary is not None:
+            temporary.cleanup()
+            self._temporary = None
+
+    def _base_environment(self) -> dict[str, str]:
+        private = os.fspath(self._private_home)
+        return {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "0",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "HOME": private,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": private,
+            "XDG_CONFIG_HOME": private,
+        }
+
+    def _command_prefix(self) -> list[str]:
+        command = [
+            os.fspath(self.git_executable),
+            "--no-pager",
+            "--no-replace-objects",
+        ]
+        for key, value in self._COMMON_CONFIG:
+            command.extend(("-c", f"{key}={value}"))
+        return command
+
+    def _run_config(self, config_path: Path) -> bytes:
+        command = [
+            os.fspath(self.git_executable),
+            "--no-pager",
+            "--no-replace-objects",
+            "config", "--file", os.fspath(config_path), "--no-includes", "--null", "--list",
+        ]
+        try:
+            completed = _bounded_process(
+                command,
+                cwd=self.root,
+                environment=self._base_environment(),
+                temporary_directory=self._private_home,
+                timeout=30,
+                limit=MAX_GIT_CONFIG_BYTES,
+                text=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SystemExit("cannot inspect local Git configuration safely") from exc
+        if completed.returncode != 0:
+            raise SystemExit("cannot inspect local Git configuration safely")
+        if completed.output_limit_exceeded:
+            raise SystemExit("local Git configuration output exceeds the size limit")
+        return completed.stdout
+
+    def _admit_local_config(self) -> tuple[Path, str, str]:
+        git_directory = self.root / ".git"
+        if git_directory.is_symlink() or not git_directory.is_dir():
+            raise SystemExit("release Git requires a regular non-linked working tree")
+        if os.path.lexists(git_directory / "config.worktree"):
+            raise SystemExit("release Git refuses per-worktree configuration")
+        _reject_git_object_indirection(git_directory)
+        config_path = git_directory / "config"
+        try:
+            root_metadata = self.root.stat(follow_symlinks=False)
+            git_metadata = git_directory.stat(follow_symlinks=False)
+            metadata = config_path.stat(follow_symlinks=False)
+            _reject_writable_path_chain(
+                config_path, label="local Git configuration")
+        except OSError as exc:
+            raise SystemExit("local Git configuration is unavailable") from exc
+        for label, directory_metadata in (
+            ("release repository root", root_metadata),
+            ("release Git directory", git_metadata),
+        ):
+            if (
+                not stat.S_ISDIR(directory_metadata.st_mode)
+                or directory_metadata.st_uid not in {0, os.getuid()}
+                or directory_metadata.st_mode & 0o022
+            ):
+                raise SystemExit(f"{label} is not a private owner directory")
+        if (
+            config_path.is_symlink()
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid not in {0, os.getuid()}
+            or metadata.st_mode & 0o022
+        ):
+            raise SystemExit("local Git configuration is not a private regular file")
+        if metadata.st_size > MAX_GIT_CONFIG_BYTES:
+            raise SystemExit("local Git configuration exceeds the size limit")
+        try:
+            config_bytes = config_path.read_bytes()
+        except OSError as exc:
+            raise SystemExit("local Git configuration is unavailable") from exc
+        output = self._run_config(config_path)
+        try:
+            config_after = config_path.read_bytes()
+        except OSError as exc:
+            raise SystemExit("local Git configuration became unavailable") from exc
+        if config_after != config_bytes:
+            raise SystemExit("local Git configuration changed during admission")
+        entries: dict[str, str] = {}
+        try:
+            records = [record for record in output.split(b"\0") if record]
+            for record in records:
+                raw_key, separator, raw_value = record.partition(b"\n")
+                if not separator:
+                    raise ValueError("missing value separator")
+                key = raw_key.decode("utf-8").lower()
+                value = raw_value.decode("utf-8")
+                if key in entries:
+                    raise ValueError("duplicate key")
+                entries[key] = value
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit("local Git configuration is ambiguous") from exc
+
+        allowed: dict[str, set[str]] = {
+            "core.repositoryformatversion": {"0"},
+            "core.filemode": {"true", "false"},
+            "core.bare": {"false"},
+            "core.logallrefupdates": {"true"},
+            "core.ignorecase": {"true", "false"},
+            "core.precomposeunicode": {"true", "false"},
+            "core.hookspath": {".githooks"},
+            "gc.auto": {"0"},
+            "maintenance.auto": {"false"},
+            "remote.origin.fetch": {"+refs/heads/*:refs/remotes/origin/*"},
+        }
+        origin_urls = {RELEASE_SSH_ORIGIN}
+        if not self.prepare:
+            origin_urls.update(RELEASE_HTTPS_ORIGINS)
+        allowed["remote.origin.url"] = origin_urls
+        allowed["remote.origin.pushurl"] = origin_urls
+        if self.prepare:
+            allowed.update({
+                "branch.main.merge": {"refs/heads/main"},
+                "branch.main.remote": {"origin"},
+            })
+        for key, value in entries.items():
+            if key not in allowed or value not in allowed[key]:
+                raise SystemExit(f"prohibited local Git configuration: {key}")
+        required = {
+            "core.repositoryformatversion",
+            "core.filemode",
+            "core.bare",
+            "core.logallrefupdates",
+            "remote.origin.fetch",
+            "remote.origin.url",
+        }
+        if self.prepare:
+            required.update({"branch.main.merge", "branch.main.remote"})
+        missing = sorted(required - entries.keys())
+        if missing:
+            raise SystemExit(
+                "local Git configuration lacks required structural key(s): "
+                + ", ".join(missing))
+        origin = entries["remote.origin.url"]
+        if entries.get("remote.origin.pushurl", origin) != origin:
+            raise SystemExit("origin fetch and push URLs differ")
+        return config_path, hashlib.sha256(config_bytes).hexdigest(), origin
+
+    def _recheck_inputs(self) -> None:
+        for label, path, expected in self._trusted_paths:
+            try:
+                actual = _path_snapshot(path)
+            except OSError as exc:
+                raise SystemExit(f"{label} became unavailable") from exc
+            if actual != expected:
+                raise SystemExit(f"{label} changed after profile admission")
+        try:
+            config_metadata = self._config_path.stat(follow_symlinks=False)
+            if config_metadata.st_size > MAX_GIT_CONFIG_BYTES:
+                raise SystemExit("local Git configuration exceeds the size limit")
+            config_bytes = self._config_path.read_bytes()
+        except OSError as exc:
+            raise SystemExit("local Git configuration became unavailable") from exc
+        if hashlib.sha256(config_bytes).hexdigest() != self._config_digest:
+            raise SystemExit("local Git configuration changed after admission")
+
+    def _purpose(self, args: tuple[str, ...]) -> str:
+        if not args:
+            raise SystemExit("release Git command is empty")
+        command = args[0]
+        if command in self._NETWORK_COMMANDS:
+            tag_ref = re.compile(r"refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)\Z")
+            exact = False
+            if command == "fetch":
+                exact = args == (
+                    "fetch", "--no-tags", RELEASE_SSH_ORIGIN,
+                    "refs/heads/main:refs/remotes/origin/main",
+                )
+            elif command == "ls-remote":
+                exact = args == (
+                    "ls-remote", "--exit-code", "--heads", RELEASE_SSH_ORIGIN,
+                    "refs/heads/main",
+                )
+                if len(args) == 5 and args[:4] == (
+                    "ls-remote", "--exit-code", "--tags", RELEASE_SSH_ORIGIN,
+                ):
+                    exact = tag_ref.fullmatch(args[4]) is not None
+            elif command == "push" and len(args) == 5 and args[:4] == (
+                "push", "--porcelain", "--no-verify", RELEASE_SSH_ORIGIN,
+            ):
+                source, separator, destination = args[4].partition(":")
+                source_match = tag_ref.fullmatch(source)
+                exact = (
+                    separator == ":"
+                    and source_match is not None
+                    and destination == source
+                )
+            if not self.prepare or not exact:
+                raise SystemExit("release network Git requires the exact explicit SSH origin")
+            return "transport"
+        if command == "verify-tag":
+            if (
+                not self.prepare
+                or len(args) != 2
+                or re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args[1]) is None
+            ):
+                raise SystemExit("release signature verification requires an owner profile")
+            return "verify"
+        if command == "tag":
+            if "--sign" in args:
+                expected_message = f"Release {args[3]}" if len(args) > 3 else ""
+                if (
+                    not self.prepare
+                    or len(args) != 6
+                    or args[:3] != ("tag", "--sign", "--annotate")
+                    or re.fullmatch(
+                        r"v[0-9]+\.[0-9]+\.[0-9]+", args[3]) is None
+                    or args[4:] != ("--message", expected_message)
+                ):
+                    raise SystemExit("release Git refuses an unclassified tag operation")
+                return "sign"
+            if "--delete" in args:
+                if (
+                    not self.prepare
+                    or len(args) != 3
+                    or args[:2] != ("tag", "--delete")
+                    or re.fullmatch(
+                        r"v[0-9]+\.[0-9]+\.[0-9]+", args[2]) is None
+                ):
+                    raise SystemExit("release Git refuses an unclassified tag operation")
+                return "write"
+            raise SystemExit("release Git refuses an unclassified tag operation")
+        stable_tag = r"v[0-9]+\.[0-9]+\.[0-9]+"
+        stable_ref = rf"refs/tags/{stable_tag}"
+        exact_read = args in {
+            ("status", "--porcelain=v1", "--untracked-files=all"),
+            ("symbolic-ref", "--short", "HEAD"),
+            ("rev-parse", "HEAD"),
+            ("rev-parse", "refs/remotes/origin/main"),
+        }
+        if command == "show-ref" and len(args) == 4:
+            exact_read = (
+                args[:3] == ("show-ref", "--verify", "--quiet")
+                and re.fullmatch(stable_ref, args[3]) is not None
+            )
+        elif command == "cat-file" and len(args) == 3:
+            exact_read = (
+                args[1] in {"-t", "tag"}
+                and re.fullmatch(stable_ref, args[2]) is not None
+            )
+        elif command == "rev-parse" and len(args) == 2:
+            exact_read = exact_read or re.fullmatch(
+                rf"{stable_ref}(?:\^\{{(?:tag|commit)\}})?", args[1]) is not None
+        if not exact_read:
+            raise SystemExit("release Git refuses an unclassified read operation")
+        return "read"
+
+    def _profile(self, purpose: str) -> tuple[list[str], dict[str, str]]:
+        config: list[str] = []
+        environment: dict[str, str] = {}
+        if purpose in {"sign", "verify"}:
+            for key, value in (
+                ("gpg.format", "ssh"),
+                ("user.name", self.tagger_name or ""),
+                ("user.email", self.tagger_email or ""),
+                ("user.signingKey", os.fspath(self.signing_key)),
+                ("gpg.ssh.program", os.fspath(self.ssh_keygen_executable)),
+                ("gpg.ssh.allowedSignersFile", os.fspath(self.allowed_signers_file)),
+            ):
+                config.extend(("-c", f"{key}={value}"))
+            if purpose == "sign":
+                environment["SSH_AUTH_SOCK"] = os.fspath(self.ssh_auth_sock)
+        if purpose == "transport":
+            config.extend(("-c", "protocol.ssh.allow=always"))
+            ssh_command = " ".join((
+                os.fspath(self.ssh_executable),
+                "-F", "/dev/null",
+                "-oBatchMode=yes",
+                "-oPasswordAuthentication=no",
+                "-oKbdInteractiveAuthentication=no",
+                "-oStrictHostKeyChecking=yes",
+                "-oUpdateHostKeys=no",
+                "-oClearAllForwardings=yes",
+                "-oPermitLocalCommand=no",
+                "-oProxyCommand=none",
+                f"-oUserKnownHostsFile={self.known_hosts_file}",
+                "-oGlobalKnownHostsFile=/dev/null",
+                "-oIdentitiesOnly=yes",
+                f"-oIdentityAgent={self.ssh_auth_sock}",
+                f"-oIdentityFile={self.transport_key}",
+            ))
+            environment.update({
+                "GIT_SSH_COMMAND": ssh_command,
+                "GIT_SSH_VARIANT": "ssh",
+                "SSH_AUTH_SOCK": os.fspath(self.ssh_auth_sock),
+            })
+        return config, environment
+
+    def run(self, *args: str, text: bool = True) -> subprocess.CompletedProcess:
+        purpose = self._purpose(args)
+        self._recheck_inputs()
+        profile_config, profile_environment = self._profile(purpose)
+        environment = self._base_environment()
+        environment.update(profile_environment)
+        command = self._command_prefix() + profile_config + list(args)
+        try:
+            completed = _bounded_process(
+                command,
+                cwd=self.root,
+                environment=environment,
+                temporary_directory=self._private_home,
+                timeout=GIT_OPERATION_TIMEOUT_SECONDS,
+                limit=MAX_GIT_OUTPUT_BYTES,
+                text=text,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ReleaseGitCompletedError(
+                f"release Git {args[0]} timed out after "
+                f"{GIT_OPERATION_TIMEOUT_SECONDS}s",
+                returncode=-signal.SIGKILL,
+            ) from exc
+        except OSError as exc:
+            raise SystemExit(f"release Git {args[0]} could not start") from exc
+        try:
+            self._recheck_inputs()
+        except SystemExit as exc:
+            raise ReleaseGitCompletedError(
+                f"release Git {args[0]} completed but postflight failed: {exc}",
+                returncode=completed.returncode,
+            ) from exc
+        if completed.output_limit_exceeded:
+            raise ReleaseGitCompletedError(
+                f"release Git {args[0]} completed but output exceeded the size limit",
+                returncode=completed.returncode,
+            )
+        return completed
+
+    def output(self, *args: str) -> str:
+        completed = self.run(*args)
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "no detail").strip()
+            detail = detail[:MAX_GIT_DIAGNOSTIC_BYTES]
+            raise ReleaseGitCompletedError(
+                f"release Git {args[0]} failed: {detail}",
+                returncode=completed.returncode,
+            )
+        return completed.stdout.strip()
+
+    def output_bytes(self, *args: str) -> bytes:
+        completed = self.run(*args, text=False)
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or b"no detail")
+            detail = detail[:MAX_GIT_DIAGNOSTIC_BYTES].decode("utf-8", "replace").strip()
+            raise ReleaseGitCompletedError(
+                f"release Git {args[0]} failed: {detail}",
+                returncode=completed.returncode,
+            )
+        return completed.stdout
+
+
+_RELEASE_GIT: ReleaseGit | None = None
+
+
+def _set_release_git(release_git: ReleaseGit | None) -> ReleaseGit | None:
+    global _RELEASE_GIT
+    previous = _RELEASE_GIT
+    _RELEASE_GIT = release_git
+    return previous
+
+
+def _release_git() -> ReleaseGit:
+    if _RELEASE_GIT is None:
+        raise SystemExit("release Git profile is not configured")
+    return _RELEASE_GIT
+
+
+def _git(*args: str) -> str:
+    return _release_git().output(*args)
 
 
 def _git_bytes(*args: str) -> bytes:
-    environment = dict(os.environ)
-    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
-    try:
-        return subprocess.check_output(
-            ["git", "--no-replace-objects", *args],
-            cwd=ROOT,
-            env=environment,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise SystemExit("release Git object read timed out after 30s") from exc
+    return _release_git().output_bytes(*args)
 
 
 def _verify_git_object_id(oid: str, kind: str, payload: bytes) -> None:
@@ -263,42 +1119,31 @@ def _validated_https_url(value: object, *, label: str, origin_only: bool) -> str
 
 def _github_server_url() -> str:
     raw = os.environ.get("GITHUB_SERVER_URL")
-    return _validated_https_url(
+    server = _validated_https_url(
         "https://github.com" if raw is None else raw,
         label="GITHUB_SERVER_URL",
         origin_only=True,
     )
+    if server != "https://github.com":
+        raise SystemExit("GITHUB_SERVER_URL is outside the public GitHub allowlist")
+    return server
 
 
 def _github_api_url() -> str:
-    server = urllib.parse.urlsplit(_github_server_url())
+    _github_server_url()
     raw = os.environ.get("GITHUB_API_URL")
     if raw is None:
-        raw = (
-            "https://api.github.com"
-            if server.hostname == "github.com"
-            else urllib.parse.urlunsplit(
-                ("https", server.netloc, "/api/v3", "", ""))
-        )
+        raw = "https://api.github.com"
     api = _validated_https_url(
         raw, label="GITHUB_API_URL", origin_only=False)
-    parsed = urllib.parse.urlsplit(api)
-    if server.hostname == "github.com":
-        allowed = api == "https://api.github.com"
-    else:
-        allowed = (
-            parsed.scheme == server.scheme
-            and parsed.netloc == server.netloc
-            and parsed.path == "/api/v3"
-        )
-    if not allowed:
+    if api != "https://api.github.com":
         raise SystemExit(
-            "GITHUB_API_URL is outside the server-bound GitHub API allowlist")
+            "GITHUB_API_URL is outside the public GitHub API allowlist")
     return api
 
 
 def _github_json(path: str) -> dict:
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if (
         not isinstance(token, str)
         or not token
@@ -564,12 +1409,7 @@ def _verify_required_checks(
             + ", ".join(missing))
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("tag")
-    parser.add_argument("--verify-github", action="store_true")
-    parser.add_argument("--verify-required-checks", action="store_true")
-    args = parser.parse_args(argv)
+def _check_release_tag(args: argparse.Namespace) -> int:
     version = _release_version()
     metadata_version = _verify_release_metadata(args.tag)
     if metadata_version != version:
@@ -613,6 +1453,32 @@ def main(argv: list[str] | None = None) -> int:
         _verify_required_checks(tagged)
     print(f"{args.tag} is a signed annotated tag for package {version} at {head}")
     return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    release_git: ReleaseGit | None = None,
+) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("tag")
+    parser.add_argument("--git-executable")
+    parser.add_argument("--verify-github", action="store_true")
+    parser.add_argument("--verify-required-checks", action="store_true")
+    args = parser.parse_args(argv)
+    owned = release_git is None
+    if release_git is None:
+        if args.git_executable is None:
+            raise SystemExit("--git-executable is required")
+        release_git = ReleaseGit.checker(
+            root=ROOT, git_executable=args.git_executable)
+    previous = _set_release_git(release_git)
+    try:
+        return _check_release_tag(args)
+    finally:
+        _set_release_git(previous)
+        if owned:
+            release_git.close()
 
 
 if __name__ == "__main__":
