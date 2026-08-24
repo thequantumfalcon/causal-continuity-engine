@@ -337,6 +337,110 @@ class TestResume:
         assert "1 open task" in summary
         assert "2 open task" not in summary
 
+    def test_collision_only_withholding_names_quarantine_cause(
+            self, public_engine):
+        text = "review the shared deployment instruction " + "c" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=100_000, fmt="json")
+
+        assert not any(
+            item.get("reason") == "token_budget"
+            for item in packet["omissions"])
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert "matches quarantined content" in summary
+        assert "human review is required" in summary
+        assert "token budget" not in summary
+
+    def test_budget_overlap_uses_collision_as_the_deciding_cause(
+            self, public_engine):
+        text = "review the shared deployment instruction " + "d" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=1, fmt="json")
+
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert "1 open task" in summary
+        assert "matches quarantined content" in summary
+        assert "token budget" not in summary
+
+    def test_distinct_collision_and_budget_causes_are_both_reported(
+            self, public_engine):
+        text = "review the shared deployment instruction " + "e" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "run the independent migration " + "f" * 80},
+            status="open")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=1, fmt="json")
+
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert summary.count("1 open task") == 2
+        assert "matches quarantined content" in summary
+        assert "token budget" in summary
+        assert summary.index("quarantined content") < summary.index("token budget")
+
+    def test_blocked_collision_names_quarantine_instead_of_absence(
+            self, public_engine):
+        text = "review the shared deployment instruction " + "g" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="blocked")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=100_000, fmt="json")
+
+        assert packet["open_work"]["tasks"] == []
+        assert packet["open_work"]["blockers"] == []
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert "matches quarantined content" in summary
+        assert "No open tasks" not in summary
+        assert "token budget" not in summary
+
+    def test_visible_blocker_precedes_additional_collision_disclosure(
+            self, public_engine):
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "wait for the schema owner"}, status="blocked")
+        text = "review the shared deployment instruction " + "h" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=100_000, fmt="json")
+
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert summary.startswith("All visible open work is blocked")
+        assert "1 additional open task" in summary
+        assert "matches quarantined content" in summary
+        assert "token budget" not in summary
+
     def test_policy_demoted_collision_is_not_hidden_open_work(
             self, public_engine):
         text = "review the untrusted deployment instruction " + "x" * 80
