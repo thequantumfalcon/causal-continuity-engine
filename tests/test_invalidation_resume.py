@@ -2,6 +2,7 @@
 
 import pytest
 
+from causal_continuity_engine.engine import Engine
 from causal_continuity_engine.graph import Graph
 from causal_continuity_engine.invalidation import InvalidationEngine, classify
 from causal_continuity_engine.memory import Memory
@@ -23,6 +24,18 @@ def env():
         node_id=PRJ, status="active", data={"name": "resume fixture"})
     yield store, graph, memory, inv, composer
     store.close()
+
+
+@pytest.fixture
+def public_engine(tmp_path):
+    engine = Engine(tmp_path / "cce.db", tenant_id=TEN, workdir=tmp_path)
+    engine.create_project(
+        "resume public fixture",
+        project_id=PRJ,
+        repository="local/resume",
+        repository_id=1)
+    yield engine
+    engine.close()
 
 
 def _chain(graph):
@@ -242,6 +255,106 @@ class TestResume:
         assert "node_id" not in action or action["node_id"] in retained
         if "node_id" not in action:
             assert "withheld" in action["summary"].lower()
+
+    def test_budget_trimmed_blocker_still_visible_is_not_withheld(
+            self, public_engine):
+        blocked = public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "wait for the schema owner " + "x" * 80},
+            status="blocked")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=1, fmt="json")
+
+        assert packet["open_work"]["tasks"] == []
+        assert {item["node_id"] for item in packet["open_work"]["blockers"]} \
+            == {blocked.id}
+        omission = next(
+            item for item in packet["omissions"]
+            if item.get("reason") == "token_budget"
+            and item.get("section") == "open work detail")
+        assert omission["count"] == 1
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert summary == (
+            "All visible open work is blocked; resolve a blocker before continuing.")
+
+    def test_budget_counts_only_a_task_absent_from_every_visible_view(
+            self, public_engine):
+        blocked = public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "blocked migration " + "x" * 80},
+            status="blocked")
+        actionable = public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "run the actionable migration " + "y" * 80},
+            status="open")
+
+        partial = None
+        for budget in range(1, 1000):
+            packet = public_engine.resume_packet(
+                PRJ, token_budget=budget, fmt="json")
+            task_ids = {
+                item["node_id"] for item in packet["open_work"]["tasks"]}
+            if task_ids == {blocked.id}:
+                partial = packet
+                break
+
+        assert partial is not None, "fixture never retained only the blocker"
+        assert actionable.id not in {
+            item["node_id"] for item in partial["open_work"]["tasks"]}
+        summary = partial["open_work"]["next_safe_action"]["summary"]
+        assert "1 additional open task" in summary
+        assert "2 additional open task" not in summary
+
+    def test_budget_only_hidden_task_keeps_budget_cause(
+            self, public_engine):
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": "run the isolated migration " + "z" * 80},
+            status="open")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=1, fmt="json")
+
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert "1 open task" in summary
+        assert "token budget" in summary
+
+    def test_budget_and_quarantine_overlap_counts_one_hidden_task(
+            self, public_engine):
+        text = "review the shared deployment instruction " + "x" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open")
+
+        packet = public_engine.resume_packet(
+            PRJ, token_budget=1, fmt="json")
+
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert "1 open task" in summary
+        assert "2 open task" not in summary
+
+    def test_policy_demoted_collision_is_not_hidden_open_work(
+            self, public_engine):
+        text = "review the untrusted deployment instruction " + "x" * 80
+        public_engine.graph.put_node(
+            entity_type="claim", tenant_id=TEN, project_id=PRJ,
+            data={"statement": text}, status="quarantined",
+            authority="untrusted_content")
+        public_engine.graph.put_node(
+            entity_type="task", tenant_id=TEN, project_id=PRJ,
+            data={"title": text}, status="open",
+            authority="untrusted_content", extractor="github-prose")
+
+        packet = public_engine.resume_packet(PRJ, fmt="json")
+
+        assert packet["open_work"]["tasks"] == []
+        assert packet["open_work"]["blockers"] == []
+        summary = packet["open_work"]["next_safe_action"]["summary"]
+        assert summary == "No open tasks; verify project state and await instruction."
 
     def test_quarantine_collision_does_not_claim_withheld_work_is_absent(self, env):
         _, graph, _, _, composer = env
