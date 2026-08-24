@@ -517,6 +517,14 @@ def test_malformed_binary_hosts_are_inconclusive(scanner):
     assert "content.scan.unicode.encoding" in _codes(renamed_wide)
 
 
+@pytest.mark.parametrize("name", ["image.jpg", "image.jpeg", "image.jpe"])
+def test_declared_jpeg_without_jpeg_structure_is_inconclusive(scanner, name):
+    findings = scanner.scan_blob(name, b"\xffnot-a-jpeg")
+    assert _statuses(findings) == {scanner.INCONCLUSIVE}
+    assert "content.scan.container.unsupported" in _codes(findings)
+    assert scanner._result_code(list(findings)) == 2
+
+
 @pytest.mark.parametrize(
     ("name", "payload"),
     [
