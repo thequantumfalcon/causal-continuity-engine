@@ -297,7 +297,12 @@ class ResumeComposer:
         }
 
         # Token budget: trim trimmable material, never L0/mission/constraints.
+        eligible_open_ids = {
+            task["node_id"] for task in packet["open_work"]["tasks"]}
         packet = self._fit_budget(packet, token_budget, omissions)
+        after_budget_ids = {
+            task["node_id"] for task in packet["open_work"]["tasks"]}
+        budget_removed_ids = eligible_open_ids - after_budget_ids
         # Defence in depth (AD-006): whatever any section selected, nothing
         # quarantined leaves in a packet. Every earlier barrier is a filter on
         # one path; this one is on the only exit.
@@ -307,7 +312,9 @@ class ResumeComposer:
         # Both budget trimming and quarantine stripping happen after the
         # initial action is chosen. Reconcile at the exit so the signed packet
         # never instructs its reader to act on work it simultaneously withholds.
-        self._reconcile_open_work(packet)
+        self._reconcile_open_work(
+            packet, eligible_open_ids=eligible_open_ids,
+            budget_removed_ids=budget_removed_ids)
         packet["token_estimate"] = _tokens(packet)
         # The digest is part of the signed packet. Signing first and then
         # appending this field made every packet fail Signer.verify(): the
@@ -421,8 +428,10 @@ class ResumeComposer:
         }
 
     @staticmethod
-    def _reconcile_open_work(packet: dict) -> None:
-        """Bind next_safe_action to the final, agent-visible task list."""
+    def _reconcile_open_work(
+            packet: dict, *, eligible_open_ids: set[str],
+            budget_removed_ids: set[str]) -> None:
+        """Bind next_safe_action and withholding counts to visible task ids."""
         work = packet["open_work"]
         tasks = work.get("tasks") or []
         retained_ids = {task.get("node_id") for task in tasks}
@@ -440,19 +449,20 @@ class ResumeComposer:
             }
             return
 
-        withheld = sum(
-            omission.get("count", 0)
-            for omission in packet.get("omissions", [])
-            if omission.get("section") == "open work detail"
-        )
-        withheld += sum(
-            1
+        visible_ids = retained_ids | {
+            blocker.get("node_id") for blocker in work.get("blockers", [])}
+        collision_ids = {
+            node.get("node_id")
             for omission in packet.get("omissions", [])
             if omission.get("reason") == "quarantined_text_collision"
             for node in omission.get("nodes", [])
             if node.get("entity_type") == "task"
             and node.get("status") in ("open", "in_progress", "blocked", None)
-        )
+        }
+        collision_hidden = (
+            collision_ids & eligible_open_ids) - visible_ids
+        budget_hidden = budget_removed_ids - visible_ids - collision_hidden
+        withheld = len(collision_hidden | budget_hidden)
         if work.get("blockers"):
             summary = "All visible open work is blocked; resolve a blocker before continuing."
             if withheld:
