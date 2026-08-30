@@ -25,6 +25,8 @@ import sys
 import traceback
 from pathlib import Path
 
+from .core import canonical_json
+
 # Protocol revisions this server answers, newest first. "Answers" is the whole
 # claim: the methods it implements — initialize, ping, tools/list, tools/call
 # and initialized notifications — are shaped identically across these revisions, and each is
@@ -159,7 +161,7 @@ class _Session:
             packet = engine._resume_packet(
                 project_id, token_budget=budget, fmt=fmt, record_state=False)
             if fmt == "json":
-                return json.dumps(packet, indent=2, sort_keys=True)
+                return canonical_json(packet)
             return packet
         if name == "list_assumptions":
             nodes = engine.graph.current(
