@@ -364,6 +364,7 @@ def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
 
 def test_resume_tool_can_return_the_complete_canonical_packet(tmp_path):
     from causal_continuity_engine.cli import main
+    from causal_continuity_engine.core import canonical_json
     from causal_continuity_engine.resume import ResumeComposer
 
     main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
@@ -373,7 +374,9 @@ def test_resume_tool_can_return_the_complete_canonical_packet(tmp_path):
         "params": {"name": "resume_packet", "arguments": {"format": "json"}},
     }], directory=str(tmp_path))
 
-    packet = json.loads(response["result"]["content"][0]["text"])
+    text = response["result"]["content"][0]["text"]
+    packet = json.loads(text)
+    assert text == canonical_json(packet)
     assert set(packet) >= ResumeComposer.MARKDOWN_RENDERED_TOP_LEVEL
     assert packet["schema_version"] == "cce.resume.v1"
 
