@@ -246,7 +246,11 @@ def _handle(request: dict, session: _Session) -> dict | None:
     notification = not has_id
     request_id = request.get("id") if has_id else None
     if request.get("jsonrpc") != "2.0":
-        return _error(None, _INVALID_REQUEST, "jsonrpc must be '2.0'")
+        return _error(
+            request_id if has_id and _valid_request_id(request_id) else None,
+            _INVALID_REQUEST,
+            "jsonrpc must be '2.0'",
+        )
     if has_id and not _valid_request_id(request_id):
         return _error(None, _INVALID_REQUEST,
                       "request id must be a string or integer")
