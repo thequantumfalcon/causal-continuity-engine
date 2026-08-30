@@ -462,14 +462,32 @@ class ResumeComposer:
         collision_hidden = (
             collision_ids & eligible_open_ids) - visible_ids
         budget_hidden = budget_removed_ids - visible_ids - collision_hidden
-        withheld = len(collision_hidden | budget_hidden)
+        collision_count = len(collision_hidden)
+        budget_count = len(budget_hidden)
         if work.get("blockers"):
             summary = "All visible open work is blocked; resolve a blocker before continuing."
-            if withheld:
-                summary += f" {withheld} additional open task(s) were withheld."
-        elif withheld:
+            if collision_count:
+                summary += (
+                    f" {collision_count} additional open task(s) were withheld "
+                    "because their text matches quarantined content; human review "
+                    "is required.")
+            if budget_count:
+                summary += (
+                    f" {budget_count} additional open task(s) were withheld to meet "
+                    "the requested token budget; request a larger packet before "
+                    "choosing work.")
+        elif collision_count:
             summary = (
-                f"{withheld} open task(s) were withheld to meet the requested "
+                f"{collision_count} open task(s) were withheld because their text "
+                "matches quarantined content; human review is required.")
+            if budget_count:
+                summary += (
+                    f" {budget_count} open task(s) were withheld to meet the "
+                    "requested token budget; request a larger packet before "
+                    "choosing work.")
+        elif budget_count:
+            summary = (
+                f"{budget_count} open task(s) were withheld to meet the requested "
                 "token budget; request a larger packet before choosing work."
             )
         else:
