@@ -62,7 +62,8 @@ class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
         if (old_origin is None or new_origin is None
                 or old_origin[0] != "https" or new_origin[0] != "https"
                 or old_origin[1] is None or old_origin[1] != new_origin[1]
-                or (old_origin[2] or 443) != (new_origin[2] or 443)):
+                or (old_origin[2] if old_origin[2] is not None else 443)
+                != (new_origin[2] if new_origin[2] is not None else 443)):
             raise urllib.error.URLError("unsafe GitHub API redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
