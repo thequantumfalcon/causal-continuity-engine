@@ -206,6 +206,41 @@ def test_github_authorization_cannot_cross_a_redirect_boundary(
             request, None, 302, "Found", {}, destination)
 
 
+@pytest.mark.parametrize(
+    ("source", "destination", "allowed"),
+    [
+        ("https://api.github.com/repos/o/r",
+         "https://api.github.com:443/repos/o/r", True),
+        ("https://api.github.com:443/repos/o/r",
+         "https://api.github.com/repos/o/r", True),
+        ("https://api.github.com/repos/o/r",
+         "https://api.github.com:0/repos/o/r", False),
+        ("https://api.github.com:0/repos/o/r",
+         "https://api.github.com/repos/o/r", False),
+        ("https://api.github.com:8443/repos/o/r",
+         "https://api.github.com:8443/repositories/4242", True),
+        ("https://api.github.com:0/repos/o/r",
+         "https://api.github.com:0/repositories/4242", True),
+    ],
+)
+def test_redirect_port_identity_is_not_truthiness(
+        backfill, source, destination, allowed):
+    request = urllib.request.Request(
+        source, headers={"Authorization": "Bearer secret"})
+
+    if not allowed:
+        with pytest.raises(
+                urllib.error.URLError, match="unsafe GitHub API redirect"):
+            backfill._SameOriginRedirectHandler().redirect_request(
+                request, None, 302, "Found", {}, destination)
+        return
+
+    redirected = backfill._SameOriginRedirectHandler().redirect_request(
+        request, None, 302, "Found", {}, destination)
+    assert redirected.full_url == destination
+    assert redirected.get_header("Authorization") == "Bearer secret"
+
+
 def test_same_origin_https_redirect_remains_usable(backfill):
     request = urllib.request.Request(
         "https://api.github.com/repos/octo/demo",
