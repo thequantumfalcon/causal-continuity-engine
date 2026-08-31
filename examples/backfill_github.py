@@ -199,26 +199,28 @@ def main(argv: list[str] | None = None) -> int:
     holder = args.dir or tempfile.mkdtemp(prefix="cce-backfill-")
     workdir = Path(holder)
     workdir.mkdir(parents=True, exist_ok=True)
-    if args.dir:
-        # A kept project must use the trust root and database layout every
-        # public consumer opens. A bare <dir>/cce.db cannot be resumed later.
-        from causal_continuity_engine.cli import _engine as _open_project
-        from causal_continuity_engine.cli import main as _cli
-
-        if not (workdir / ".cce").exists():
-            _cli(["--dir", str(workdir), "init", "--repo", meta["full_name"],
-                  "--repo-id", str(meta["id"])])
-        engine, project_meta = _open_project(SimpleNamespace(dir=str(workdir)))
-        project_id = project_meta["project_id"]
-    else:
-        engine = Engine(workdir / "cce.db", tenant_id="ten_backfill",
-                        workdir=workdir)
-        project = engine.create_project(
-            meta["name"], project_id="prj_backfill",
-            repository=meta["full_name"], repository_id=meta["id"])
-        project_id = project["project_id"] if isinstance(project, dict) \
-            else "prj_backfill"
+    engine = None
+    operation_error = None
     try:
+        if args.dir:
+            # A kept project must use the trust root and database layout every
+            # public consumer opens. A bare <dir>/cce.db cannot be resumed later.
+            from causal_continuity_engine.cli import _engine as _open_project
+            from causal_continuity_engine.cli import main as _cli
+
+            if not (workdir / ".cce").exists():
+                _cli(["--dir", str(workdir), "init", "--repo", meta["full_name"],
+                      "--repo-id", str(meta["id"])])
+            engine, project_meta = _open_project(SimpleNamespace(dir=str(workdir)))
+            project_id = project_meta["project_id"]
+        else:
+            engine = Engine(workdir / "cce.db", tenant_id="ten_backfill",
+                            workdir=workdir)
+            project = engine.create_project(
+                meta["name"], project_id="prj_backfill",
+                repository=meta["full_name"], repository_id=meta["id"])
+            project_id = project["project_id"] if isinstance(project, dict) \
+                else "prj_backfill"
 
         events: list[tuple[str, str, dict]] = [
             ("push", f"backfill-frontier-{head_sha[:8]}",
@@ -263,8 +265,19 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"\nproject kept at {workdir}" if args.dir else
               f"\ntemporary project at {workdir} (delete when done)")
+    except BaseException as error:
+        operation_error = error
+        raise
     finally:
-        engine.close()
+        if engine is not None:
+            try:
+                engine.close()
+            except Exception as cleanup_error:
+                if operation_error is None:
+                    raise
+                operation_error.add_note(
+                    f"additionally failed to close backfill engine: "
+                    f"{cleanup_error!r}")
     return 0
 
 
