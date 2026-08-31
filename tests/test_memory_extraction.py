@@ -598,17 +598,30 @@ class TestExtraction:
         assert statement in item.span
         assert item.span.endswith(statement)
 
-    @pytest.mark.parametrize("format_control", ["", "\u2069"])
-    def test_extraction_abstains_before_splitting_a_grapheme_cluster(
-            self, format_control):
+    @pytest.mark.parametrize(
+        "continuation",
+        ["\u0301", "\u0903", "\u20dd", "\u2069\u0301", "\u200d", "\ufe0f"],
+    )
+    def test_extraction_abstains_before_a_supported_unicode_continuation(
+            self, continuation):
         statement = "the value is " + "a" * (300 - len("the value is "))
-        text = "We assume " + statement + format_control + "\u0301."
+        text = "We assume " + statement + continuation + "."
 
         result = DeterministicExtractor().extract(
             text, source_authority="human_intent")
 
         assert result.items == []
         assert result.abstained == 1
+
+    def test_extraction_does_not_abstain_for_a_format_control_alone(self):
+        statement = "the value is " + "a" * (300 - len("the value is "))
+        text = "We assume " + statement + "\u2069."
+
+        result = DeterministicExtractor().extract(
+            text, source_authority="human_intent")
+
+        assert len(result.items) == 1
+        assert result.abstained == 0
 
 
 def test_statement_identity_version_and_vectors_are_explicit():

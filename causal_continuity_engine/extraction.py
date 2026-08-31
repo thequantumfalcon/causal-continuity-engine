@@ -224,11 +224,12 @@ class DeterministicExtractor:
         candidates = []
         for kind, pattern, base_conf in _PATTERNS:
             for m in pattern.finditer(prose):
-                # The fixed statement cap may land between a base character
-                # and a combining mark or joiner. A partial grapheme is not a
-                # faithful source span, so the deterministic path abstains.
+                # The fixed statement cap may land before one of the Unicode
+                # continuations this extractor recognizes. Detaching that
+                # continuation would not be a faithful source span, so the
+                # deterministic path abstains.
                 raw_after = offsets[m.end("s") - 1] + 1
-                if _continues_grapheme(text, raw_after):
+                if _boundary_has_mark_or_zwj_continuation(text, raw_after):
                     result.abstained += 1
                     continue
                 statement = _clean(
@@ -387,8 +388,8 @@ def _without_invisibles(text: str) -> tuple[str, list[int]]:
     return "".join(kept), offsets
 
 
-def _continues_grapheme(text: str, index: int) -> bool:
-    """Whether a source boundary at index would split a grapheme sequence."""
+def _boundary_has_mark_or_zwj_continuation(text: str, index: int) -> bool:
+    """Whether a mark, U+200D, or variation selector follows through Cf controls."""
     while index < len(text):
         char = text[index]
         category = unicodedata.category(char)

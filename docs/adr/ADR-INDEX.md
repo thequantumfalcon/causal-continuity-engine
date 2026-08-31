@@ -1988,9 +1988,9 @@ for promoting a proposal into an explicit human decision.
 **Decision.** Remove Unicode category-Cf format controls for deterministic
 security and extraction matching, while mapping every statement and context
 span back to the original source. Injection screening runs over the complete
-visible block before prose masking. If a fixed character bound would split a
-combining sequence or joiner, the extractor abstains rather than record a
-partial grapheme.
+visible block before prose masking. If a fixed character bound is followed,
+through category-Cf controls, by a category-M mark, U+200D, or a named variation
+selector, the extractor abstains rather than detach that partial source sequence.
 
 **Rationale.** A bidi or zero-width format character inside "ignore" defeated
 the injection marker while rendering no warning to a reader. Matches later in
@@ -2001,9 +2001,10 @@ representations connected by an explicit offset map.
 
 **Limit.** Category-Cf removal is a deterministic defense against invisible
 formatting, not a complete Unicode spoofing or natural-language injection
-detector. It can reduce shaping distinctions in scripts that use joiners; raw
-source remains inspectable, false positives are quarantined visibly, and novel
-wording still requires structural authority barriers.
+detector. The boundary check is not full extended-grapheme segmentation. It can
+reduce shaping distinctions in scripts that use joiners; raw source remains
+inspectable, false positives are quarantined visibly, and novel wording still
+requires structural authority barriers.
 
 ## ADR-111 — Release Git receives only an explicit SSH capability
 
