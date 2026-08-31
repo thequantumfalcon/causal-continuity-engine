@@ -125,6 +125,24 @@ def test_malformed_input_and_unknown_names_use_the_reserved_codes():
         mcp._INVALID_PARAMS, mcp._INVALID_REQUEST]
 
 
+@pytest.mark.parametrize("request_id", ["request-4", 0])
+def test_invalid_jsonrpc_preserves_a_valid_request_identifier(request_id):
+    (response,) = _drive([
+        {"jsonrpc": "1.0", "id": request_id, "method": "tools/list"},
+    ])
+    assert response["error"]["code"] == mcp._INVALID_REQUEST
+    assert response["id"] == request_id
+
+
+@pytest.mark.parametrize("request_id", [None, False, 1.5, [], {}])
+def test_invalid_jsonrpc_does_not_echo_an_invalid_request_identifier(request_id):
+    (response,) = _drive([
+        {"jsonrpc": "1.0", "id": request_id, "method": "tools/list"},
+    ])
+    assert response["error"]["code"] == mcp._INVALID_REQUEST
+    assert response["id"] is None
+
+
 def test_the_surface_is_read_only():
     """An MCP client is an untrusted caller. Nothing here may mutate state.
 
