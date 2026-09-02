@@ -71,9 +71,10 @@ audit, with each defect pinned against the 0.1.4 source baseline.
   declaration with the compiled closure.
 - **Unicode format controls bypassed injection screening and corrupted source
   spans.** Matching uses canonical visible text while evidence maps to original
-  coordinates. The extractor abstains at a split grapheme boundary, including
-  format controls before combining marks. Behavior is versioned as extractor
-  1.1.0 and processor 1.1.0.
+  coordinates. At the fixed statement cap, a continuation guard abstains before
+  category-M marks, U+200D, and named variation selectors, including through
+  intervening format controls. This is not Unicode grapheme-cluster segmentation.
+  Behavior is versioned as extractor 1.1.0 and processor 1.1.0.
 - **MCP list projections read the wrong state.** Assumptions now include only
   active/supported nodes; invalidation severity and reason come from canonical
   nested data.
