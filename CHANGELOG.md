@@ -53,6 +53,13 @@ audit, with each defect pinned against the 0.1.4 source baseline.
   helper now captures the full tag-object identifier once, validates and
   verifies that object directly, pushes that identifier, and removes a failed
   local tag only through an identifier-matched reference update.
+- **Artifact behavior ran before the publication bytes became immutable.** The
+  workflow now uploads the built wheel, sdist, and checksum manifest first,
+  structurally verifies a fresh download using the independently derived commit
+  epoch and cross-runtime portable semantics, and runs installed behavior only
+  in a permission-empty disposable job. Both publishers consume the original
+  immutable artifact ID, so either verifier can block but cannot replace it;
+  the producer's double build retains the same-runtime exact-byte proof.
 
 - **A budgeted packet could instruct work it withheld.** The next safe action
   is reconciled after trimming and quarantine stripping. It either names a

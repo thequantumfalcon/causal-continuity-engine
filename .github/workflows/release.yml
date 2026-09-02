@@ -58,13 +58,13 @@ jobs:
       - name: Verify every runtime-declared immutable public schema URL
         run: python .github/scripts/verify_public_schemas.py --tag "$GITHUB_REF_NAME"
 
-      - name: Run every release gate and build twice
-        run: python .github/scripts/bootstrap_tools.py --release
+      - name: Run every release gate and build the candidate twice
+        run: python .github/scripts/bootstrap_tools.py --release-build
 
-      # Workflow artifacts are immutable within a run. The next job downloads
-      # this handoff by immutable artifact ID, validates its service-side digest,
-      # and recomputes its exact SHA256SUMS before publishing.
-      - name: Upload the exact verified release set
+      # Workflow artifacts are immutable within a run. Structural and behavior
+      # jobs validate this exact service object after the build runner has ended;
+      # publishers independently download the same object by immutable ID.
+      - name: Upload the exact release candidate before validating its bytes
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -77,8 +77,130 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  publish:
+  structural:
     needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Download the immutable candidate for structural verification
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: ${{ runner.temp }}/cce-structural-dist
+          merge-multiple: true
+          digest-mismatch: error
+
+      - name: Structurally verify the immutable service artifact
+        env:
+          EXPECTED_ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}
+        run: |
+          set -eu
+          printf '%s\n' "$EXPECTED_ARTIFACT_ID" | grep -Eq '^[0-9]+$'
+          printf '%s\n' "$EXPECTED_ARTIFACT_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+          mkdir "$RUNNER_TEMP/cce-structural-home"
+          source_epoch="$(
+            /usr/bin/env -i \
+              HOME="$RUNNER_TEMP/cce-structural-home" \
+              PATH=/usr/bin:/bin \
+              GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_SYSTEM=/dev/null \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_NO_REPLACE_OBJECTS=1 \
+              LC_ALL=C \
+              /usr/bin/git --no-pager --no-replace-objects \
+                -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                show -s --format=%ct HEAD
+          )"
+          printf '%s\n' "$source_epoch" | grep -Eq '^[0-9]+$'
+          python .github/scripts/bootstrap_tools.py --structure-only \
+            --portable-semantic --source-epoch "$source_epoch" \
+            --dist "$RUNNER_TEMP/cce-structural-dist"
+
+  behavior:
+    needs: [verify, structural]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Download the immutable structural handoff into disposable storage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: ${{ runner.temp }}/cce-behavior-dist
+          merge-multiple: true
+          digest-mismatch: error
+
+      # This terminal step is the only release step that executes code from the
+      # built wheel. The job has no repository checkout or GitHub permission,
+      # and it emits no artifact or output that can select publication bytes.
+      - name: Exercise the immutable wheel in the disposable behavior runner
+        env:
+          EXPECTED_ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}
+        run: |
+          set -eu
+          printf '%s\n' "$EXPECTED_ARTIFACT_ID" | grep -Eq '^[0-9]+$'
+          printf '%s\n' "$EXPECTED_ARTIFACT_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+
+          dist="$RUNNER_TEMP/cce-behavior-dist"
+          wheel="$(find "$dist" -maxdepth 1 -type f -name 'causal_continuity_engine-*.whl' -print -quit)"
+          sdist="$(find "$dist" -maxdepth 1 -type f -name 'causal_continuity_engine-*.tar.gz' -print -quit)"
+          test -n "$wheel"
+          test -n "$sdist"
+          expected_manifest="$(mktemp)"
+          trap 'rm -f "$expected_manifest"' EXIT
+          for artifact in "$sdist" "$wheel"; do
+            digest="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
+            printf '%s  %s\n' "$digest" "$(basename "$artifact")"
+          done | LC_ALL=C sort -k2 > "$expected_manifest"
+          cmp --silent "$expected_manifest" "$dist/SHA256SUMS"
+
+          source_root="$RUNNER_TEMP/cce-behavior-source"
+          mkdir "$source_root"
+          SDIST_PATH="$sdist" SOURCE_ROOT="$source_root" python -I - <<'PY'
+          import os
+          import tarfile
+          from pathlib import Path
+
+          archive = Path(os.environ["SDIST_PATH"])
+          destination = Path(os.environ["SOURCE_ROOT"])
+          with tarfile.open(archive, "r:gz") as source:
+              source.extractall(destination, filter="data")
+          roots = list(destination.iterdir())
+          if len(roots) != 1 or not roots[0].is_dir():
+              raise SystemExit("sdist did not extract to one source root")
+          PY
+          extracted="$(find "$source_root" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -f "$extracted/.github/scripts/bootstrap_tools.py"
+          python_executable="$(command -v python)"
+          mkdir "$RUNNER_TEMP/cce-behavior-home"
+          /usr/bin/env -i \
+            HOME="$RUNNER_TEMP/cce-behavior-home" \
+            PATH="$(dirname "$python_executable"):/usr/bin:/bin" \
+            RUNNER_TEMP="$RUNNER_TEMP" \
+            TMPDIR="$RUNNER_TEMP" \
+            "$python_executable" -I \
+            "$extracted/.github/scripts/bootstrap_tools.py" --behavior-only \
+            --dist "$dist"
+
+  publish:
+    needs: [verify, structural, behavior]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -208,7 +330,7 @@ jobs:
           fi
 
   pypi:
-    needs: [verify, publish]
+    needs: [verify, structural, behavior, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Trusted publishing exchanges this job's OIDC token for a short-lived
@@ -238,9 +360,11 @@ jobs:
       # the index upload rather than filtered by the uploader.
       - name: Recheck the handoff and isolate the two distributions
         env:
+          ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}
         run: |
           set -eu
+          printf '%s\n' "$ARTIFACT_ID" | grep -Eq '^[0-9]+$'
           printf '%s\n' "$EXPECTED_ARTIFACT_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
           file_count="$(find dist -mindepth 1 -maxdepth 1 -type f | wc -l)"
           wheel="$(find dist -maxdepth 1 -type f -name 'causal_continuity_engine-*.whl' -print -quit)"

@@ -378,7 +378,12 @@ gate installs the hash-locked tool closure, builds and validates a canonical
 sdist first in each of two passes, builds each wheel only from that exact
 source payload without backend dependency resolution, rejects source mutation,
 compares artifact bytes, verifies the checksum manifest and
-source-to-sdist-to-wheel parity, then installs the wheel outside the checkout
+source-to-sdist-to-wheel parity without executing artifact code. The hosted
+release workflow first uploads the built candidate, then structurally verifies
+a fresh download of that immutable service object using portable archive
+semantics and the commit epoch independently derived from the tagged checkout.
+The producer's double build retains same-runtime exact-byte reproducibility. A
+separate permission-empty job installs another download outside any checkout
 for import, CLI, capability, and behavioral checks.
 A signed annotated tag matching the package version triggers the same checks
 in `.github/workflows/release.yml`:
@@ -396,9 +401,12 @@ all artifacts, download and byte-check them, then publish once. A per-tag
 concurrency group prevents racing publishers, and a rerun repairs only a draft;
 an already-published immutable release is verified without mutation. Its build
 job is read-only and requires the
-tagged commit on `main` with trusted exact-SHA checks, and hands only the
-verified artifact ID and digest to the separate write/OIDC publish job. That
-job performs no checkout or repository-code execution; the official download
+tagged commit on `main` with trusted exact-SHA checks, then uploads the candidate
+under one immutable artifact ID. A separate read-only structural job and a
+permission-empty behavior job each download that same ID; neither emits an
+artifact or selector. Both write/OIDC publishers require both checks and
+download only the original candidate artifact. The GitHub publisher performs no checkout or
+repository-code execution; the official download
 action validates the immutable transfer digest and runner tools recompute the
 exact checksum set before publish. The complete mutable hosted runner/tool
 image remains trusted, especially credentialed `gh`, which can mutate release

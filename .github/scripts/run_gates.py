@@ -23,7 +23,8 @@ GATE_TIMEOUT_SECONDS = {
     "capability drift": 60,
     "clean source before release": 60,
     "reproducible distributions": 1200,
-    "distribution equivalence": 900,
+    "distribution structure": 900,
+    "distribution behavior": 900,
     "clean source after release": 60,
 }
 
@@ -79,11 +80,31 @@ RELEASE_SUFFIX = (
         ),
     ),
     (
-        "distribution equivalence",
-        (sys.executable, ".github/scripts/verify_distributions.py", "dist"),
+        "distribution structure",
+        (
+            sys.executable,
+            ".github/scripts/verify_distributions.py",
+            "--structural-only",
+            "dist",
+        ),
     ),
     ("clean source after release", (sys.executable, ".github/scripts/check_clean.py")),
 )
+
+RELEASE_BEHAVIOR = (
+    (
+        "distribution behavior",
+        (
+            sys.executable,
+            ".github/scripts/verify_distributions.py",
+            "--behavior-only",
+            "dist",
+        ),
+    ),
+)
+
+FULL_RELEASE_SUFFIX = RELEASE_SUFFIX[:-1] + RELEASE_BEHAVIOR + RELEASE_SUFFIX[-1:]
+RELEASE_BUILD_SUFFIX = (RELEASE_SUFFIX[0], RELEASE_SUFFIX[-1])
 
 
 def _release_verifier():
@@ -135,16 +156,77 @@ def main(argv: list[str] | None = None) -> int:
         help="also require a clean tree and build/verify release artifacts",
     )
     mode.add_argument(
-        "--artifacts-only",
+        "--release-build",
         action="store_true",
-        help="run only the clean, reproducible distribution, and equivalence gates",
+        help="run release gates and build the candidate before immutable upload",
     )
+    mode.add_argument(
+        "--artifacts-structural",
+        action="store_true",
+        help="build twice and structurally verify artifacts without executing them",
+    )
+    mode.add_argument(
+        "--behavior-only",
+        action="store_true",
+        help="execute only the installed-wheel checks after an immutable handoff",
+    )
+    mode.add_argument(
+        "--structure-only",
+        action="store_true",
+        help="structurally verify only an immutable downloaded release set",
+    )
+    parser.add_argument("--portable-semantic", action="store_true")
+    parser.add_argument("--source-epoch", type=int)
+    parser.add_argument("--dist", type=Path)
     args = parser.parse_args(argv)
+    if args.portable_semantic != (args.source_epoch is not None):
+        parser.error("--portable-semantic and --source-epoch must be supplied together")
+    if args.portable_semantic and not args.structure_only:
+        parser.error("portable structural options require --structure-only")
     gates = BASE_GATES
     if args.release:
-        gates = RELEASE_PREFIX + BASE_GATES + RELEASE_SUFFIX
-    elif args.artifacts_only:
+        if args.dist is not None:
+            parser.error("--dist is available only with a single-phase verifier")
+        gates = RELEASE_PREFIX + BASE_GATES + FULL_RELEASE_SUFFIX
+    elif args.release_build:
+        if args.dist is not None:
+            parser.error("--dist is available only with a single-phase verifier")
+        gates = RELEASE_PREFIX + BASE_GATES + RELEASE_BUILD_SUFFIX
+    elif args.artifacts_structural:
+        if args.dist is not None:
+            parser.error("--dist is available only with a single-phase verifier")
         gates = RELEASE_PREFIX + RELEASE_SUFFIX
+    elif args.structure_only:
+        dist = args.dist or Path("dist")
+        command = [
+            sys.executable,
+            ".github/scripts/verify_distributions.py",
+            "--structural-only",
+        ]
+        if args.portable_semantic:
+            command.extend([
+                "--portable-semantic",
+                "--source-epoch",
+                str(args.source_epoch),
+            ])
+        command.append(str(dist))
+        gates = ((
+            "distribution structure",
+            tuple(command),
+        ),)
+    elif args.behavior_only:
+        dist = args.dist or Path("dist")
+        gates = ((
+            "distribution behavior",
+            (
+                sys.executable,
+                ".github/scripts/verify_distributions.py",
+                "--behavior-only",
+                str(dist),
+            ),
+        ),)
+    elif args.dist is not None:
+        parser.error("--dist requires --structure-only or --behavior-only")
     return _run(gates)
 
 

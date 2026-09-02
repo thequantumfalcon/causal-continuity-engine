@@ -119,7 +119,8 @@ verify-proof FILE *FLAGS:
 
 # Build the sdist and wheel into dist/.
 build:
-    python .github/scripts/bootstrap_tools.py --artifacts-only
+    python .github/scripts/bootstrap_tools.py --artifacts-structural
+    python .github/scripts/bootstrap_tools.py --behavior-only --dist dist
 
 # This gate builds. It does not tag, push, or publish; a signed version tag
 # triggers the release workflow only after this same gate passes in CI.

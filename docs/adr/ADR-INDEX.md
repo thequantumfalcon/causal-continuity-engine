@@ -2079,3 +2079,50 @@ push predicates, and a concurrently created same-object tag may be reported as
 already up to date. Compare-delete cannot distinguish delete-and-recreate at
 the same object identifier. ADR-111's explicit Git profile and the owner
 stop-and-reconcile procedure remain required.
+
+## ADR-113 — Artifact behavior cannot choose publication bytes
+
+**Decision.** Build the release distributions twice, then upload the wheel,
+sdist, and `SHA256SUMS` as one immutable workflow artifact before either
+structural or behavior verification. A separate read-only job downloads that
+exact artifact identifier and completes every non-executing archive, metadata,
+checksum, and source-equivalence check. It independently derives the tagged
+commit epoch from its checkout and uses portable-semantic archive verification;
+the producer's double build remains the same-runtime exact-byte reproducibility
+proof. Only after it succeeds may a distinct
+permission-empty job download the same identifier and install or execute the
+wheel. The behavior job has no checkout and emits neither an artifact nor an
+output. Both publishers require both verifier jobs but independently download
+only the build job's original artifact identifier and digest. Local and hosted
+gate runners expose build, structural, and behavior phases as distinct modes
+even when an owner invokes all three in sequence.
+
+**Rationale.** The former verifier checked distribution structure, executed the
+installed wheel and its carried tests, and only afterward uploaded `dist/`.
+Successful artifact code or a surviving descendant could coherently replace
+the wheel, sdist, and checksum manifest after validation; later publisher
+checks would authenticate that replacement instead of the bytes established by
+the structural checks. A same-runner recheck cannot make a mutable candidate
+immutable. The workflow-artifact boundary fixes the bytes before artifact code
+runs. Freezing the candidate first also prevents a successful detached build
+descendant from replacing bytes after they were checked: the structural runner
+validates a fresh service download. Both verifier results remain required vetoes.
+Portable-semantic verification avoids making a valid release depend on two
+separately scheduled hosted runners resolving the same Python patch and zlib
+implementation while retaining every archive-envelope and payload invariant
+except recompression-byte identity.
+
+**Limit.** The release still trusts the reviewed tagged source, build backend,
+hosted runners, pinned actions, and GitHub's immutable artifact service. The
+behavior job is not a kernel sandbox; its downloaded copy and extracted sdist
+remain visible to artifact code. The artifact bootstrap and every descendant
+receive a new allowlisted environment rather than the runner's action-runtime
+variables. `permissions: {}` removes repository and OIDC authority but does not
+claim that GitHub supplies no internal capability to the pinned download action.
+Immutability and exact-ID selection, not process cleanup,
+prevent a detached behavior descendant from changing publication bytes. This
+topology does not prove that the selected behavior tests are complete, prevent
+resource abuse on the disposable runner, or remove the publisher jobs'
+documented runner-image and service trust. The cross-runner structural check
+does not repeat raw ZIP/DEFLATE and gzip recompression identity; the producer's
+two builds establish that narrower property only within its resolved runtime.

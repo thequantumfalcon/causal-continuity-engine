@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -159,6 +160,7 @@ GIT_READ_TIMEOUT_SECONDS = 30
 MAX_SDIST_MEMBERS = 4096
 MAX_SDIST_TAR_BYTES = 160 * 1024 * 1024
 MAX_WHEEL_ARCHIVE_BYTES = 128 * 1024 * 1024
+MAX_CHECKSUM_MANIFEST_BYTES = 4096
 MAX_WHEEL_MEMBER_BYTES = 32 * 1024 * 1024
 MAX_WHEEL_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_WHEEL_MEMBERS = 4096
@@ -2346,15 +2348,114 @@ def _verify_checksums(dist: Path, artifacts: list[Path]) -> None:
     manifest = dist / "SHA256SUMS"
     if not manifest.is_file():
         raise SystemExit("distribution is missing SHA256SUMS")
+    bodies: dict[Path, bytes] = {}
+    for path in artifacts:
+        if path.suffix == ".whl":
+            maximum = MAX_WHEEL_ARCHIVE_BYTES
+            label = "checksum wheel"
+        elif path.name.endswith(".tar.gz"):
+            maximum = MAX_SDIST_ARCHIVE_BYTES
+            label = "checksum sdist"
+        else:
+            raise SystemExit("checksum verification received an unknown artifact type")
+        bodies[path] = _stable_regular_file_bytes(path, maximum, label=label)
+    manifest_body = _stable_regular_file_bytes(
+        manifest, MAX_CHECKSUM_MANIFEST_BYTES, label="checksum manifest")
     expected = "".join(
-        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+        f"{hashlib.sha256(bodies[path]).hexdigest()}  {path.name}\n"
         for path in sorted(artifacts, key=lambda item: item.name))
     try:
-        actual = manifest.read_text(encoding="ascii")
+        actual = manifest_body.decode("ascii")
     except UnicodeDecodeError as exc:
         raise SystemExit("SHA256SUMS must be ASCII") from exc
     if actual != expected:
         raise SystemExit("SHA256SUMS does not exactly describe the wheel and sdist")
+
+
+def _stable_regular_file_bytes(path: Path, maximum: int, *, label: str) -> bytes:
+    """Capture one bounded plain file while rejecting replacement during read."""
+    try:
+        path_before = os.lstat(path)
+        reparse = getattr(path_before, "st_file_attributes", 0) & 0x400
+        if not stat.S_ISREG(path_before.st_mode) or reparse:
+            raise SystemExit(f"{label} must be a physical regular file")
+        if path_before.st_size <= 0 or path_before.st_size > maximum:
+            raise SystemExit(f"{label} exceeds the size limit")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise SystemExit(f"cannot open {label}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise SystemExit(f"{label} must be a single-link regular file")
+        if before.st_size <= 0 or before.st_size > maximum:
+            raise SystemExit(f"{label} exceeds the size limit")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            body = stream.read(maximum + 1)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise SystemExit(f"cannot read {label}") from exc
+    finally:
+        os.close(descriptor)
+    fields = (
+        "st_dev", "st_ino", "st_mode", "st_nlink", "st_size",
+        "st_mtime_ns", "st_ctime_ns",
+    )
+    try:
+        path_after = os.lstat(path)
+    except OSError as exc:
+        raise SystemExit(f"{label} changed during capture") from exc
+    if (
+        len(body) != before.st_size
+        or len(body) > maximum
+        or any(getattr(before, field) != getattr(after, field) for field in fields)
+        or before.st_dev != path_before.st_dev
+        or before.st_ino != path_before.st_ino
+        or after.st_dev != path_after.st_dev
+        or after.st_ino != path_after.st_ino
+    ):
+        raise SystemExit(f"{label} changed during capture")
+    return body
+
+
+def _captured_behavior_wheel(
+        dist: Path, wheel: Path, sdist: Path) -> bytes:
+    """Capture the exact wheel named by the downloaded release manifest."""
+    manifest = dist / "SHA256SUMS"
+    wheel_body = _stable_regular_file_bytes(
+        wheel, MAX_WHEEL_ARCHIVE_BYTES, label="behavior wheel")
+    sdist_body = _stable_regular_file_bytes(
+        sdist, MAX_SDIST_ARCHIVE_BYTES, label="behavior sdist")
+    manifest_body = _stable_regular_file_bytes(
+        manifest, MAX_CHECKSUM_MANIFEST_BYTES, label="behavior checksum manifest")
+    digests = {
+        "wheel": hashlib.sha256(wheel_body).hexdigest(),
+        "sdist": hashlib.sha256(sdist_body).hexdigest(),
+    }
+    records = sorted(((wheel.name, digests["wheel"]), (sdist.name, digests["sdist"])))
+    canonical_manifest = "".join(
+        f"{digest}  {name}\n" for name, digest in records).encode("ascii")
+    if manifest_body != canonical_manifest:
+        raise SystemExit("SHA256SUMS does not exactly describe the captured release set")
+    return wheel_body
+
+
+def _verify_behavior(dist: Path) -> None:
+    wheel, sdist = _release_assets(dist)
+    wheel_body = _captured_behavior_wheel(dist, wheel, sdist)
+    with tempfile.TemporaryDirectory(prefix="cce-wheel-capture-") as temp:
+        captured = Path(temp) / wheel.name
+        captured.write_bytes(wheel_body)
+        captured.chmod(0o400)
+        _verify_installed_wheel(captured)
 
 
 def _release_assets(dist: Path) -> tuple[Path, Path]:
@@ -2382,6 +2483,17 @@ def _release_assets(dist: Path) -> tuple[Path, Path]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--structural-only",
+        action="store_true",
+        help="verify immutable distribution bytes without executing artifact code",
+    )
+    mode.add_argument(
+        "--behavior-only",
+        action="store_true",
+        help="exercise the installed wheel after an immutable handoff",
+    )
     parser.add_argument("dist", nargs="?", type=Path, default=Path("dist"))
     parser.add_argument(
         "--portable-semantic", action="store_true",
@@ -2395,6 +2507,12 @@ def main(argv: list[str] | None = None) -> int:
         help="explicit source commit Unix timestamp for --portable-semantic",
     )
     args = parser.parse_args(argv)
+    if args.behavior_only:
+        if args.portable_semantic or args.source_epoch is not None:
+            parser.error("portable structural options cannot be used with --behavior-only")
+        _verify_behavior(args.dist)
+        print("behavior verification passed: installed wheel and conformance suite")
+        return 0
     if args.portable_semantic:
         if args.source_epoch is None:
             parser.error("--portable-semantic requires --source-epoch")
@@ -2421,11 +2539,14 @@ def main(argv: list[str] | None = None) -> int:
         _verify_wheel_normative_payload(archive)
         _verify_wheel_generated_contract(archive)
 
-    _verify_installed_wheel(wheel)
-    mode = "portable-semantic" if args.portable_semantic else "strict exact-byte"
+    if not args.structural_only:
+        _verify_behavior(args.dist)
+    rendered_mode = (
+        "portable-semantic" if args.portable_semantic else "strict exact-byte")
+    behavior = " without artifact execution" if args.structural_only else " plus behavior"
     print(
-        f"{mode} verification passed: sdist and wheel are exhaustive, "
-        "source-equivalent, metadata-consistent, and pass wheel-isolated behavior")
+        f"{rendered_mode} structural verification{behavior} passed: sdist and wheel "
+        "are exhaustive, source-equivalent, and metadata-consistent")
     return 0
 
 
