@@ -246,6 +246,10 @@ def _handle(request: dict, session: _Session) -> dict | None:
     notification = not has_id
     request_id = request.get("id") if has_id else None
     if request.get("jsonrpc") != "2.0":
+        # TC-010 binds one-way semantics to the absent id even when the
+        # surrounding request object is malformed.
+        if notification:
+            return None
         return _error(
             request_id if has_id and _valid_request_id(request_id) else None,
             _INVALID_REQUEST,
