@@ -86,12 +86,15 @@ archive envelope before creating any extracted path, and manually materializes
 only the validated regular-file payload. The wheel backend runs against that
 exact normalized sdist payload—not the checkout—and sdist/wheel metadata must
 agree.
-The verifier then checks `dist/SHA256SUMS`, exact source-to-sdist-to-wheel
+The structural verifier then checks `dist/SHA256SUMS`, exact source-to-sdist-to-wheel
 membership and bytes, canonical archive ordering/ownership/modes/timestamps,
 the specification, schemas, tests, corpus, benchmark, type marker, and
-independent verifier. Finally, it installs the wheel into a new environment
-outside the checkout and exercises module imports, CLI, capabilities, and a
-behavioral conformance subset from that installed artifact.
+independent verifier without installing or executing either distribution. The
+local `just release` command then invokes the separate behavior mode, which
+installs the wheel into a new environment outside the checkout and exercises
+module imports, CLI, capabilities, and a behavioral conformance subset.
+That local sequence is a rehearsal on one mutable machine; it does not establish
+the hosted workflow's immutable handoff and never publishes.
 
 The source distribution and wheel deliberately carry more than runtime code.
 CCE's claim is auditable continuity, so an artifact that strips the proof
@@ -263,18 +266,43 @@ publishes anything:
   bytes are exactly equal to the files in the checked-out release tree; those
   v1 URLs remain bound to `v0.1.0` on later package releases rather than being
   derived from the later package tag;
-- every release gate passes again from the tag;
-- the second build is byte-identical and the installed wheel audits cleanly:
-  its runtime import and CLI probes run after installation-only pip/setuptools
-  are removed, before the exact locked audit tools are added.
+- every release gate passes again from the tag and the second build is
+  byte-identical;
+- the three-file candidate is uploaded before any artifact-carried code runs;
+- a separate job derives the tagged commit epoch from its checkout and applies
+  portable-semantic structural verification to a fresh download of that
+  immutable service object, then the behavior job installs another download
+  and runs its import, CLI, capability, and conformance probes after
+  installation-only pip/setuptools are removed and the exact locked audit tools
+  are added.
 
-The verification/build job has read-only repository, check, and Actions
-permissions. Only after it succeeds does an immutable workflow-artifact
-handoff reach the publish job. That job performs no checkout and executes no
-package or repository script: it downloads the exact artifact ID, requires
-the download action's service-side digest comparison to succeed, checks that
-the carried upload digest is present, and recomputes the exact two-entry
-`SHA256SUMS` for the wheel and sdist. The credentialed job trusts the complete
+The build job has read-only repository, check, and Actions permissions and
+uploads the wheel, sdist, and checksum manifest under one immutable artifact
+ID. Structural verification happens only after that upload: a fresh runner
+downloads the ID, requires the artifact service's digest comparison, and runs
+the non-executing portable-semantic structural verifier against that copy using
+the tagged commit epoch independently derived from its checkout. This ordering
+means a successful descendant left by the build cannot change what the later
+job sees. The producer's two builds retain the same-runtime exact-byte
+reproducibility proof; the separately scheduled runner does not assume that its
+Python patch and zlib implementation are byte-identical to the producer's.
+
+The behavior job has `permissions: {}`, no checkout, no repository token, no
+publisher credential, and no OIDC permission. It downloads the same immutable
+ID, rechecks its manifest, safely extracts the already structurally verified
+sdist to obtain the hash-locked bootstrap and verifier, then executes the wheel
+checks under a new allowlisted process environment as its terminal step. It
+emits no artifact or output. Its success and
+the structural job's success are publication prerequisites, but both
+credentialed publishers independently download only the build job's original
+artifact ID and digest; neither verifier can replace or select those bytes.
+GitHub's action runtime and artifact service remain trusted and may provide
+internal service capabilities to pinned actions; the claim is absence of
+repository, publishing, and OIDC authority, not absence of all runner tokens.
+
+The GitHub-release publish job performs no checkout and executes no package or
+repository script. It recomputes the exact two-entry `SHA256SUMS` for the wheel
+and sdist. The credentialed job trusts the complete
 mutable `ubuntu-latest` hosted runner and tool image—not just
 `sha256sum`/`find`/`cmp`, but the shell, `gh`, `grep`, `cut`, `sort`, `test`,
 `mktemp`, `basename`, and other invoked runner programs. In particular, a
@@ -306,8 +334,9 @@ The GitHub release workflow uploads to PyPI. The name
 [pending Trusted Publisher does not reserve a name](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/),
 only publishing does.
 
-The `pypi` job runs after `verify` and `publish`, is gated on the protected
-`pypi` environment, and authenticates by OIDC Trusted Publishing bound to this
+The `pypi` job runs after candidate creation, structural verification, artifact
+behavior, and GitHub publication, and is gated on the protected
+`pypi` environment. It authenticates by OIDC Trusted Publishing bound to this
 owner, repository, and `release.yml` — no long-lived token. It receives only
 the already verified wheel and sdist, re-checks them against the checksum
 manifest before upload, and emits PEP 740 attestations. Require PyPI's exposed
@@ -404,7 +433,8 @@ derives the source epoch from the commit and reconstructs the complete
 compressed bytes:
 
 ```bash
-python .github/scripts/verify_distributions.py <directory-containing-assets>
+python .github/scripts/verify_distributions.py \
+  --structural-only <directory-containing-assets>
 ```
 
 An extracted source or sdist tree has no `.git`. Give portable semantic mode
@@ -413,18 +443,28 @@ tag's peeled commit—not a timestamp copied from the artifact being checked:
 
 ```bash
 python .github/scripts/verify_distributions.py \
-  --portable-semantic --source-epoch <commit-unix-time> \
+  --structural-only --portable-semantic --source-epoch <commit-unix-time> \
   <directory-containing-assets>
 ```
 
-Both modes enforce the checksum manifest, bounded/path-safe archives, exact
+Both structural forms enforce the checksum manifest, bounded/path-safe archives, exact
 timestamps, modes and ordering, ZIP local/central framing, raw USTAR bytes,
-source-to-sdist-to-wheel membership and payload equivalence, metadata, RECORD,
-installed imports/CLI, capability claims, and wheel-isolated behavior. Portable
+source-to-sdist-to-wheel membership and payload equivalence, metadata, and
+RECORD without executing artifact code. Portable
 semantic mode skips only reconstruction of complete ZIP and gzip byte streams,
 because raw DEFLATE bytes can vary across Python/zlib releases even when their
 decoded payload is identical. Strict mode retains that same-pinned-runtime
-whole-byte contract. Neither mode is an independent-builder proof; that
+whole-byte contract. After a successful structural check, use a disposable
+credential-free environment for the separate behavior mode:
+
+```bash
+python .github/scripts/verify_distributions.py \
+  --behavior-only <directory-containing-assets>
+```
+
+Behavior mode rechecks the exact filenames and checksum manifest before it
+installs the wheel and runs imports, the CLI, capability claims, and the
+wheel-isolated conformance subset. Neither mode is an independent-builder proof; that
 roadmap still requires a separately administered, declared toolchain.
 
 This distribution verifier is distinct from `verifiers/verify_proof.py`.

@@ -130,8 +130,11 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Build twice and verify the installed wheel
-        run: python .github/scripts/bootstrap_tools.py --artifacts-only
+      - name: Build twice and verify immutable artifact structure
+        run: python .github/scripts/bootstrap_tools.py --artifacts-structural
+
+      - name: Exercise the structurally verified wheel
+        run: python .github/scripts/bootstrap_tools.py --behavior-only --dist dist
 
   # The single stable CI status context. Require this instead of individual
   # matrix/build legs; the independent `attribution` and `secrets` workflow

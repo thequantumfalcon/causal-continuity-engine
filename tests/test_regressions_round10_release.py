@@ -128,8 +128,10 @@ def test_every_automated_tool_install_uses_the_lock_and_no_resolution():
     assert "apt-get" not in ci + release
     assert "run: just" not in ci + release
     assert "pip install" not in ci + release
-    assert ci.count("python .github/scripts/bootstrap_tools.py") == 4
-    assert "python .github/scripts/bootstrap_tools.py --release" in release
+    assert ci.count("python .github/scripts/bootstrap_tools.py") == 5
+    assert "python .github/scripts/bootstrap_tools.py --release-build" in release
+    assert "python .github/scripts/bootstrap_tools.py --structure-only" in release
+    assert '"$extracted/.github/scripts/bootstrap_tools.py" --behavior-only' in release
 
 
 def test_build_backend_source_mutation_fails_closed(tmp_path, monkeypatch):
@@ -418,19 +420,92 @@ def test_release_checks_clean_tree_before_and_after_backend_execution():
     release_gates = (
         orchestrator.RELEASE_PREFIX
         + orchestrator.BASE_GATES
-        + orchestrator.RELEASE_SUFFIX
+        + orchestrator.FULL_RELEASE_SUFFIX
     )
     labels = [label for label, _ in release_gates]
     assert labels[0] == "clean source before release"
-    assert labels[-3:] == [
+    assert labels[-4:] == [
         "reproducible distributions",
-        "distribution equivalence",
+        "distribution structure",
+        "distribution behavior",
         "clean source after release",
     ]
+    assert dict(orchestrator.RELEASE_SUFFIX)["distribution structure"] == (
+        sys.executable,
+        ".github/scripts/verify_distributions.py",
+        "--structural-only",
+        "dist",
+    )
 
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     artifact_job = ci.split("\n  artifacts:", 1)[1].split("\n  ci:", 1)[0]
-    assert "bootstrap_tools.py --artifacts-only" in artifact_job
+    assert "bootstrap_tools.py --artifacts-structural" in artifact_job
+    assert "bootstrap_tools.py --behavior-only" in artifact_job
+
+
+def test_release_gate_modes_route_build_structure_and_behavior_separately(
+        tmp_path, monkeypatch):
+    orchestrator = _load_release_script("run_gates")
+    observed = []
+    monkeypatch.setattr(
+        orchestrator, "_run", lambda gates: observed.append(gates) or 0)
+    dist = tmp_path / "downloaded-dist"
+
+    assert orchestrator.main(["--release-build"]) == 0
+    assert observed.pop() == (
+        orchestrator.RELEASE_PREFIX
+        + orchestrator.BASE_GATES
+        + orchestrator.RELEASE_BUILD_SUFFIX
+    )
+    assert orchestrator.main([
+        "--structure-only",
+        "--portable-semantic",
+        "--source-epoch",
+        "1700000000",
+        "--dist",
+        str(dist),
+    ]) == 0
+    assert observed.pop() == ((
+        "distribution structure",
+        (
+            sys.executable,
+            ".github/scripts/verify_distributions.py",
+            "--structural-only",
+            "--portable-semantic",
+            "--source-epoch",
+            "1700000000",
+            str(dist),
+        ),
+    ),)
+    assert orchestrator.main(["--behavior-only", "--dist", str(dist)]) == 0
+    assert observed.pop() == ((
+        "distribution behavior",
+        (
+            sys.executable,
+            ".github/scripts/verify_distributions.py",
+            "--behavior-only",
+            str(dist),
+        ),
+    ),)
+    assert orchestrator.main(["--release"]) == 0
+    assert observed.pop() == (
+        orchestrator.RELEASE_PREFIX
+        + orchestrator.BASE_GATES
+        + orchestrator.FULL_RELEASE_SUFFIX
+    )
+
+
+@pytest.mark.parametrize("args", [
+    ["--structure-only", "--portable-semantic"],
+    ["--structure-only", "--source-epoch", "1700000000"],
+    ["--behavior-only", "--portable-semantic", "--source-epoch", "1700000000"],
+])
+def test_gate_and_bootstrap_portable_structure_options_fail_closed(args):
+    for script in ("run_gates", "bootstrap_tools"):
+        module = _load_release_script(script)
+        with pytest.raises(SystemExit) as caught:
+            module.main(args)
+        assert caught.value.code == 2
 
 
 def test_canonical_pytest_gates_treat_warnings_as_errors():
@@ -630,6 +705,87 @@ def test_fresh_bootstrap_forces_every_locked_artifact_and_checks_closure(
         bootstrap.TOOL_CHECK_TIMEOUT_SECONDS,
         bootstrap.LOCAL_INSTALL_TIMEOUT_SECONDS,
     ]
+
+
+def test_behavior_bootstrap_does_not_install_the_checkout(monkeypatch):
+    bootstrap = _load_release_script("bootstrap_tools")
+    labels = []
+
+    def fake_run(command, *, environment, label, timeout_seconds):
+        del command, environment, timeout_seconds
+        labels.append(label)
+
+    monkeypatch.setattr(bootstrap, "_run_checked", fake_run)
+    bootstrap._install_toolchain(
+        Path("fresh-venv-python"), {"clean": "environment"},
+        install_project=False,
+    )
+
+    assert labels == [
+        "hash-locked tool installation",
+        "tool dependency consistency",
+        "exact tool-closure verification",
+    ]
+
+
+def test_bootstrap_main_routes_downloaded_artifact_modes_without_checkout_install(
+        tmp_path, monkeypatch):
+    bootstrap = _load_release_script("bootstrap_tools")
+    original_temporary_directory = bootstrap.tempfile.TemporaryDirectory
+    installed = []
+    commands = []
+
+    class FakeBuilder:
+        def __init__(self, **kwargs):
+            assert kwargs == {"with_pip": False, "clear": True}
+
+        @staticmethod
+        def create(root):
+            root.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        bootstrap.tempfile,
+        "TemporaryDirectory",
+        lambda prefix: original_temporary_directory(prefix=prefix, dir=tmp_path),
+    )
+    monkeypatch.setattr(bootstrap.venv, "EnvBuilder", FakeBuilder)
+    monkeypatch.setattr(
+        bootstrap, "_venv_python", lambda root: root / "bin" / "python")
+    monkeypatch.setattr(
+        bootstrap, "_clean_environment", lambda *args: {"clean": "environment"})
+    monkeypatch.setattr(bootstrap, "_bootstrap_pip", lambda *args: None)
+    monkeypatch.setattr(
+        bootstrap, "_install_toolchain",
+        lambda *args, install_project: installed.append(install_project),
+    )
+    monkeypatch.setattr(
+        bootstrap, "_run_checked",
+        lambda command, **options: commands.append((command, options)),
+    )
+    dist = tmp_path / "immutable-dist"
+
+    assert bootstrap.main([
+        "--structure-only",
+        "--portable-semantic",
+        "--source-epoch",
+        "1700000000",
+        "--dist",
+        str(dist),
+    ]) == 0
+    assert bootstrap.main(["--behavior-only", "--dist", str(dist)]) == 0
+    assert bootstrap.main([]) == 0
+
+    assert installed == [False, False, True]
+    assert commands[0][0][-6:] == [
+        "--structure-only",
+        "--portable-semantic",
+        "--source-epoch",
+        "1700000000",
+        "--dist",
+        str(dist),
+    ]
+    assert commands[1][0][-3:] == ["--behavior-only", "--dist", str(dist)]
+    assert Path(commands[2][0][-1]) == ROOT / ".github" / "scripts" / "run_gates.py"
 
 
 def test_interpreter_pip_bootstrap_is_explicit_and_bounded(monkeypatch):

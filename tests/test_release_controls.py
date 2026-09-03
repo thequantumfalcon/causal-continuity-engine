@@ -2671,13 +2671,130 @@ def test_release_verifies_public_schemas_before_any_draft_or_publish():
     schema_check = "python .github/scripts/verify_public_schemas.py"
     assert schema_check in verify
     assert verify.index(schema_check) < verify.index(
-        "Run every release gate and build twice")
+        "Run every release gate and build the candidate twice")
     assert schema_check not in publish
     assert ".github/scripts/" not in publish
     assert "complete mutable ubuntu-latest runner/tool image" in publish
     assert "compromised gh could mutate release state" in publish
     assert "exact two-entry" in publish
     assert "three-file asset set" in publish
+
+
+def test_release_freezes_before_structure_and_behavior_reuse_only_that_set():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    verify = workflow.split("\n  verify:", 1)[1].split("\n  structural:", 1)[0]
+    structural = workflow.split("\n  structural:", 1)[1].split("\n  behavior:", 1)[0]
+    behavior = workflow.split("\n  behavior:", 1)[1].split("\n  publish:", 1)[0]
+    publish = workflow.split("\n  publish:", 1)[1].split("\n  pypi:", 1)[0]
+    pypi = workflow.split("\n  pypi:", 1)[1]
+
+    assert "bootstrap_tools.py --release-build" in verify
+    assert "--release-structural" not in verify
+    assert "bootstrap_tools.py --release\n" not in verify
+    assert verify.index("--release-build") < verify.index("actions/upload-artifact@")
+    assert "--structural-only" not in verify
+    assert "--behavior-only" not in verify
+    assert len(re.findall(r"^      - ", verify, re.MULTILINE)) == 7
+    assert verify.rstrip().endswith("compression-level: 0")
+    verify_permissions = verify.split("\n    permissions:\n", 1)[1].split(
+        "\n    steps:", 1)[0]
+    assert verify_permissions == (
+        "      actions: read\n"
+        "      checks: read\n"
+        "      contents: read"
+    )
+
+    assert "needs: verify" in structural
+    assert "permissions:\n      actions: read\n      contents: read" in structural
+    assert "contents: write" not in structural
+    assert "id-token: write" not in structural
+    assert structural.count("actions/checkout@") == 1
+    assert structural.count("actions/setup-python@") == 1
+    assert structural.count("actions/download-artifact@") == 1
+    assert "persist-credentials: false" in structural
+    assert "artifact-ids: ${{ needs.verify.outputs.artifact-id }}" in structural
+    assert "EXPECTED_ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}" in structural
+    assert "EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}" in structural
+    assert "printf '%s\\n' \"$EXPECTED_ARTIFACT_ID\" | grep -Eq '^[0-9]+$'" in structural
+    assert "bootstrap_tools.py --structure-only" in structural
+    assert "--portable-semantic --source-epoch \"$source_epoch\"" in structural
+    assert "/usr/bin/git --no-pager --no-replace-objects" in structural
+    assert "--dist \"$RUNNER_TEMP/cce-structural-dist\"" in structural
+    assert "--behavior-only" not in structural
+    assert "actions/upload-artifact@" not in structural
+    assert "outputs:" not in structural
+    assert "$GITHUB_OUTPUT" not in structural
+    assert len(re.findall(r"^      - ", structural, re.MULTILINE)) == 4
+    assert structural.rstrip().endswith('--dist "$RUNNER_TEMP/cce-structural-dist"')
+    structural_permissions = structural.split("\n    permissions:\n", 1)[1].split(
+        "\n    steps:", 1)[0]
+    assert structural_permissions == "      actions: read\n      contents: read"
+
+    assert "needs: [verify, structural]" in behavior
+    assert "runs-on: ubuntu-latest" in behavior
+    assert "permissions: {}" in behavior
+    assert "actions:" not in behavior
+    assert "contents:" not in behavior
+    assert "write" not in behavior
+    assert "id-token:" not in behavior
+    assert "GITHUB_TOKEN" not in behavior
+    assert "GH_TOKEN" not in behavior
+    assert "${{ github.token }}" not in behavior
+    assert "${{ secrets." not in behavior
+    assert "ACTIONS_" not in behavior
+    assert "environment:" not in behavior
+    assert "actions/checkout@" not in behavior
+    assert "outputs:" not in behavior
+    assert "$GITHUB_OUTPUT" not in behavior
+    assert "actions/upload-artifact@" not in behavior
+    assert "artifact-ids: ${{ needs.verify.outputs.artifact-id }}" in behavior
+    assert "EXPECTED_ARTIFACT_ID: ${{ needs.verify.outputs.artifact-id }}" in behavior
+    assert "EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}" in behavior
+    assert "digest-mismatch: error" in behavior
+    assert "source.extractall(destination, filter=\"data\")" in behavior
+    assert '"$extracted/.github/scripts/bootstrap_tools.py" --behavior-only' in behavior
+    assert len(re.findall(r"^      - ", behavior, re.MULTILINE)) == 3
+    assert behavior.count("actions/setup-python@") == 1
+    assert behavior.count("actions/download-artifact@") == 1
+    assert "cache:" not in behavior
+    manifest_check = 'cmp --silent "$expected_manifest" "$dist/SHA256SUMS"'
+    assert behavior.index(manifest_check) < behavior.index("tarfile.open")
+    assert behavior.index("tarfile.open") < behavior.index("bootstrap_tools.py")
+    assert "/usr/bin/env -i" in behavior
+    assert behavior.index("/usr/bin/env -i") < behavior.index(
+        '"$extracted/.github/scripts/bootstrap_tools.py" --behavior-only')
+    assert behavior.rstrip().endswith('--dist "$dist"')
+    isolated = behavior.split("/usr/bin/env -i", 1)[1].split(
+        '"$python_executable" -I', 1)[0]
+    assert re.findall(r"^\s+([A-Z_][A-Z0-9_]*)=", isolated, re.MULTILINE) == [
+        "HOME", "PATH", "RUNNER_TEMP", "TMPDIR",
+    ]
+
+    assert "needs: [verify, structural, behavior]" in publish
+    assert "needs.behavior.outputs" not in publish
+    assert "artifact-ids: ${{ needs.verify.outputs.artifact-id }}" in publish
+    assert "EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}" in publish
+    assert publish.count("actions/download-artifact@") == 1
+    assert len(re.findall(r"^      - ", publish, re.MULTILINE)) == 5
+    assert "needs: [verify, structural, behavior, publish]" in pypi
+    assert "needs.behavior.outputs" not in pypi
+    assert "artifact-ids: ${{ needs.verify.outputs.artifact-id }}" in pypi
+    assert "EXPECTED_ARTIFACT_DIGEST: ${{ needs.verify.outputs.artifact-digest }}" in pypi
+    assert pypi.count("actions/download-artifact@") == 1
+    assert len(re.findall(r"^      - ", pypi, re.MULTILINE)) == 3
+    assert re.findall(r"artifact-ids:\s*(.+)", workflow) == [
+        "${{ needs.verify.outputs.artifact-id }}",
+        "${{ needs.verify.outputs.artifact-id }}",
+        "${{ needs.verify.outputs.artifact-id }}",
+        "${{ needs.verify.outputs.artifact-id }}",
+    ]
+    assert workflow.count("actions/upload-artifact@") == 1
+    assert workflow.count("actions/download-artifact@") == 4
+    assert workflow.count("digest-mismatch: error") == 4
+    for block in (structural, behavior, publish, pypi):
+        assert re.search(r"^    if:", block, re.MULTILINE) is None
+    assert "continue-on-error:" not in workflow
 
 
 def test_checksum_rechecks_compare_the_manifest_in_filename_order():
@@ -2696,6 +2813,6 @@ def test_checksum_rechecks_compare_the_manifest_in_filename_order():
         line.strip() for line in workflow.splitlines()
         if 'sort' in line and '"$expected_manifest"' in line
     ]
-    assert len(rechecks) == 2
+    assert len(rechecks) == 3
     for recheck in rechecks:
         assert "LC_ALL=C sort -k2 >" in recheck

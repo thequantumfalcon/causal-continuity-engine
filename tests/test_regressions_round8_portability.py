@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
@@ -1322,6 +1323,7 @@ def test_distribution_verifier_cli_routes_strict_and_portable_modes(
     sdist.write_bytes(b"fixture")
     epoch = 1700000000
     calls = []
+    behavior_calls = []
 
     monkeypatch.setattr(
         verifier, "_release_assets", lambda dist: (wheel, sdist))
@@ -1340,7 +1342,10 @@ def test_distribution_verifier_cli_routes_strict_and_portable_modes(
     monkeypatch.setattr(verifier, "_verify_wheel_evidence_payload", lambda *args: None)
     monkeypatch.setattr(verifier, "_verify_wheel_normative_payload", lambda *args: None)
     monkeypatch.setattr(verifier, "_verify_wheel_generated_contract", lambda *args: None)
-    monkeypatch.setattr(verifier, "_verify_installed_wheel", lambda *args: None)
+    monkeypatch.setattr(
+        verifier, "_verify_behavior",
+        lambda *args, **kwargs: behavior_calls.append((args, kwargs)),
+    )
     monkeypatch.setattr(verifier, "_commit_epoch", lambda source_root: epoch)
     monkeypatch.setattr(
         verifier, "_require_exact_git_source", lambda source_root: None)
@@ -1348,8 +1353,10 @@ def test_distribution_verifier_cli_routes_strict_and_portable_modes(
     assert verifier.main([str(tmp_path)]) == 0
     assert [call[3]["verify_recompression_bytes"] for call in calls] == [True, True]
     assert [call[3]["expected_epoch"] for call in calls] == [epoch, epoch]
+    assert behavior_calls == [((tmp_path,), {})]
 
     calls.clear()
+    behavior_calls.clear()
 
     def reject_git_lookup(*args, **kwargs):
         raise AssertionError((args, kwargs))
@@ -1360,6 +1367,265 @@ def test_distribution_verifier_cli_routes_strict_and_portable_modes(
     ]) == 0
     assert [call[3]["verify_recompression_bytes"] for call in calls] == [False, False]
     assert [call[3]["expected_epoch"] for call in calls] == [epoch, epoch]
+    assert behavior_calls == [((tmp_path,), {})]
+
+
+def test_distribution_structural_verification_cannot_run_artifact_behavior(
+        tmp_path, monkeypatch):
+    verifier = _load_release_script("verify_distributions")
+    wheel = tmp_path / "causal_continuity_engine-0.1.5-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w"):
+        pass
+    sdist = tmp_path / "causal_continuity_engine-0.1.5.tar.gz"
+    sdist.write_bytes(b"pre-behavior-sdist")
+    artifacts = [wheel, sdist]
+
+    def write_manifest():
+        (tmp_path / "SHA256SUMS").write_text(
+            "".join(
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+                for path in sorted(artifacts, key=lambda item: item.name)
+            ),
+            encoding="ascii",
+            newline="\n",
+        )
+
+    write_manifest()
+    before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (*artifacts, tmp_path / "SHA256SUMS")
+    }
+    monkeypatch.setattr(
+        verifier, "_release_assets", lambda dist: (wheel, sdist))
+    monkeypatch.setattr(
+        verifier, "_require_exact_git_source", lambda source_root: None)
+    monkeypatch.setattr(verifier, "_commit_epoch", lambda source_root: 1700000000)
+    monkeypatch.setattr(verifier, "_verify_wheel_envelope", lambda *args, **kwargs: None)
+    monkeypatch.setattr(verifier, "_archive_names_are_safe", lambda *args: None)
+    monkeypatch.setattr(verifier, "_validated_sdist_payload", lambda *args, **kwargs: None)
+    monkeypatch.setattr(verifier, "_verify_wheel_runtime_payload", lambda *args: None)
+    monkeypatch.setattr(verifier, "_verify_wheel_evidence_payload", lambda *args: None)
+    monkeypatch.setattr(verifier, "_verify_wheel_normative_payload", lambda *args: None)
+    monkeypatch.setattr(verifier, "_verify_wheel_generated_contract", lambda *args: None)
+
+    def artifact_behavior(_wheel):
+        wheel.write_bytes(b"post-behavior-wheel")
+        sdist.write_bytes(b"post-behavior-sdist")
+        write_manifest()
+
+    monkeypatch.setattr(verifier, "_verify_installed_wheel", artifact_behavior)
+
+    assert verifier.main(["--structural-only", str(tmp_path)]) == 0
+    after = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (*artifacts, tmp_path / "SHA256SUMS")
+    }
+    assert after == before
+
+
+def test_distribution_verifier_separates_structural_and_behavior_modes(
+        tmp_path, monkeypatch):
+    verifier = _load_release_script("verify_distributions")
+    wheel = tmp_path / "fixture.whl"
+    with zipfile.ZipFile(wheel, "w"):
+        pass
+    sdist = tmp_path / "fixture.tar.gz"
+    sdist.write_bytes(b"fixture")
+    calls = []
+
+    monkeypatch.setattr(
+        verifier, "_release_assets",
+        lambda dist: calls.append("assets") or (wheel, sdist),
+    )
+    monkeypatch.setattr(
+        verifier, "_verify_checksums",
+        lambda *args: calls.append("checksums"),
+    )
+    monkeypatch.setattr(
+        verifier, "_require_exact_git_source",
+        lambda *args: calls.append("git"),
+    )
+    monkeypatch.setattr(
+        verifier, "_commit_epoch", lambda *args: calls.append("epoch") or 1700000000)
+    monkeypatch.setattr(
+        verifier, "_verify_wheel_envelope",
+        lambda *args, **kwargs: calls.append("wheel"),
+    )
+    monkeypatch.setattr(
+        verifier, "_archive_names_are_safe",
+        lambda *args: calls.append("archive"),
+    )
+    monkeypatch.setattr(
+        verifier, "_validated_sdist_payload",
+        lambda *args, **kwargs: calls.append("sdist"),
+    )
+    for name, label in (
+        ("_verify_wheel_runtime_payload", "runtime"),
+        ("_verify_wheel_evidence_payload", "evidence"),
+        ("_verify_wheel_normative_payload", "normative"),
+        ("_verify_wheel_generated_contract", "generated"),
+    ):
+        monkeypatch.setattr(
+            verifier, name, lambda *args, _label=label: calls.append(_label))
+    monkeypatch.setattr(
+        verifier, "_verify_behavior",
+        lambda *args, **kwargs: calls.append("behavior"),
+    )
+
+    assert verifier.main(["--structural-only", str(tmp_path)]) == 0
+    assert calls == [
+        "epoch", "git", "assets", "checksums", "wheel", "archive", "sdist",
+        "runtime", "evidence", "normative", "generated",
+    ]
+
+    calls.clear()
+    assert verifier.main(["--behavior-only", str(tmp_path)]) == 0
+    assert calls == ["behavior"]
+
+    calls.clear()
+    assert verifier.main([str(tmp_path)]) == 0
+    assert calls == [
+        "epoch", "git", "assets", "checksums", "wheel", "archive", "sdist",
+        "runtime", "evidence", "normative", "generated", "behavior",
+    ]
+
+
+def _behavior_release_set(root):
+    wheel = root / f"causal_continuity_engine-{runtime_package.__version__}-py3-none-any.whl"
+    sdist = root / SDIST_NAME
+    wheel.write_bytes(b"captured-wheel-a")
+    sdist.write_bytes(b"captured-sdist-a")
+    manifest = root / "SHA256SUMS"
+    artifacts = (wheel, sdist)
+    manifest.write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+            for path in sorted(artifacts, key=lambda item: item.name)
+        ),
+        encoding="ascii",
+        newline="\n",
+    )
+    return wheel, sdist, manifest
+
+
+def test_behavior_executes_a_private_copy_of_the_manifest_wheel(
+        tmp_path, monkeypatch):
+    verifier = _load_release_script("verify_distributions")
+    wheel, _, _ = _behavior_release_set(tmp_path)
+    original_wheel = wheel.read_bytes()
+    observed = []
+
+    def verify_private_wheel(captured):
+        observed.append((captured, captured.read_bytes(), captured.stat().st_mode & 0o777))
+        wheel.write_bytes(b"public-wheel-mutated-after-capture")
+
+    monkeypatch.setattr(verifier, "_verify_installed_wheel", verify_private_wheel)
+    assert verifier.main([
+        "--behavior-only",
+        str(tmp_path),
+    ]) == 0
+
+    assert len(observed) == 1
+    captured, body, mode = observed[0]
+    assert captured != wheel
+    assert body == original_wheel
+    assert mode & 0o222 == 0
+    assert wheel.read_bytes() == b"public-wheel-mutated-after-capture"
+
+
+def test_behavior_rejects_a_manifest_substitution_before_execution(
+        tmp_path, monkeypatch):
+    verifier = _load_release_script("verify_distributions")
+    wheel, _, _ = _behavior_release_set(tmp_path)
+    wheel.write_bytes(b"substituted-wheel")
+    executed = []
+    monkeypatch.setattr(
+        verifier, "_verify_installed_wheel", lambda *args: executed.append(args))
+
+    with pytest.raises(
+            SystemExit, match="does not exactly describe the captured release set"):
+        verifier.main([
+            "--behavior-only",
+            str(tmp_path),
+        ])
+    assert executed == []
+    assert wheel.read_bytes() == b"substituted-wheel"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+def test_behavior_capture_rejects_a_fifo_without_opening_it(tmp_path):
+    verifier = _load_release_script("verify_distributions")
+    fifo = tmp_path / "candidate.whl"
+    os.mkfifo(fifo)
+
+    with pytest.raises(SystemExit, match="physical regular file"):
+        verifier._stable_regular_file_bytes(
+            fifo, verifier.MAX_WHEEL_ARCHIVE_BYTES, label="behavior wheel")
+
+
+def test_behavior_capture_rejects_symlinks(tmp_path):
+    verifier = _load_release_script("verify_distributions")
+    original = tmp_path / "original.whl"
+    original.write_bytes(b"wheel")
+    symlink = tmp_path / "symlink.whl"
+    try:
+        symlink.symlink_to(original)
+    except OSError as exc:
+        pytest.skip(f"symlink fixtures are unavailable: {exc}")
+
+    with pytest.raises(SystemExit, match="physical regular file"):
+        verifier._stable_regular_file_bytes(
+            symlink, verifier.MAX_WHEEL_ARCHIVE_BYTES, label="behavior wheel")
+
+
+def test_behavior_capture_rejects_hardlinks(tmp_path):
+    verifier = _load_release_script("verify_distributions")
+    original = tmp_path / "original.whl"
+    original.write_bytes(b"wheel")
+    hardlink = tmp_path / "hardlink.whl"
+    try:
+        os.link(original, hardlink)
+    except OSError as exc:
+        pytest.skip(f"hardlink fixtures are unavailable: {exc}")
+
+    with pytest.raises(SystemExit, match="single-link regular file"):
+        verifier._stable_regular_file_bytes(
+            hardlink, verifier.MAX_WHEEL_ARCHIVE_BYTES, label="behavior wheel")
+
+
+def test_behavior_capture_rejects_oversize_files(tmp_path):
+    verifier = _load_release_script("verify_distributions")
+
+    oversize = tmp_path / "oversize.whl"
+    with oversize.open("wb") as stream:
+        stream.seek(verifier.MAX_WHEEL_ARCHIVE_BYTES)
+        stream.write(b"x")
+    with pytest.raises(SystemExit, match="exceeds the size limit"):
+        verifier._stable_regular_file_bytes(
+            oversize, verifier.MAX_WHEEL_ARCHIVE_BYTES, label="behavior wheel")
+
+
+@pytest.mark.parametrize(("target_name", "maximum", "message"), [
+    ("candidate.whl", "MAX_WHEEL_ARCHIVE_BYTES", "checksum wheel exceeds"),
+    ("candidate.tar.gz", "MAX_SDIST_ARCHIVE_BYTES", "checksum sdist exceeds"),
+    ("SHA256SUMS", "MAX_CHECKSUM_MANIFEST_BYTES", "checksum manifest exceeds"),
+])
+def test_distribution_checksum_verification_bounds_inputs_before_read(
+        tmp_path, target_name, maximum, message):
+    verifier = _load_release_script("verify_distributions")
+    wheel = tmp_path / "candidate.whl"
+    sdist = tmp_path / "candidate.tar.gz"
+    manifest = tmp_path / "SHA256SUMS"
+    wheel.write_bytes(b"wheel")
+    sdist.write_bytes(b"sdist")
+    manifest.write_bytes(b"manifest")
+    target = tmp_path / target_name
+    with target.open("wb") as stream:
+        stream.seek(getattr(verifier, maximum))
+        stream.write(b"x")
+
+    with pytest.raises(SystemExit, match=message):
+        verifier._verify_checksums(tmp_path, [wheel, sdist])
 
 
 @pytest.mark.parametrize("args", [
@@ -2224,18 +2490,32 @@ def test_release_rejects_same_named_check_from_wrong_workflow(monkeypatch):
 def test_release_workflow_builds_read_only_before_publish_credentials():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8")
-    verify, publish = workflow.split("\n  publish:", 1)
+    verify = workflow.split("\n  verify:", 1)[1].split("\n  structural:", 1)[0]
+    structural = workflow.split("\n  structural:", 1)[1].split("\n  behavior:", 1)[0]
+    behavior = workflow.split("\n  behavior:", 1)[1].split("\n  publish:", 1)[0]
+    publish = workflow.split("\n  publish:", 1)[1].split("\n  pypi:", 1)[0]
 
     assert "git merge-base --is-ancestor HEAD refs/remotes/origin/main" in verify
     assert "--verify-required-checks" in verify
-    assert "Run every release gate and build twice" in verify
+    assert "Run every release gate and build the candidate twice" in verify
     assert "contents: write" not in verify
     assert "id-token: write" not in verify
     assert "artifact-digest: ${{ steps.upload.outputs.artifact-digest }}" in verify
     assert "artifact-id: ${{ steps.upload.outputs.artifact-id }}" in verify
 
-    assert "needs: verify" in publish
-    assert "Run every release gate and build twice" not in publish
+    assert "needs: verify" in structural
+    assert "--structure-only" in structural
+    assert "--behavior-only" not in structural
+
+    assert "needs: [verify, structural]" in behavior
+    assert "--behavior-only" in behavior
+    assert "permissions: {}" in behavior
+    assert "actions/checkout@" not in behavior
+    assert "id-token: write" not in behavior
+    assert "actions/upload-artifact@" not in behavior
+
+    assert "needs: [verify, structural, behavior]" in publish
+    assert "Run every release gate and build the candidate twice" not in publish
     assert "actions/checkout@" not in publish
     assert "actions/setup-python@" not in publish
     assert ".github/scripts/" not in publish

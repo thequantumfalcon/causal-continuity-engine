@@ -183,7 +183,8 @@ def _run_checked(
         print(result.stderr, end="", file=sys.stderr)
 
 
-def _install_toolchain(python: Path, environment: dict[str, str]) -> None:
+def _install_toolchain(
+        python: Path, environment: dict[str, str], *, install_project: bool = True) -> None:
     _run_checked(
         [
             str(python),
@@ -212,21 +213,22 @@ def _install_toolchain(python: Path, environment: dict[str, str]) -> None:
         label="exact tool-closure verification",
         timeout_seconds=TOOL_CHECK_TIMEOUT_SECONDS,
     )
-    _run_checked(
-        [
-            str(python),
-            "-m",
-            "pip",
-            "install",
-            "--no-deps",
-            "--no-build-isolation",
-            "-e",
-            str(ROOT),
-        ],
-        environment=environment,
-        label="local package installation",
-        timeout_seconds=LOCAL_INSTALL_TIMEOUT_SECONDS,
-    )
+    if install_project:
+        _run_checked(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--no-build-isolation",
+                "-e",
+                str(ROOT),
+            ],
+            environment=environment,
+            label="local package installation",
+            timeout_seconds=LOCAL_INSTALL_TIMEOUT_SECONDS,
+        )
 
 
 def _bootstrap_pip(python: Path, environment: dict[str, str]) -> None:
@@ -243,8 +245,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--release", action="store_true")
-    mode.add_argument("--artifacts-only", action="store_true")
+    mode.add_argument("--release-build", action="store_true")
+    mode.add_argument("--artifacts-structural", action="store_true")
+    mode.add_argument("--structure-only", action="store_true")
+    mode.add_argument("--behavior-only", action="store_true")
+    parser.add_argument("--portable-semantic", action="store_true")
+    parser.add_argument("--source-epoch", type=int)
+    parser.add_argument("--dist", type=Path)
     args = parser.parse_args(argv)
+    if args.dist is not None and not (args.structure_only or args.behavior_only):
+        parser.error("--dist requires --structure-only or --behavior-only")
+    if args.portable_semantic != (args.source_epoch is not None):
+        parser.error("--portable-semantic and --source-epoch must be supplied together")
+    if args.portable_semantic and not args.structure_only:
+        parser.error("portable structural options require --structure-only")
 
     with tempfile.TemporaryDirectory(prefix="cce-tools-") as temp:
         environment_root = Path(temp) / "venv"
@@ -253,12 +267,30 @@ def main(argv: list[str] | None = None) -> int:
         environment = _clean_environment(
             Path(temp) / "process-environment", python.parent)
         _bootstrap_pip(python, environment)
-        _install_toolchain(python, environment)
+        _install_toolchain(
+            python, environment,
+            install_project=not (args.structure_only or args.behavior_only))
         command = [str(python), str(ROOT / ".github/scripts/run_gates.py")]
         if args.release:
             command.append("--release")
-        elif args.artifacts_only:
-            command.append("--artifacts-only")
+        elif args.release_build:
+            command.append("--release-build")
+        elif args.artifacts_structural:
+            command.append("--artifacts-structural")
+        elif args.structure_only:
+            command.append("--structure-only")
+            if args.portable_semantic:
+                command.extend([
+                    "--portable-semantic",
+                    "--source-epoch",
+                    str(args.source_epoch),
+                ])
+            if args.dist is not None:
+                command.extend(["--dist", str(args.dist)])
+        elif args.behavior_only:
+            command.append("--behavior-only")
+            if args.dist is not None:
+                command.extend(["--dist", str(args.dist)])
         _run_checked(
             command,
             environment=environment,
