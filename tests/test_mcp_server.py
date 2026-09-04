@@ -99,6 +99,16 @@ def test_a_notification_gets_no_response():
     assert [r["id"] for r in responses] == [1]
 
 
+@pytest.mark.parametrize("message", [
+    {"method": "tools/list"},
+    {"jsonrpc": "1.0", "method": "tools/list"},
+    {"jsonrpc": None, "method": "tools/list"},
+], ids=("missing-version", "wrong-version", "null-version"))
+def test_a_malformed_idless_message_is_still_silent(message):
+    """The notification boundary is the absent id, not request validity."""
+    assert _drive([message]) == []
+
+
 def test_every_advertised_tool_declares_a_schema_and_is_dispatchable():
     (response,) = _drive_ready([
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}])
