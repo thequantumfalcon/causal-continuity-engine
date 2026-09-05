@@ -1,8 +1,11 @@
 # Content Ingress Firewall — Development and Verification Sheet
 
-Status: local boundary implementation and focused tests are present
-(2026-08-12). Deployment still requires the external root-controlled install
-described below. Hosted enforcement is specified but not implemented.
+Status: known-carrier scanning is implemented. The isolated-review launcher is
+a reference implementation with focused tests, but its privileged macOS
+acceptance test has not run against a provisioned root-controlled installation.
+The launcher is therefore not an active or release-relied-upon control for
+v0.1.5. Hosted enforcement and `cce-integrity-v1` are specified but not
+implemented.
 
 ## Decision
 
@@ -16,7 +19,10 @@ output in quarantine. A trusted root supervisor launches the review under an
 explicitly named, dedicated, non-login, non-admin account. That account must
 have no sudo authority, credentials, existing processes, or write access to
 protected state. A disposable VM with the repository absent is the strongest
-deployment; this launcher is the strong local boundary.
+deployment. This launcher becomes an active local boundary only after the exact
+installed bytes pass the privileged acceptance test on the deployed
+operating-system version; inclusion in the source tree does not establish
+deployment.
 
 Known-carrier scanning is a second, independent tripwire. It rejects exact
 standard carriers, malformed dedicated carriers, and repository-disallowed
@@ -127,6 +133,9 @@ cleanup.
 
 ## Frozen acceptance tests
 
+- Before any reviewer process starts, every protected regular file has exactly
+  one link. A pre-existing external alias is refused, while a protected tree
+  whose regular files each have one link proceeds to the next launch control.
 - A child and its grandchild can write inside quarantine but cannot read or
   modify the main worktree, any linked worktree, or the common Git directory.
 - A non-root supervisor, the repository owner as reviewer, a reviewer that
@@ -178,11 +187,13 @@ clean known-carrier scan cannot establish absence of an unpublished or
 statistical text mark.
 
 The launcher protects only sessions started by the audited root supervisor
-through the installed entry point. Same-user Seatbelt is explicitly insufficient:
-pre-existing hardlinks and cooperating unsandboxed processes can bypass a
-path-only policy. The dedicated account closes the hardlink path through DAC;
-Seatbelt provides process-tree confinement. A disposable VM with a Git-free
-copy and no host mounts or credentials is stronger than either.
+through the installed entry point. At each protected-manifest scan it refuses
+every protected regular file whose link count is not exactly one. This proves
+only that no additional hardlink exists at those scan points. It does not prove
+that an alias never existed, or prevent a cooperating unsandboxed process from
+creating one after a scan. The dedicated reviewer account supplies DAC
+separation but does not substitute for the hardlink preflight. A disposable VM
+with a Git-free copy and no host mounts or credentials is stronger than either.
 
 Seatbelt is deprecated platform machinery and can change across operating
 system releases. The launcher therefore refuses to run when it is absent, and

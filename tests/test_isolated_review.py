@@ -481,6 +481,103 @@ def test_clean_child_environment_does_not_inherit_parent_credentials(tmp_path):
     assert "GIT_DIR" not in environment
 
 
+def test_review_refuses_preexisting_external_alias_to_protected_git_file_before_launch(
+    tmp_path, monkeypatch
+):
+    boundary = _load_boundary()
+    repo = _repository(tmp_path)
+    os.link(repo / ".git" / "config", tmp_path / "external-alias")
+    quarantine = tmp_path / "quarantine"
+    reviewer_launched = False
+
+    monkeypatch.setattr(boundary.sys, "platform", "darwin")
+    identity = _identity(boundary, tmp_path / "reviewer-home")
+    monkeypatch.setattr(boundary, "_verify_trusted_runtime", lambda: None)
+    monkeypatch.setattr(
+        boundary,
+        "require_supervisor_and_reviewer",
+        lambda user, roots: identity,
+    )
+    monkeypatch.setattr(boundary, "_safe_quarantine_parent", lambda parent: None)
+    monkeypatch.setattr(boundary, "_verify_review_command", lambda *args: None)
+    monkeypatch.setattr(boundary, "_run_seatbelt_negative_control", lambda *args: None)
+    monkeypatch.setattr(boundary, "_require_no_reviewer_processes", lambda identity: None)
+    monkeypatch.setattr(boundary, "_quarantine_usage", lambda path: (1, 0))
+    monkeypatch.setattr(boundary, "_sandbox_executable", lambda: Path("/sandbox"))
+
+    def reviewer(*args, **kwargs):
+        nonlocal reviewer_launched
+        reviewer_launched = True
+        raise AssertionError("reviewer launched")
+
+    monkeypatch.setattr(boundary, "_run_command", reviewer)
+
+    with pytest.raises(boundary.BoundaryError, match="exactly one link"):
+        boundary.run_isolated_review(
+            repo,
+            ["/reviewer"],
+            reviewer_user="reviewer",
+            command_sha256="0" * 64,
+            quarantine_dir=os.fspath(quarantine),
+        )
+
+    assert not reviewer_launched
+
+
+def test_review_rechecks_protected_link_count_after_export(tmp_path, monkeypatch):
+    boundary = _load_boundary()
+    repo = _repository(tmp_path)
+    quarantine = tmp_path / "quarantine"
+    negative_control_launched = False
+    reviewer_launched = False
+
+    monkeypatch.setattr(boundary.sys, "platform", "darwin")
+    identity = _identity(boundary, tmp_path / "reviewer-home")
+    monkeypatch.setattr(boundary, "_verify_trusted_runtime", lambda: None)
+    monkeypatch.setattr(
+        boundary,
+        "require_supervisor_and_reviewer",
+        lambda user, roots: identity,
+    )
+    monkeypatch.setattr(boundary, "_safe_quarantine_parent", lambda parent: None)
+    monkeypatch.setattr(boundary, "_verify_review_command", lambda *args: None)
+    monkeypatch.setattr(boundary, "_require_no_reviewer_processes", lambda identity: None)
+    monkeypatch.setattr(boundary, "_quarantine_usage", lambda path: (1, 0))
+    monkeypatch.setattr(boundary, "_sandbox_executable", lambda: Path("/sandbox"))
+    real_export = boundary.export_snapshot
+
+    def export_then_alias(root, snapshot):
+        entries = real_export(root, snapshot)
+        os.link(repo / ".git" / "config", tmp_path / "external-alias")
+        return entries
+
+    def negative_control(*args, **kwargs):
+        nonlocal negative_control_launched
+        negative_control_launched = True
+        raise AssertionError("negative control launched")
+
+    def reviewer(*args, **kwargs):
+        nonlocal reviewer_launched
+        reviewer_launched = True
+        raise AssertionError("reviewer launched")
+
+    monkeypatch.setattr(boundary, "export_snapshot", export_then_alias)
+    monkeypatch.setattr(boundary, "_run_seatbelt_negative_control", negative_control)
+    monkeypatch.setattr(boundary, "_run_command", reviewer)
+
+    with pytest.raises(boundary.BoundaryError, match="exactly one link"):
+        boundary.run_isolated_review(
+            repo,
+            ["/reviewer"],
+            reviewer_user="reviewer",
+            command_sha256="0" * 64,
+            quarantine_dir=os.fspath(quarantine),
+        )
+
+    assert not negative_control_launched
+    assert not reviewer_launched
+
+
 def test_postflight_runs_even_when_review_command_fails(tmp_path, monkeypatch):
     boundary = _load_boundary()
     repo = _repository(tmp_path)

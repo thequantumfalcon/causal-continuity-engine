@@ -19,9 +19,10 @@ audit, with each defect pinned against the 0.1.4 source baseline.
 - **A content-ingress firewall for repository and release bytes.** The same
   fail-closed scanner covers exact Git objects, commit and tag metadata,
   distributions, local hooks, and advisory CI. A Git-free isolated-review
-  launcher and provisioning specification are included, but the privileged
-  macOS boundary and dedicated external GitHub App remain explicit deployment
-  prerequisites rather than claimed active controls.
+  reference implementation and provisioning specification are included. Its
+  privileged macOS acceptance test has not run on a provisioned installation,
+  and the dedicated external GitHub App is not deployed; neither is an active
+  or release-relied-upon control in 0.1.5.
 
 ### Changed
 
