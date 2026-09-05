@@ -1897,10 +1897,14 @@ pattern versions and statement-identity versions are separate: a pattern may
 change what is found without changing the identity of the same statement.
 
 Version 2 is the Unicode-preserving NFKC/casefold algorithm introduced in
-v0.1.3. Version-1 identifiers already present in a store remain immutable
-historical nodes. Re-ingesting their non-ASCII statement creates or converges
-on the version-2 identifier; it does not rewrite the old identifier or pretend
-the two event histories were always one. Pure-ASCII identities are unchanged.
+v0.1.3. On open, the engine checks every historical self-bound statement row,
+not only the current projection. An identifier that matches v2 is accepted,
+including an identifier shared by v1 and v2. A v1-only identifier, a malformed
+self-bound row, or an identifier matching neither known algorithm causes the
+public Engine and CLI paths to refuse opening the database before they change
+logical rows, schema, or project metadata. No row is rewritten. Recovery
+preserves the legacy database and re-ingests the original authoritative sources
+into a new project using the current engine.
 
 **Rationale.** The v0.1.3 compatibility note disclosed that non-ASCII node ids
 would change, but the algorithm itself still had no name or fixed vectors.
@@ -1910,14 +1914,22 @@ change again without a reviewer seeing that the migration surface changed.
 
 **Consequence.** Any future edit that changes a pinned identity vector requires
 a new statement-identity version and an explicit compatibility decision before
-implementation. The v1-to-v2 behavior remains additive and rebuildable: old
-nodes remain, newly ingested statements use v2, and no projection row is
-rewritten outside its event history.
+implementation. A legacy store is accepted only where its persisted identity
+is also the v2 identity; otherwise the public Engine and CLI paths fail closed
+instead of silently forking identity during rebuild. Identity changes wherever
+the two normalized keys differ, including some ASCII symbols such as `+` and
+`$`, not only non-ASCII text.
 
-**Limit.** The version and vectors make byte identity reviewable; they do not
-claim semantic equivalence between differently worded statements or merge
-pre-v2 and v2 histories automatically. That merge requires an explicit human
-resolution with its own provenance.
+**Limit.** The check establishes compatibility only for persisted self-bound
+statement rows visible to the opening SQLite connection. It cannot identify
+which algorithm created an id shared by v1 and v2, recover removed or
+corrupted history, merge pre-v2 and v2 histories, export legacy state, or
+fence writes made by a separately running v0.1.2 process after the check.
+Database files must not be shared across engine versions. Projection identity
+can rebuild after an accepted upgrade; full projection fingerprints may still
+change with extractor behavior. When a committed WAL is present, the read-only
+preflight may create or update transient SQLite shared-memory sidecar state;
+refusal is not a byte-for-byte filesystem-preservation guarantee.
 
 ## ADR-107 — Agent-facing packet instructions bind to the retained view
 

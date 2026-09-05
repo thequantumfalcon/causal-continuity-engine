@@ -443,7 +443,8 @@ class TestExtraction:
             assert (stable_node_id("prj", "requirement", first)
                     != stable_node_id("prj", "requirement", second))
 
-        # Existing ASCII behaviour is unchanged, and compatibility forms fold.
+        # Existing ASCII letter/digit behaviour is unchanged; compatibility
+        # forms fold.
         assert (normalize_statement("The API returns JSON.")
                 == normalize_statement("the api returns json"))
         assert (normalize_statement("ＡＰＩ must be stable")

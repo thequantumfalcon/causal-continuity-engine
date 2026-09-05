@@ -32,7 +32,7 @@ from .core import (
     validate_public_identifier,
     validate_repository_name,
 )
-from .engine import Engine
+from .engine import Engine, _assert_statement_identity_compatible_path
 from .github import SUBSCRIBED_EVENTS, WebhookError
 from .ontology import (
     ASSUMPTION_STATES,
@@ -598,6 +598,10 @@ def _engine(args) -> tuple[Engine, dict]:
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         _print_error(f"error: invalid CCE metadata: {exc}")
         raise SystemExit(2) from None
+    database_path = _secret_path(cce_dir, "cce.db")
+    # A legacy-identity project is refused before compatibility handling can
+    # rewrite metadata or provision runtime secrets (ADR-106).
+    _assert_statement_identity_compatible_path(database_path)
     meta = _migrate_legacy_signing_key(cce_dir, meta_path, meta)
     meta = _validate_metadata(meta, allow_legacy=True)
     key_path = _secret_path(cce_dir, meta["signing_key_file"])
@@ -609,7 +613,6 @@ def _engine(args) -> tuple[Engine, dict]:
     # existing trust root has been validated.
     meta = _ensure_runtime_secrets(cce_dir, meta_path, meta)
     meta = _validate_metadata(meta, allow_legacy=False)
-    database_path = _secret_path(cce_dir, "cce.db")
     engine = Engine(database_path, tenant_id=meta["tenant_id"],
                     signer=Signer(meta["key_id"], key), workdir=root)
     opened = getattr(args, "_opened_engines", None)
