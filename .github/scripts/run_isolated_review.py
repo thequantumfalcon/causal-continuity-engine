@@ -527,6 +527,13 @@ def protected_manifest(roots: tuple[Path, ...]) -> tuple[ManifestEntry, ...]:
     return tuple(sorted(entries, key=lambda item: (item.root, item.relative_path)))
 
 
+def _require_single_link_protected_files(
+    entries: tuple[ManifestEntry, ...],
+) -> None:
+    if any(entry.kind == "file" and entry.link_count != 1 for entry in entries):
+        raise BoundaryError("protected regular file does not have exactly one link")
+
+
 def _changed_entries(
     before: tuple[ManifestEntry, ...], after: tuple[ManifestEntry, ...]
 ) -> tuple[tuple[bytes, bytes], ...]:
@@ -1866,6 +1873,7 @@ def run_isolated_review(
     if provider_proxy_port is not None:
         _verify_provider_proxy(provider_proxy_port)
     before_export = protected_manifest(protected)
+    _require_single_link_protected_files(before_export)
     quarantine = _quarantine_path(
         quarantine_dir,
         protected + _repository_owner_homes(protected) + (identity.home,),
@@ -1873,6 +1881,7 @@ def run_isolated_review(
     snapshot = quarantine / "snapshot"
     entries = export_snapshot(root, snapshot)
     after_export = protected_manifest(protected)
+    _require_single_link_protected_files(after_export)
     export_changes = _changed_entries(before_export, after_export)
     if export_changes:
         _print_changes(export_changes)
@@ -1942,6 +1951,7 @@ def run_isolated_review(
         if rediscovered_root != root or rediscovered_protected != protected:
             raise BoundaryError("registered worktree inventory changed during isolated review")
         after_review = protected_manifest(protected)
+        _require_single_link_protected_files(after_review)
         snapshot_after = protected_manifest((snapshot,))
         _quarantine_usage(quarantine)
         if _quarantine_identity(quarantine) != quarantine_identity:
