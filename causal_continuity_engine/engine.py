@@ -89,6 +89,8 @@ STABLE_NODE_ID_VERSION = "cce.statement-id.v2"
 _KIND_PREFIX = {"assumption": "asm", "requirement": "req", "constraint": "cst",
                 "decision": "dec", "claim": "clm", "task": "tsk"}
 
+_IDENTITY_UNCLASSIFIABLE = "cannot classify statement identity compatibility"
+
 _CONTINUITY_LINK_TYPES = {
     "task_ids": "task",
     "requirement_ids": "requirement",
@@ -903,6 +905,105 @@ def stable_node_id(project_id: str, kind: str, statement: str) -> str:
     return f"{_KIND_PREFIX.get(kind, 'nod')}_{hashlib.sha256(key.encode()).hexdigest()[:24]}"
 
 
+class StatementIdentityCompatibilityError(ValueError):
+    """Stored statement identity cannot safely cross the v1/v2 boundary."""
+
+
+def _v1_stable_node_id(project_id: str, kind: str, statement: str) -> str:
+    """Reproduce the statement-id algorithm published through v0.1.2."""
+    normalized = statement.lower()
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", normalized)
+    normalized = re.sub(
+        r"\b(the|a|an|is|are|was|were|be|been|that|this|it|its|of|to|in|on|for)\b",
+        " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    key = f"{project_id}|{kind}|{normalized}"
+    digest = hashlib.sha256(key.encode()).hexdigest()[:24]
+    return f"{_KIND_PREFIX.get(kind, 'nod')}_{digest}"
+
+
+def _assert_statement_identity_compatible(connection: sqlite3.Connection) -> None:
+    """Refuse v1-only or unclassifiable stable identities before migration."""
+    try:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nodes'"
+        ).fetchone()
+        if table is None:
+            return
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(nodes)")
+        }
+        if not {
+                "row_id", "node_id", "entity_type", "project_id", "data"
+        } <= columns:
+            raise StatementIdentityCompatibilityError(_IDENTITY_UNCLASSIFIABLE)
+
+        for row in connection.execute(
+                "SELECT row_id, node_id, entity_type, project_id, data "
+                "FROM nodes ORDER BY row_id"):
+            data = strict_json_loads(row["data"])
+            if not isinstance(data, dict):
+                raise StatementIdentityCompatibilityError(
+                    _IDENTITY_UNCLASSIFIABLE)
+            node_id = row["node_id"]
+            if data.get("stable_key") != node_id:
+                continue
+            kind = row["entity_type"]
+            project_id = row["project_id"]
+            statement = data.get("statement")
+            if (kind not in _KIND_PREFIX
+                    or not isinstance(project_id, str)
+                    or not isinstance(node_id, str)
+                    or not isinstance(statement, str)):
+                raise StatementIdentityCompatibilityError(
+                    _IDENTITY_UNCLASSIFIABLE)
+
+            current_id = stable_node_id(project_id, kind, statement)
+            if node_id == current_id:
+                continue
+            if node_id == _v1_stable_node_id(project_id, kind, statement):
+                raise StatementIdentityCompatibilityError(
+                    "statement identity is incompatible: v1-only history "
+                    "must be re-ingested into a new project")
+            raise StatementIdentityCompatibilityError(
+                _IDENTITY_UNCLASSIFIABLE)
+    except StatementIdentityCompatibilityError:
+        raise
+    except (sqlite3.Error, TypeError, ValueError, OverflowError, RecursionError):
+        raise StatementIdentityCompatibilityError(
+            _IDENTITY_UNCLASSIFIABLE) from None
+
+
+def _assert_statement_identity_compatible_path(path: str | Path) -> None:
+    """Run the compatibility check through a read-only SQLite connection."""
+    raw_path = str(path)
+    if raw_path == ":memory:":
+        return
+    candidate = Path(raw_path)
+    try:
+        if not candidate.exists():
+            return
+        resolved = candidate.resolve()
+        # A closed WAL database needs no sidecar state, so immutable mode keeps
+        # the preflight byte-preserving.  A committed WAL must be read rather
+        # than ignored; Store repeats the check on its exact connection.
+        has_wal = Path(str(resolved) + "-wal").exists()
+        query = "?mode=ro" if has_wal else "?mode=ro&immutable=1"
+        uri = resolved.as_uri() + query
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            _assert_statement_identity_compatible(connection)
+        finally:
+            connection.close()
+    except StatementIdentityCompatibilityError:
+        raise
+    except (OSError, sqlite3.Error, ValueError):
+        raise StatementIdentityCompatibilityError(
+            _IDENTITY_UNCLASSIFIABLE) from None
+
+
 class Engine:
     def __init__(self, path=":memory:", *, tenant_id: str = "ten_local",
                  signer: Signer | None = None, tenant_max_level: int = 3,
@@ -919,7 +1020,9 @@ class Engine:
         # opening storage.  Pluggable signer objects may intentionally be
         # falsey; truthiness is not an interface or an authorization signal.
         self.signer = signer
-        self.store = Store(path)
+        _assert_statement_identity_compatible_path(path)
+        self.store = Store(
+            path, _pre_schema_check=_assert_statement_identity_compatible)
         try:
             self._initialize_components_and_schema(
                 tenant_max_level=tenant_max_level, workdir=workdir)

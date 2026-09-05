@@ -87,8 +87,10 @@ audit, with each defect pinned against the 0.1.4 source baseline.
   active/supported nodes; invalidation severity and reason come from canonical
   nested data.
 - **Durable statement identity was unnamed.** The v2 normalization contract is
-  explicit and pinned by ASCII and non-ASCII vectors; historical v1 nodes are
-  retained rather than rewritten.
+  explicit and pinned by ASCII and non-ASCII vectors. The public Engine and CLI
+  paths refuse v1-only or unclassifiable historical statement identities before
+  changing logical database rows, schema, or project metadata; identities shared
+  by v1 and v2 remain accepted. No persisted row is rewritten.
 
 ## 0.1.4 — prepared 2026-08-10, never published
 
@@ -219,11 +221,10 @@ the difference.
 
 ### Changed
 
-- **Node identity changes for statements containing non-ASCII characters.**
-  `stable_node_id` is derived from the dedup key, so such a statement now
-  hashes to a different id than it did in 0.1.2. A project that re-ingests one
-  records a new node rather than updating the old; the previous node remains,
-  with its history intact. Pure-ASCII projects are unaffected.
+- **Node identity changes where the v1 and v2 normalized keys differ.**
+  `stable_node_id` is derived from the dedup key, so this includes non-ASCII
+  text and ASCII Unicode-category symbols such as `+` and `$`. Statements
+  whose v1 and v2 keys agree retain the same identity.
 
 ## 0.1.2 — 2026-08-09
 

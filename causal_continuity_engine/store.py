@@ -356,11 +356,16 @@ class EventPayloadIntegrityError(Exception):
 
 
 class Store:
-    def __init__(self, path: str | Path = ":memory:"):
+    def __init__(self, path: str | Path = ":memory:", *, _pre_schema_check=None):
         self.path = str(path)
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         try:
             self._conn.row_factory = sqlite3.Row
+            # Compatibility refusal must see the connection Store will use,
+            # but must run before WAL selection or any schema installation can
+            # change an existing database (ADR-106).
+            if _pre_schema_check is not None:
+                _pre_schema_check(self._conn)
             if self.path != ":memory:":
                 self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
