@@ -2527,19 +2527,15 @@ def test_release_workflow_builds_read_only_before_publish_credentials():
     assert publish.index("GH_REPO:") < publish.index("gh release create")
 
 
-def test_local_attribution_hooks_use_the_ci_expression():
+def test_local_attribution_hooks_use_the_canonical_checker():
     workflow = (
         ROOT / ".github" / "workflows" / "no-ai-attribution.yml"
     ).read_text(encoding="utf-8")
-    pattern_line = next(
-        line.strip() for line in workflow.splitlines()
-        if line.strip().startswith("PATTERN='")
-    )
-    pattern = pattern_line.removeprefix("PATTERN='").removesuffix("'")
+    pre_commit = (ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+    commit_msg = (ROOT / ".githooks" / "commit-msg").read_text(encoding="utf-8")
 
-    for hook_name in ("pre-commit", "commit-msg"):
-        hook = (ROOT / ".githooks" / hook_name).read_text(encoding="utf-8")
-        assert f"PATTERN='{pattern}'" in hook
-    assert "git grep --cached" in (
-        ROOT / ".githooks" / "pre-commit"
-    ).read_text(encoding="utf-8")
+    assert "check_attribution.py --index" in pre_commit
+    assert "check_attribution.py --message-file" in commit_msg
+    assert "check_attribution.py --tree" in workflow
+    assert "check_attribution.py --commits" in workflow
+    assert all("PATTERN=" not in source for source in (workflow, pre_commit, commit_msg))

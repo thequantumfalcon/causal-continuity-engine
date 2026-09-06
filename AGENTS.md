@@ -327,13 +327,25 @@ this codebase anywhere.
 
 This is enforced, not requested. `.githooks/commit-msg` and
 `.githooks/pre-commit` block it locally (`core.hooksPath` is set to
-`.githooks`). The `attribution` job in `.github/workflows/no-ai-attribution.yml` —
-a separate workflow from `ci.yml` — is the copy `--no-verify` cannot skip:
-on a pull request it scans the complete proposed HEAD tree plus commit
-messages, author names, and author emails in the range; on a push to `main`
-it scans the whole tracked tree and the whole history. No directory is exempt.
-Only `.githooks/pre-commit`, `.githooks/commit-msg`, and
-`.github/workflows/no-ai-attribution.yml` are excluded because those three
-enforcement files contain the expression they apply. A violation fails the
-workflow; `.github/ruleset.README.md` records whether that context is currently
+`.githooks`). The `attribution` job in `.github/workflows/no-ai-attribution.yml`
+is separate from `ci.yml`; when its context is required, `--no-verify` alone
+cannot skip the remote check. On a pull request it scans the complete proposed
+HEAD tree and the raw author, committer, and message fields of every commit in
+the range; on a push to `main` it scans the whole tracked tree and history. No
+path is exempt. PR title and body are also rechecked on edits, but that metadata
+is mutable independently of HEAD, so this is an advisory tripwire rather than
+an immutable merge-time proof. A violation fails the workflow;
+`.github/ruleset.README.md` records whether that context is currently
 merge-blocking.
+
+The required pull-request job executes the candidate tree's workflow and
+scanner. It is therefore self-modifiable: owner review of every change to the
+hooks, scanner, workflow, and their tests is part of the preventive boundary.
+The protected-path workflow is advisory, not an external required policy
+engine; a green `attribution` context alone does not establish that its own
+controls were preserved.
+
+The scanner recognizes the repository's explicit identity, trailer, and
+authorship-credit grammar. It does not prove human authorship or detect
+undisclosed assistance. Sentence-form product discussion and Markdown vendor
+headings/lists are not credits; an ambiguous bare tool byline remains forbidden.

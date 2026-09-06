@@ -16,11 +16,24 @@
 # independently (.github/workflows/no-ai-attribution.yml), so a contributor who
 # runs neither hook path is still caught before merge.
 
+if command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' \
+        >/dev/null 2>&1; then
+    python_command=python3
+elif command -v python >/dev/null 2>&1 &&
+    python -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' \
+        >/dev/null 2>&1; then
+    python_command=python
+else
+    echo "ERROR: Python 3.11 or newer is required for repository policy checks." >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------- content integrity
 # Scan the complete proposed index, including unchanged staged blobs. A diff or
 # working-tree scan can miss a marked blob that is already staged, and an
 # incomplete scan is not clean.
-python3 .github/scripts/check_content_marks.py --index
+"$python_command" .github/scripts/check_content_marks.py --index
 content_status=$?
 if [ "$content_status" -ne 0 ]; then
     echo "ERROR: staged content-integrity scan did not pass." >&2
@@ -28,28 +41,15 @@ if [ "$content_status" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------- attribution
-# The three enforcement files necessarily contain the expression they search
-# for, so only those exact files are excluded. No directory is exempt.
-PATTERN='co-authored-by:.*(anthropic|chatgpt|claude|codex|copilot|gemini|openai)|noreply@(anthropic|openai)\.com|generated (with|by)[[:space:]]+\[?(chatgpt|claude|codex|copilot|gemini|openai)'
-# Search the proposed index tree rather than raw diff text. Deleted lines must
-# not prevent the commit that removes a violation.
-git_grep_status=0
-git grep --cached -nEi "$PATTERN" -- . \
-  ':(exclude).githooks/pre-commit' \
-  ':(exclude).githooks/commit-msg' \
-  ':(exclude).github/workflows/no-ai-attribution.yml' \
-  || git_grep_status=$?
-case "$git_grep_status" in
-    0)
-        echo "ERROR: AI attribution found in staged changes. Remove it before committing." >&2
-        exit 1
-        ;;
-    1) ;;
-    *)
-        echo "ERROR: git grep failed; attribution status is unknown." >&2
-        exit "$git_grep_status"
-        ;;
-esac
+# The policy scanner reads the complete proposed index as exact Git blobs. Its
+# lexical grammar keeps sentence-form product discussion and Markdown vendor
+# headings/lists legal; no path is exempt from the scan.
+"$python_command" -I .github/scripts/check_attribution.py --index
+attribution_status=$?
+if [ "$attribution_status" -ne 0 ]; then
+    echo "ERROR: staged attribution scan did not pass." >&2
+    exit "$attribution_status"
+fi
 
 # --------------------------------------------------------------------- secrets
 # Load-bearing, not decoration. GitHub secret scanning and push protection are
