@@ -28,28 +28,15 @@ if [ "$content_status" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------- attribution
-# The three enforcement files necessarily contain the expression they search
-# for, so only those exact files are excluded. No directory is exempt.
-PATTERN='co-authored-by:.*(anthropic|chatgpt|claude|codex|copilot|gemini|openai)|noreply@(anthropic|openai)\.com|generated (with|by)[[:space:]]+\[?(chatgpt|claude|codex|copilot|gemini|openai)'
-# Search the proposed index tree rather than raw diff text. Deleted lines must
-# not prevent the commit that removes a violation.
-git_grep_status=0
-git grep --cached -nEi "$PATTERN" -- . \
-  ':(exclude).githooks/pre-commit' \
-  ':(exclude).githooks/commit-msg' \
-  ':(exclude).github/workflows/no-ai-attribution.yml' \
-  || git_grep_status=$?
-case "$git_grep_status" in
-    0)
-        echo "ERROR: AI attribution found in staged changes. Remove it before committing." >&2
-        exit 1
-        ;;
-    1) ;;
-    *)
-        echo "ERROR: git grep failed; attribution status is unknown." >&2
-        exit "$git_grep_status"
-        ;;
-esac
+# The policy scanner reads the complete proposed index as exact Git blobs. Its
+# lexical grammar keeps sentence-form product discussion and Markdown vendor
+# headings/lists legal; no path is exempt from the scan.
+python3 -I .github/scripts/check_attribution.py --index
+attribution_status=$?
+if [ "$attribution_status" -ne 0 ]; then
+    echo "ERROR: staged attribution scan did not pass." >&2
+    exit "$attribution_status"
+fi
 
 # --------------------------------------------------------------------- secrets
 # Load-bearing, not decoration. GitHub secret scanning and push protection are

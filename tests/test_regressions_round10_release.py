@@ -949,24 +949,18 @@ def test_release_publication_is_serialized_repo_bound_and_retryable():
     assert publish.index("gh release download") < publish.index("gh release edit")
 
 
-def test_attribution_scan_exempts_only_its_three_enforcement_files():
+def test_attribution_scan_has_no_path_exemptions():
     workflow = (
         ROOT / ".github" / "workflows" / "no-ai-attribution.yml"
     ).read_text(encoding="utf-8")
     pre_commit = (ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
-    expected = {
-        ":(exclude).githooks/pre-commit",
-        ":(exclude).githooks/commit-msg",
-        ":(exclude).github/workflows/no-ai-attribution.yml",
-    }
-
     for source in (workflow, pre_commit):
-        assert all(item in source for item in expected)
-        assert ":(exclude).githooks'" not in source
-        assert ":(exclude).github'" not in source
+        assert ":(exclude)" not in source
+    assert "No path is exempt" in workflow
+    assert "no path is exempt" in pre_commit
 
 
-def test_attribution_scans_distinguish_no_match_from_command_failure():
+def test_attribution_scans_fail_closed_when_the_checker_does_not_pass():
     workflow = (
         ROOT / ".github" / "workflows" / "no-ai-attribution.yml"
     ).read_text(encoding="utf-8")
@@ -978,13 +972,10 @@ def test_attribution_scans_distinguish_no_match_from_command_failure():
     assert "set -euo pipefail" in workflow
     assert 'for sha in "$BASE_SHA" "$HEAD_SHA"' in workflow
     assert 'git cat-file -e "$BASE_SHA^{commit}"' in workflow
-    assert '|| git_grep_status=$?' in workflow
-    assert '*) echo "git grep failed' in workflow
-    assert "git log --format='%B%n%an%n%ae' | grep" not in workflow
-    assert '|| git_grep_status=$?' in pre_commit
-    assert '*)\n        echo "ERROR: git grep failed' in pre_commit
+    assert "python3 -I .github/scripts/check_attribution.py" in workflow
+    assert 'if [ "$attribution_status" -ne 0 ]' in pre_commit
     assert 'git var GIT_AUTHOR_IDENT >> "$identity_input" || exit 1' in commit_msg
-    assert '|| grep_status=$?' in commit_msg
+    assert 'if [ "$attribution_status" -ne 0 ]' in commit_msg
 
 
 def test_unknown_repository_visibility_cannot_skip_public_controls():
