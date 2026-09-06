@@ -307,13 +307,17 @@ def test_real_hooks_reject_a_base_valid_bypass(tmp_path):
     artifact.write_text(attack, encoding="utf-8")
     subprocess.run(["git", "add", "artifact.txt"], cwd=repository, check=True)
 
-    pre_commit = _run_control(repository, ".githooks/pre-commit")
+    pre_commit = _run_control(
+        repository, "bash", "--posix", ".githooks/pre-commit")
     message = repository / "message.txt"
     message.write_text(attack, encoding="utf-8")
-    commit_msg = _run_control(repository, ".githooks/commit-msg", str(message))
+    commit_msg = _run_control(
+        repository, "bash", "--posix", ".githooks/commit-msg", message.name)
 
     assert pre_commit.returncode == 1, pre_commit.stderr
+    assert "attribution.credit" in pre_commit.stderr, pre_commit.stderr
     assert commit_msg.returncode == 1, commit_msg.stderr
+    assert "attribution.credit" in commit_msg.stderr, commit_msg.stderr
 
 
 def _run_push_workflow(repository):
