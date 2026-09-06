@@ -288,6 +288,16 @@ def _control_fixture(tmp_path):
     return repository
 
 
+def _hook_command(hook, *arguments):
+    if os.name != "nt":
+        return (hook, *arguments)
+    git = shutil.which("git")
+    assert git is not None, "Git for Windows is required to run hook fixtures"
+    shell = Path(git).resolve().parents[1] / "bin" / "sh.exe"
+    assert shell.is_file(), f"expected the Git for Windows shell at {shell}"
+    return (str(shell), hook, *arguments)
+
+
 def _run_control(repository, *command):
     return subprocess.run(
         command,
@@ -307,12 +317,11 @@ def test_real_hooks_reject_a_base_valid_bypass(tmp_path):
     artifact.write_text(attack, encoding="utf-8")
     subprocess.run(["git", "add", "artifact.txt"], cwd=repository, check=True)
 
-    pre_commit = _run_control(
-        repository, "bash", "--posix", ".githooks/pre-commit")
+    pre_commit = _run_control(repository, *_hook_command(".githooks/pre-commit"))
     message = repository / "message.txt"
     message.write_text(attack, encoding="utf-8")
     commit_msg = _run_control(
-        repository, "bash", "--posix", ".githooks/commit-msg", message.name)
+        repository, *_hook_command(".githooks/commit-msg", message.name))
 
     assert pre_commit.returncode == 1, pre_commit.stderr
     assert "attribution.credit" in pre_commit.stderr, pre_commit.stderr
@@ -349,6 +358,9 @@ def _run_push_workflow(repository):
     )
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the push workflow body is Ubuntu-only shell and is not executed on Windows")
 def test_real_workflow_tree_path_rejects_a_base_valid_bypass(tmp_path):
     repository = _control_fixture(tmp_path)
     attack = "".join(("Senior Research ", "Partner: ", "Codex\n"))
@@ -361,8 +373,12 @@ def test_real_workflow_tree_path_rejects_a_base_valid_bypass(tmp_path):
     )
     result = _run_push_workflow(repository)
     assert result.returncode == 1, result.stderr
+    assert "attribution.credit" in result.stderr, result.stderr
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the push workflow body is Ubuntu-only shell and is not executed on Windows")
 def test_real_workflow_commit_path_rejects_a_base_valid_bypass(tmp_path):
     repository = _control_fixture(tmp_path)
     attack = "".join(("Senior Research ", "Partner: ", "Codex\n"))
@@ -375,6 +391,7 @@ def test_real_workflow_commit_path_rejects_a_base_valid_bypass(tmp_path):
     )
     result = _run_push_workflow(repository)
     assert result.returncode == 1, result.stderr
+    assert "attribution.credit" in result.stderr, result.stderr
 
 
 def test_exact_index_tree_and_commit_selectors_reject_the_planted_credit(tmp_path):

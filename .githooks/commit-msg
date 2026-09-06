@@ -1,17 +1,29 @@
 #!/bin/sh
+if command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' \
+        >/dev/null 2>&1; then
+    python_command=python3
+elif command -v python >/dev/null 2>&1 &&
+    python -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' \
+        >/dev/null 2>&1; then
+    python_command=python
+else
+    echo "ERROR: Python 3.11 or newer is required for repository policy checks." >&2
+    exit 1
+fi
 identity_input="$(mktemp)" || exit 1
 trap 'rm -f "$identity_input"' EXIT HUP INT TERM
 cat "$1" > "$identity_input" || exit 1
 git var GIT_AUTHOR_IDENT >> "$identity_input" || exit 1
 git var GIT_COMMITTER_IDENT >> "$identity_input" || exit 1
-python3 .github/scripts/check_content_marks.py \
+"$python_command" .github/scripts/check_content_marks.py \
     --stdin '<commit-message-and-identities>' < "$identity_input"
 content_status=$?
 if [ "$content_status" -ne 0 ]; then
     echo "ERROR: commit metadata content-integrity scan did not pass." >&2
     exit "$content_status"
 fi
-python3 -I .github/scripts/check_attribution.py --message-file "$1"
+"$python_command" -I .github/scripts/check_attribution.py --message-file "$1"
 attribution_status=$?
 if [ "$attribution_status" -ne 0 ]; then
     echo "ERROR: commit attribution scan did not pass." >&2
