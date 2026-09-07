@@ -349,3 +349,7 @@ The scanner recognizes the repository's explicit identity, trailer, and
 authorship-credit grammar. It does not prove human authorship or detect
 undisclosed assistance. Sentence-form product discussion and Markdown vendor
 headings/lists are not credits; an ambiguous bare tool byline remains forbidden.
+A standalone whole-line literal wrapper is treated as its contained line so a
+quote cannot turn a byline into data. Commit messages use their rendered
+Markdown wrapper semantics. Assignments and embedded fixture strings remain
+outside that narrow rule.

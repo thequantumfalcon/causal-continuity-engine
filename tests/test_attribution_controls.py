@@ -145,6 +145,31 @@ def test_rust_doc_comment_credits_are_rejected(source, parts):
     assert checker.scan_prose("".join(parts), source=source)
 
 
+@pytest.mark.parametrize(
+    ("source", "prefix", "suffix"),
+    [
+        ("module.py", '"""', '"""'),
+        ("module.py", "'''", "'''"),
+        ("module.py", 'r"""', '"""'),
+        ("module.py", '"', '";'),
+        ("module.py", "'", "';"),
+        ("module.js", "`", "`;"),
+        ("module.py", '# "', '"'),
+        ("module.js", '// "', '"'),
+        ("module.c", '/* "', '" */'),
+        ("module.rs", '/*! "', '" */'),
+        ("README.md", '<!-- "', '" -->'),
+        ("README.md", '"', '"'),
+        ("README.md", '- "', '"'),
+        ("README.md", '> `', '`'),
+    ],
+)
+def test_standalone_source_literal_credits_are_rejected(source, prefix, suffix):
+    checker = _load_checker()
+    credit = "".join(("Generated", " with ", "Codex"))
+    assert checker.scan_prose(f"{prefix}{credit}{suffix}", source=source)
+
+
 def test_ordinary_product_discussion_and_human_identities_remain_clean():
     checker = _load_checker()
     safe = "\n".join([
@@ -164,6 +189,16 @@ def test_ordinary_product_discussion_and_human_identities_remain_clean():
     assert checker.scan_prose(safe, source="README.md") == ()
     assert checker.scan_identity(
         "Claude Dupont", "claude.dupont@example.invalid", source="<human>"
+    ) == ()
+
+    credit = "".join(("Generated", " with ", "Codex"))
+    source_discussion = "\n".join([
+        f'notice = "{credit}"',
+        f'"The policy rejects the phrase \\"{credit}\\" as a byline."',
+    ])
+    assert checker.scan_prose(source_discussion, source="module.py") == ()
+    assert checker.scan_prose(
+        f'"""The policy rejects {credit} as a byline."""', source="README.md"
     ) == ()
 
 
@@ -186,6 +221,9 @@ def test_raw_commit_scans_message_author_and_committer_as_separate_fields():
     [
         ("// Generated", " with ", "Codex\n"),
         ("Codex", " (", "Anthropic", ")\n"),
+        ("- Generated", " with ", "Codex\n"),
+        ("1. Generated", " with ", "Codex\n"),
+        ("> Generated", " with ", "Codex\n"),
     ],
 )
 def test_raw_commit_rejects_decorated_and_plain_message_bylines(parts):
@@ -379,13 +417,58 @@ def test_real_workflow_tree_path_rejects_a_base_valid_bypass(tmp_path):
 @pytest.mark.skipif(
     os.name == "nt",
     reason="the push workflow body is Ubuntu-only shell and is not executed on Windows")
-def test_real_workflow_commit_path_rejects_a_base_valid_bypass(tmp_path):
+@pytest.mark.parametrize("attack_kind", ["role", "source-literal", "markdown-list"])
+def test_real_workflow_commit_path_rejects_a_base_valid_bypass(
+        tmp_path, attack_kind):
     repository = _control_fixture(tmp_path)
-    attack = "".join(("Senior Research ", "Partner: ", "Codex\n"))
+    if attack_kind == "role":
+        attack = "".join(("Senior Research ", "Partner: ", "Codex\n"))
+    elif attack_kind == "source-literal":
+        attack = '"""' + "".join(("Generated", " with ", "Codex")) + '"""\n'
+    else:
+        attack = "- " + "".join(("Generated", " with ", "Codex")) + "\n"
     (repository / "artifact.txt").write_text("clean fixture\n", encoding="utf-8")
     subprocess.run(["git", "add", "artifact.txt"], cwd=repository, check=True)
     subprocess.run(
         ["git", "commit", "--no-verify", "-q", "-m", attack],
+        cwd=repository,
+        check=True,
+    )
+    result = _run_push_workflow(repository)
+    assert result.returncode == 1, result.stderr
+    assert "attribution.credit" in result.stderr, result.stderr
+
+
+def test_real_hooks_reject_a_standalone_source_literal(tmp_path):
+    repository = _control_fixture(tmp_path)
+    credit = "".join(("Generated", " with ", "Codex"))
+    (repository / "artifact.py").write_text(
+        f'"""{credit}"""\n', encoding="utf-8")
+    subprocess.run(["git", "add", "artifact.py"], cwd=repository, check=True)
+    pre_commit = _run_control(repository, *_hook_command(".githooks/pre-commit"))
+
+    message = repository / "COMMIT_EDITMSG"
+    message.write_text(f'- "{credit}"\n', encoding="utf-8")
+    commit_msg = _run_control(
+        repository, *_hook_command(".githooks/commit-msg", message.name))
+
+    assert pre_commit.returncode == 1, pre_commit.stderr
+    assert "attribution.credit" in pre_commit.stderr, pre_commit.stderr
+    assert commit_msg.returncode == 1, commit_msg.stderr
+    assert "attribution.credit" in commit_msg.stderr, commit_msg.stderr
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="the push workflow body is Ubuntu-only shell and is not executed on Windows")
+def test_real_workflow_tree_rejects_a_standalone_source_literal(tmp_path):
+    repository = _control_fixture(tmp_path)
+    credit = "".join(("Generated", " with ", "Codex"))
+    (repository / "artifact.py").write_text(
+        f'"""{credit}"""\n', encoding="utf-8")
+    subprocess.run(["git", "add", "artifact.py"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "commit", "--no-verify", "-q", "-m", "test: literal carrier"],
         cwd=repository,
         check=True,
     )
