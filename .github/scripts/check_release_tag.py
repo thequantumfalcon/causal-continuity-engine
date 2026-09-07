@@ -42,10 +42,10 @@ WORKFLOW_PATHS = {
 # Any other extra context is rejected until its event/path semantics are added
 # here deliberately rather than being ignored by accident.
 PR_ONLY_BRANCH_CONTEXTS = frozenset({"dependency-review", "DCO"})
-SIGNATURE_MARKERS = (
-    "-----BEGIN PGP SIGNATURE-----",
-    "-----BEGIN SSH SIGNATURE-----",
-)
+RELEASE_TAGGER_NAME = "Thomas Albrecht"
+RELEASE_TAGGER_EMAIL = "thequantumfalcon@users.noreply.github.com"
+SSH_SIGNATURE_BEGIN = "-----BEGIN SSH SIGNATURE-----"
+SSH_SIGNATURE_END = "-----END SSH SIGNATURE-----"
 MAX_GITHUB_JSON_BYTES = 8 * 1024 * 1024
 MAX_RULESET_BYTES = 256 * 1024
 MAX_GIT_CONFIG_BYTES = 256 * 1024
@@ -1094,6 +1094,18 @@ def _scan_tag_object(tag: str, payload: bytes) -> None:
         )
 
 
+def _attribution_scanner():
+    path = ROOT / ".github" / "scripts" / "check_attribution.py"
+    name = "causal_continuity_engine_release_attribution"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("cannot load the release attribution scanner")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _validated_repository(repository: object) -> str:
     if not isinstance(repository, str) or repository != repository.strip():
         raise SystemExit("GitHub repository must be an owner/name slug")
@@ -1258,15 +1270,97 @@ def _verify_github_commit(commit: str, repository: str | None = None) -> None:
 
 
 def _signed_tag_headers(tag_body: str) -> dict[str, str]:
-    """Parse the signed annotated-tag headers, excluding message/signature."""
-    header_block = tag_body.split("\n\n", 1)[0]
+    """Parse the one canonical release-tag header sequence."""
+    header_block, separator, _ = tag_body.partition("\n\n")
+    if not separator:
+        raise SystemExit("release tag object has no header/message boundary")
+    lines = header_block.split("\n")
+    keys = ("object", "type", "tag", "tagger")
+    if len(lines) != len(keys):
+        raise SystemExit("release tag object must have exactly four canonical headers")
     headers: dict[str, str] = {}
-    for line in header_block.splitlines():
-        if not line or line[0].isspace():
-            continue
-        key, separator, value = line.partition(" ")
-        if separator and key not in headers:
-            headers[key] = value
+    for line, key in zip(lines, keys, strict=True):
+        prefix = f"{key} "
+        if not line.startswith(prefix) or not line[len(prefix):]:
+            raise SystemExit(
+                "release tag object headers must be ordered object/type/tag/tagger")
+        headers[key] = line[len(prefix):]
+    return headers
+
+
+def _validate_release_tag_object(
+        tag: str, payload: bytes, *, expected_object: str | None = None) -> dict[str, str]:
+    """Validate the exact raw release-tag structure shared by both deciding paths."""
+    _scan_tag_object(tag, payload)
+    try:
+        body = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit("release tag object is not valid UTF-8") from exc
+    if "\r" in body or "\x00" in body:
+        raise SystemExit("release tag object must use canonical LF-delimited text")
+
+    headers = _signed_tag_headers(body)
+    object_id = headers["object"]
+    if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", object_id) is None:
+        raise SystemExit("release tag object header has an unsupported object identifier")
+    if headers["type"] != "commit":
+        raise SystemExit("release tag object must directly name a commit")
+    if headers["tag"] != tag:
+        raise SystemExit(
+            f"signed tag object names {headers['tag']!r}, not release ref {tag!r}")
+    if expected_object is not None and object_id != expected_object:
+        raise SystemExit("release tag object records a commit other than exact HEAD")
+
+    tagger = re.fullmatch(
+        r"(?P<name>[^<>\r\n]+) <(?P<email>[^<>\s]+)> "
+        r"(?P<epoch>0|[1-9][0-9]*) (?P<offset>[+-][0-9]{4})",
+        headers["tagger"],
+    )
+    if tagger is None:
+        raise SystemExit("release tag object has a noncanonical tagger header")
+    offset = tagger["offset"]
+    hours = int(offset[1:3])
+    minutes = int(offset[3:])
+    if minutes >= 60 or hours > 14 or (hours == 14 and minutes != 0):
+        raise SystemExit("release tag object has an invalid tagger timezone")
+
+    _, _, annotation_and_signature = body.partition("\n\n")
+    annotation, signature_separator, signature_tail = annotation_and_signature.partition(
+        SSH_SIGNATURE_BEGIN)
+    attribution = _attribution_scanner()
+    findings = list(attribution.scan_identity(
+        tagger["name"], tagger["email"], source=f"<tag:{tag}:tagger>"))
+    findings.extend(attribution.scan_prose(annotation, source=f"<tag:{tag}:message>"))
+    if findings:
+        raise SystemExit(
+            f"release tag object contains prohibited attribution: {findings[0].code}")
+    if (
+        tagger["name"] != RELEASE_TAGGER_NAME
+        or tagger["email"] != RELEASE_TAGGER_EMAIL
+    ):
+        raise SystemExit("release tag object must use the fixed owner tagger identity")
+    if (
+        not signature_separator
+        or annotation_and_signature.count(SSH_SIGNATURE_BEGIN) != 1
+        or annotation_and_signature.count(SSH_SIGNATURE_END) != 1
+    ):
+        raise SystemExit("release tag object must carry exactly one SSH signature")
+    if annotation != f"Release {tag}\n":
+        raise SystemExit("release tag object must use the exact release annotation")
+    end = f"\n{SSH_SIGNATURE_END}\n"
+    if not signature_tail.startswith("\n") or not signature_tail.endswith(end):
+        raise SystemExit("release tag SSH signature must end exactly at object EOF")
+    encoded = signature_tail[1:-len(end)]
+    if not encoded or any(
+            not line or re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", line) is None
+            for line in encoded.split("\n")):
+        raise SystemExit("release tag SSH signature is not canonical base64 armor")
+    try:
+        decoded = base64.b64decode("".join(encoded.split("\n")), validate=True)
+    except ValueError as exc:
+        raise SystemExit("release tag SSH signature is not canonical base64 armor") from exc
+    if not decoded.startswith(b"SSHSIG"):
+        raise SystemExit("release tag SSH signature has the wrong binary format")
     return headers
 
 
@@ -1445,20 +1539,7 @@ def _check_release_tag(args: argparse.Namespace) -> int:
     if tag_type != "tag":
         raise SystemExit("release tags must be annotated, not lightweight")
     tag_bytes = _git_bytes("cat-file", "tag", f"refs/tags/{args.tag}")
-    _scan_tag_object(args.tag, tag_bytes)
-    try:
-        tag_body = tag_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise SystemExit("release tag object is not valid UTF-8") from exc
-    headers = _signed_tag_headers(tag_body)
-    if headers.get("type") != "commit":
-        raise SystemExit("release tag object must directly name a commit")
-    if headers.get("tag") != args.tag:
-        raise SystemExit(
-            f"signed tag object names {headers.get('tag')!r}, not "
-            f"release ref {args.tag!r}")
-    if not any(marker in tag_body for marker in SIGNATURE_MARKERS):
-        raise SystemExit("release tags must carry a PGP or SSH signature")
+    headers = _validate_release_tag_object(args.tag, tag_bytes)
     tag_object = _git("rev-parse", f"refs/tags/{args.tag}^{{tag}}")
     _verify_git_object_id(tag_object, "tag", tag_bytes)
     tagged = _git("rev-parse", f"refs/tags/{args.tag}^{{commit}}")

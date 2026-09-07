@@ -2066,11 +2066,16 @@ executed.
 capture its full lowercase Git object identifier once. Read the tag type and
 bytes, recompute its object identity, inspect its signed headers, peel it to the
 release commit, and verify its signature using that identifier rather than the
-mutable ref name. Recheck the named ref against the captured identifier before
-the final remote observations, then push the identifier directly to the fixed
-release-tag destination. If pre-push validation fails, delete only with Git's
-old-value compare-and-delete operation using the captured identifier. A
-different-object replacement ref is preserved and makes cleanup fail closed.
+mutable ref name. The raw object must be canonical UTF-8/LF text containing
+exactly the ordered `object`, `type`, `tag`, and `tagger` headers, the fixed
+owner tagger metadata, the exact `Release vX.Y.Z` annotation, and one SSH
+signature ending at object EOF. Content-integrity and attribution scans apply
+to those exact bytes and the parsed tagger and annotation.
+Recheck the named ref against the captured identifier before the final remote
+observations, then push the identifier directly to the fixed release-tag
+destination. If pre-push validation fails, delete only with Git's old-value
+compare-and-delete operation using the captured identifier. A different-object
+replacement ref is preserved and makes cleanup fail closed.
 
 **Rationale.** Validating `refs/tags/vX.Y.Z` and later pushing or deleting that
 same name allowed another local ref update between the operations to substitute
@@ -2090,7 +2095,10 @@ remote-tag absence are observations from separate SSH sessions, not atomic
 push predicates, and a concurrently created same-object tag may be reported as
 already up to date. Compare-delete cannot distinguish delete-and-recreate at
 the same object identifier. ADR-111's explicit Git profile and the owner
-stop-and-reconcile procedure remain required.
+stop-and-reconcile procedure remain required. The fixed tagger field is
+structural metadata, not proof that the named owner controlled the signing key.
+Local and GitHub signature verification establish validity, but neither is an
+external signer-identity allowlist.
 
 ## ADR-113 — Artifact behavior cannot choose publication bytes
 

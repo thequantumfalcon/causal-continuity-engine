@@ -167,20 +167,7 @@ def _validate_local_tag(tag: str, head: str, tag_object: str) -> str:
     if _run_git("cat-file", "-t", tag_object) != "tag":
         raise SystemExit("created release ref is not an annotated tag object")
     tag_bytes = CHECKER._git_bytes("cat-file", "tag", tag_object)
-    CHECKER._scan_tag_object(tag, tag_bytes)
-    try:
-        body = tag_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise SystemExit("created release tag object is not valid UTF-8") from exc
-    headers = CHECKER._signed_tag_headers(body)
-    if headers.get("type") != "commit":
-        raise SystemExit("created tag does not directly name a commit")
-    if headers.get("tag") != tag:
-        raise SystemExit("created tag object records the wrong exact tag name")
-    if headers.get("object") != head:
-        raise SystemExit("created tag object records a commit other than exact HEAD")
-    if "-----BEGIN SSH SIGNATURE-----" not in body:
-        raise SystemExit("created annotated tag has no SSH signature")
+    CHECKER._validate_release_tag_object(tag, tag_bytes, expected_object=head)
     CHECKER._verify_git_object_id(tag_object, "tag", tag_bytes)
     if _run_git("rev-parse", f"{tag_object}^{{commit}}") != head:
         raise SystemExit("release tag does not peel to exact HEAD")
@@ -248,6 +235,12 @@ def _build_release_git(args: argparse.Namespace):
     if missing:
         raise SystemExit(
             "explicit SSH release profile requires: " + ", ".join(missing))
+    if (
+        args.tagger_name != CHECKER.RELEASE_TAGGER_NAME
+        or args.tagger_email != CHECKER.RELEASE_TAGGER_EMAIL
+    ):
+        raise SystemExit(
+            "explicit SSH release profile requires the fixed owner tagger identity")
     return CHECKER.ReleaseGit.owner_profile(
         root=ROOT,
         git_executable=args.git_executable,
