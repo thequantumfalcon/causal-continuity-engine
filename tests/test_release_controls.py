@@ -67,6 +67,28 @@ def _verified(reason="valid"):
     }
 
 
+def _release_tag_bytes(
+    *,
+    tag="v0.1.0",
+    object_id=None,
+    tagger_name="Thomas Albrecht",
+    tagger_email="thequantumfalcon@users.noreply.github.com",
+    message=None,
+):
+    object_id = object_id or "a" * 40
+    message = f"Release {tag}\n" if message is None else message
+    return (
+        f"object {object_id}\n"
+        "type commit\n"
+        f"tag {tag}\n"
+        f"tagger {tagger_name} <{tagger_email}> 1 +0000\n\n"
+        f"{message}"
+        "-----BEGIN SSH SIGNATURE-----\n"
+        "U1NIU0lH\n"
+        "-----END SSH SIGNATURE-----\n"
+    ).encode("utf-8")
+
+
 def test_current_metadata_is_consistent_but_not_pretending_to_be_released():
     metadata = _load_release_script("check_release_metadata")
     assert metadata.check(ROOT) == ("0.1.5", None)
@@ -141,6 +163,60 @@ def test_release_tag_object_content_scan_is_exact_and_strict():
 
     with pytest.raises(SystemExit, match="scan is incomplete"):
         checker._scan_tag_object("v0.1.0", b"\xff")
+
+
+def test_release_tag_object_has_one_canonical_owner_ssh_structure():
+    checker = _load_release_script("check_release_tag")
+    object_id = "a" * 40
+    headers = checker._validate_release_tag_object(
+        "v0.1.0",
+        _release_tag_bytes(object_id=object_id),
+        expected_object=object_id,
+    )
+    assert headers == {
+        "object": object_id,
+        "type": "commit",
+        "tag": "v0.1.0",
+        "tagger": (
+            f"{checker.RELEASE_TAGGER_NAME} <{checker.RELEASE_TAGGER_EMAIL}> 1 +0000"
+        ),
+    }
+
+
+@pytest.mark.parametrize("attack", ["tagger", "message"])
+def test_release_tag_object_rejects_explicit_attribution(attack):
+    checker = _load_release_script("check_release_tag")
+    kwargs = {}
+    if attack == "tagger":
+        kwargs["tagger_name"] = "Cod" + "ex"
+    else:
+        kwargs["message"] = "Generated" + " with " + "Codex\n"
+    with pytest.raises(SystemExit, match="prohibited attribution"):
+        checker._validate_release_tag_object("v0.1.0", _release_tag_bytes(**kwargs))
+
+
+def test_release_tag_object_rejects_noncanonical_metadata_and_armor():
+    checker = _load_release_script("check_release_tag")
+    canonical = _release_tag_bytes()
+
+    duplicate = canonical.replace(b"type commit\n", b"type commit\ntype commit\n")
+    with pytest.raises(SystemExit, match="exactly four canonical headers"):
+        checker._validate_release_tag_object("v0.1.0", duplicate)
+
+    with pytest.raises(SystemExit, match="fixed owner tagger identity"):
+        checker._validate_release_tag_object(
+            "v0.1.0", _release_tag_bytes(tagger_name="Release Steward"))
+
+    with pytest.raises(SystemExit, match="exact release annotation"):
+        checker._validate_release_tag_object(
+            "v0.1.0", _release_tag_bytes(message="Release candidate\n"))
+
+    pgp = canonical.replace(b"SSH SIGNATURE", b"PGP SIGNATURE")
+    with pytest.raises(SystemExit, match="exactly one SSH signature"):
+        checker._validate_release_tag_object("v0.1.0", pgp)
+
+    with pytest.raises(SystemExit, match="exactly at object EOF"):
+        checker._validate_release_tag_object("v0.1.0", canonical + b"trailer\n")
 
 
 def test_release_tag_object_bytes_must_match_their_object_id():
@@ -1820,6 +1896,39 @@ def test_prepare_release_requires_every_explicit_ssh_profile_input():
         tool.main(["v0.1.5"])
 
 
+@pytest.mark.parametrize(
+    ("tagger_name", "tagger_email"),
+    [
+        ("Release Owner", "thequantumfalcon@users.noreply.github.com"),
+        ("Thomas Albrecht", "owner@example.invalid"),
+    ],
+)
+def test_prepare_release_requires_the_fixed_owner_tagger_before_profile(
+        monkeypatch, tagger_name, tagger_email):
+    tool = _load_release_script("prepare_release_tag")
+    calls = []
+    monkeypatch.setattr(
+        tool.CHECKER.ReleaseGit,
+        "owner_profile",
+        lambda **kwargs: calls.append(kwargs) or object(),
+    )
+    args = SimpleNamespace(
+        git_executable="/usr/bin/git",
+        tagger_name=tagger_name,
+        tagger_email=tagger_email,
+        signing_key="/private/key.pub",
+        ssh_keygen_executable="/usr/bin/ssh-keygen",
+        allowed_signers_file="/private/allowed-signers",
+        ssh_executable="/usr/bin/ssh",
+        known_hosts_file="/private/known-hosts",
+        transport_key="/private/transport.pub",
+        ssh_auth_sock="/private/agent.sock",
+    )
+    with pytest.raises(SystemExit, match="fixed owner tagger identity"):
+        tool._build_release_git(args)
+    assert calls == []
+
+
 def test_release_git_fails_closed_on_a_non_posix_release_host(
         tmp_path, monkeypatch):
     checker = _load_release_script("check_release_tag")
@@ -1872,10 +1981,7 @@ def test_prepare_tag_validates_annotated_signature_and_exact_peeling(monkeypatch
     head = "f" * 40
     tag_object = "1" * 40
     verified = []
-    tag_bytes = (
-        f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
-        "-----BEGIN SSH SIGNATURE-----"
-    ).encode("utf-8")
+    tag_bytes = _release_tag_bytes(object_id=head)
 
     def git(*args):
         if args == ("cat-file", "-t", tag_object):
@@ -1917,10 +2023,7 @@ def test_prepare_tag_validation_uses_the_captured_object_id(monkeypatch):
     head = "f" * 40
     tag_object = "1" * 40
     events = []
-    tag_bytes = (
-        f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
-        "-----BEGIN SSH SIGNATURE-----"
-    ).encode("utf-8")
+    tag_bytes = _release_tag_bytes(object_id=head)
 
     def git(*args):
         events.append(("git", args))
@@ -1971,10 +2074,7 @@ def test_prepare_tag_validation_rejects_a_changed_ref(monkeypatch):
     head = "f" * 40
     tag_object = "1" * 40
     replacement = "2" * 40
-    tag_bytes = (
-        f"object {head}\ntype commit\ntag v0.1.0\n\nrelease\n"
-        "-----BEGIN SSH SIGNATURE-----"
-    ).encode("utf-8")
+    tag_bytes = _release_tag_bytes(object_id=head)
 
     def git(*args):
         if args == ("cat-file", "-t", tag_object):
@@ -2389,39 +2489,46 @@ def test_prepare_tag_ambiguous_creation_cleans_only_the_observed_object(
     assert cleaned == [("v0.1.0", observed)]
 
 
+@pytest.mark.parametrize("attack_kind", ["tagger", "message"])
 def test_prepare_tag_rejects_prohibited_raw_tag_before_push_and_cleans(
-        monkeypatch):
+        monkeypatch, attack_kind):
     tool = _load_release_script("prepare_release_tag")
     head = "7" * 40
-    tag_object = "8" * 40
     events = []
     monkeypatch.setattr(tool, "_preflight", lambda tag: (head, "0.1.0"))
+    kwargs = {"object_id": head}
+    if attack_kind == "tagger":
+        kwargs["tagger_name"] = "Cod" + "ex"
+    else:
+        kwargs["message"] = "Generated" + " with " + "Codex\n"
+    attack = _release_tag_bytes(**kwargs)
+    tag_object = hashlib.sha1(
+        f"tag {len(attack)}\0".encode("ascii") + attack).hexdigest()
     monkeypatch.setattr(tool, "_local_tag_object", lambda tag: tag_object)
 
     def git(*args):
         events.append(("git", args))
-        if args[:2] == ("cat-file", "-t"):
+        if args[:2] == ("tag", "--sign"):
+            return ""
+        if args == ("cat-file", "-t", tag_object):
             return "tag"
-        return ""
+        raise AssertionError(args)
 
     monkeypatch.setattr(tool, "_run_git", git)
     monkeypatch.setattr(
         tool.CHECKER,
         "_git_bytes",
-        lambda *args: events.append(("raw", args)) or b"marked tag object",
+        lambda *args: events.append(("raw", args)) or attack,
     )
-    monkeypatch.setattr(
-        tool.CHECKER,
-        "_scan_tag_object",
-        lambda tag, payload: (_ for _ in ()).throw(SystemExit("prohibited content")),
-    )
+    monkeypatch.setattr(tool, "_remote_main_sha", lambda: head)
+    monkeypatch.setattr(tool, "_require_remote_tag_absent", lambda tag: None)
     monkeypatch.setattr(
         tool,
         "_cleanup_created_tag",
         lambda tag, oid: events.append(("cleanup", tag, oid)),
     )
 
-    with pytest.raises(SystemExit, match="prohibited content"):
+    with pytest.raises(SystemExit, match="prohibited attribution"):
         tool.main(["v0.1.0", "--push"], release_git=object())
 
     assert ("raw", ("cat-file", "tag", tag_object)) in events
@@ -2430,6 +2537,72 @@ def test_prepare_tag_rejects_prohibited_raw_tag_before_push_and_cleans(
         event[0] == "git" and event[1][0] == "push"
         for event in events if isinstance(event, tuple)
     )
+
+
+@pytest.mark.parametrize("attack_kind", ["tagger", "message"])
+def test_release_deciding_path_rejects_attributed_tag_before_peeling(
+        monkeypatch, attack_kind):
+    checker = _load_release_script("check_release_tag")
+    tag = "v0.1.0"
+    head = "7" * 40
+    kwargs = {"tag": tag, "object_id": head}
+    if attack_kind == "tagger":
+        kwargs["tagger_name"] = "Cod" + "ex"
+    else:
+        kwargs["message"] = "Generated" + " with " + "Codex\n"
+    payload = _release_tag_bytes(**kwargs)
+    tag_object = hashlib.sha1(
+        f"tag {len(payload)}\0".encode("ascii") + payload).hexdigest()
+    calls = []
+    monkeypatch.setattr(checker, "_release_version", lambda: "0.1.0")
+    monkeypatch.setattr(checker, "_verify_release_metadata", lambda value: "0.1.0")
+    monkeypatch.setattr(checker, "_git_bytes", lambda *args: payload)
+
+    def git(*args):
+        calls.append(args)
+        if args[:2] == ("cat-file", "-t"):
+            return "tag"
+        if args == ("rev-parse", f"refs/tags/{tag}^{{tag}}"):
+            return tag_object
+        if args == ("rev-parse", f"refs/tags/{tag}^{{commit}}"):
+            return head
+        if args == ("rev-parse", "HEAD"):
+            return head
+        raise AssertionError(args)
+
+    monkeypatch.setattr(checker, "_git", git)
+    with pytest.raises(SystemExit, match="prohibited attribution"):
+        checker.main([tag], release_git=object())
+    assert not any(args[0] == "rev-parse" for args in calls)
+
+
+def test_release_deciding_path_accepts_exact_owner_ssh_tag(monkeypatch):
+    checker = _load_release_script("check_release_tag")
+    tag = "v0.1.0"
+    head = "7" * 40
+    payload = _release_tag_bytes(tag=tag, object_id=head)
+    tag_object = hashlib.sha1(
+        f"tag {len(payload)}\0".encode("ascii") + payload).hexdigest()
+    calls = []
+    monkeypatch.setattr(checker, "_release_version", lambda: "0.1.0")
+    monkeypatch.setattr(checker, "_verify_release_metadata", lambda value: "0.1.0")
+    monkeypatch.setattr(checker, "_git_bytes", lambda *args: payload)
+
+    def git(*args):
+        calls.append(args)
+        if args[:2] == ("cat-file", "-t"):
+            return "tag"
+        if args == ("rev-parse", f"refs/tags/{tag}^{{tag}}"):
+            return tag_object
+        if args == ("rev-parse", f"refs/tags/{tag}^{{commit}}"):
+            return head
+        if args == ("rev-parse", "HEAD"):
+            return head
+        raise AssertionError(args)
+
+    monkeypatch.setattr(checker, "_git", git)
+    assert checker.main([tag], release_git=object()) == 0
+    assert ("rev-parse", f"refs/tags/{tag}^{{commit}}") in calls
 
 
 def test_prepare_tag_never_pushes_without_flag_and_rechecks_before_push(

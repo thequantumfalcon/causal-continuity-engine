@@ -244,7 +244,10 @@ publishes anything:
 
 - package, changelog, citation version, ISO release date, and tag name agree,
   `Unreleased` is reset, and no pre-release marker remains;
-- the reference is an annotated PGP- or SSH-signed tag object;
+- the reference is an annotated SSH-signed tag object whose raw bytes have
+  exactly the ordered `object`, `type`, `tag`, and `tagger` headers, the fixed
+  owner tagger metadata, the annotation `Release vX.Y.Z`, and one SSH armor
+  block ending at object EOF;
 - GitHub returns well-formed verification records with `verified == true`
   separately for the exact tag object and exact peeled release commit (not
   that either signer is on a project-maintained allowlist);
@@ -275,6 +278,11 @@ publishes anything:
   and runs its import, CLI, capability, and conformance probes after
   installation-only pip/setuptools are removed and the exact locked audit tools
   are added.
+
+The fixed tagger field is structural metadata, not proof that the named owner
+controlled the signing key. Local `git verify-tag` and GitHub's independent
+verification record establish signature validity; neither substitutes for an
+external signer-identity allowlist.
 
 The build job has read-only repository, check, and Actions permissions and
 uploads the wheel, sdist, and checksum manifest under one immutable artifact

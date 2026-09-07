@@ -48,8 +48,10 @@ audit, with each defect pinned against the 0.1.4 source baseline.
   GitHub API token.
 - **The owner tag helper could push before scanning the raw tag object.** It now
   disables replacement objects, scans the exact annotated-tag bytes, binds them
-  back to their Git object identifier, and cleans the local tag on any finding
-  before a remote push can occur.
+  back to their Git object identifier, requires four ordered headers, the fixed
+  owner tagger, the exact `Release vX.Y.Z` annotation, and one SSH signature
+  ending at object EOF, and cleans the local tag on any finding before a remote
+  push can occur.
 - **A validated release tag could be replaced before push or cleanup.** The
   helper now captures the full tag-object identifier once, validates and
   verifies that object directly, pushes that identifier, and removes a failed

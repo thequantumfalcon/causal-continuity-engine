@@ -2371,9 +2371,16 @@ def test_release_rejects_unsigned_annotated_tag(monkeypatch):
     monkeypatch.setattr(
         checker,
         "_git_bytes",
-        lambda *args: f"object abc\ntype commit\ntag {tag}\n\nCCE {tag}".encode(),
+        lambda *args: (
+            f"object {'a' * 40}\n"
+            "type commit\n"
+            f"tag {tag}\n"
+            f"tagger {checker.RELEASE_TAGGER_NAME} "
+            f"<{checker.RELEASE_TAGGER_EMAIL}> 1 +0000\n\n"
+            f"Release {tag}\n"
+        ).encode(),
     )
-    with pytest.raises(SystemExit, match="must carry a PGP or SSH signature"):
+    with pytest.raises(SystemExit, match="exactly one SSH signature"):
         checker.main([tag], release_git=object())
 
 
@@ -2394,9 +2401,13 @@ def test_release_rejects_signed_tag_object_aliased_under_another_name(
         checker,
         "_git_bytes",
         lambda *args: (
-            "object abc\ntype commit\ntag v0.0.9\ntagger Maintainer "
-            "<maintainer@example.test> 0 +0000\n\nrelease\n"
-            "-----BEGIN SSH SIGNATURE-----"
+            f"object {'a' * 40}\ntype commit\ntag v0.0.9\n"
+            f"tagger {checker.RELEASE_TAGGER_NAME} "
+            f"<{checker.RELEASE_TAGGER_EMAIL}> 1 +0000\n\n"
+            "Release v0.0.9\n"
+            "-----BEGIN SSH SIGNATURE-----\n"
+            "U1NIU0lH\n"
+            "-----END SSH SIGNATURE-----\n"
         ).encode(),
     )
     with pytest.raises(SystemExit, match="signed tag object names"):
