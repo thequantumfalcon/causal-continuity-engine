@@ -89,11 +89,11 @@ def _release_tag_bytes(
     ).encode("utf-8")
 
 
-def test_current_metadata_is_consistent_but_not_pretending_to_be_released():
+def test_current_metadata_is_consistent_and_tag_ready():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT) == ("0.1.5", None)
-    with pytest.raises(SystemExit, match="not yet released"):
-        metadata.check(ROOT, release_tag="v0.1.5")
+    expected = ("0.1.5", "2026-09-08")
+    assert metadata.check(ROOT) == expected
+    assert metadata.check(ROOT, release_tag="v0.1.5") == expected
 
 
 def test_release_metadata_requires_matching_dates_and_reset_unreleased(tmp_path):
