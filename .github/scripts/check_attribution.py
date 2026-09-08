@@ -46,6 +46,11 @@ _ACTOR_SEPARATOR = re.compile(
     r"\s*(?:[,;]\s*(?:and\s+)?|&|\+|/|\band\b)\s*")
 _MARKDOWN_ORDERED = re.compile(r"[0-9]{1,9}[.)][ \t]+")
 _MARKDOWN_TASK = re.compile(r"\[[ xX]\][ \t]+")
+_SOURCE_LITERAL = re.compile(
+    r"(?:(?i:br|rb|fr|rf|r|u8|u|b|f|l))?"
+    r"(?P<quote>\"\"\"|'''|\"|')(?P<body>.*)(?P=quote);?\Z"
+)
+_SOURCE_TEMPLATE = re.compile(r"`(?P<body>.*)`;?\Z")
 _GIT_IDENTITY = re.compile(
     r"(?P<name>[^<>\r\n]+) <(?P<email>[^<>\s]+)> "
     r"(?P<epoch>-?\d+) (?P<offset>[+-]\d{4})"
@@ -115,7 +120,20 @@ def _markdown_source(source: str) -> bool:
 def _undecorate(line: str, *, markdown: bool) -> tuple[str, bool]:
     value = line.strip()
     markup = False
+    literal_unwrapped = False
     while value:
+        if value.endswith("-->"):
+            value = value[:-3].rstrip()
+            continue
+        if value.endswith("*/"):
+            value = value[:-2].rstrip()
+            continue
+        if not literal_unwrapped:
+            literal = _SOURCE_LITERAL.fullmatch(value) or _SOURCE_TEMPLATE.fullmatch(value)
+            if literal is not None:
+                value = literal["body"].strip()
+                literal_unwrapped = True
+                continue
         if markdown:
             ordered = _MARKDOWN_ORDERED.match(value)
             if ordered is not None:
@@ -151,10 +169,6 @@ def _undecorate(line: str, *, markdown: bool) -> tuple[str, bool]:
             value = value[1:].lstrip(" \ufe0f")
             continue
         break
-    if value.endswith("-->"):
-        value = value[:-3].rstrip()
-    elif value.endswith("*/"):
-        value = value[:-2].rstrip()
     return _normal(value), markup
 
 
@@ -257,7 +271,7 @@ def scan_commit_object(data: bytes, *, source: str) -> tuple[Finding, ...]:
     ]
     if len(authors) != 1 or len(committers) != 1:
         raise ScanIncomplete("commit object must have one author and one committer")
-    findings = list(scan_prose(message, source=source))
+    findings = list(scan_prose(message, source=source, markdown=True))
     for label, value in (("author", authors[0]), ("committer", committers[0])):
         name, email = _parse_git_identity(value, label=label)
         findings.extend(scan_identity(name, email, source=f"{source}:{label}"))
@@ -441,7 +455,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise ScanIncomplete("message scanning takes no pathspecs")
             findings = list(
                 _prose_bytes(
-                    _bounded_file(arguments.message_file), source=os.fspath(arguments.message_file)
+                    _bounded_file(arguments.message_file),
+                    source=os.fspath(arguments.message_file),
+                    markdown=True,
                 )
             )
             for variable in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
