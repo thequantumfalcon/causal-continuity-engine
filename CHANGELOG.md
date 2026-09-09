@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## 0.1.5 — 2026-09-08
+## 0.1.5 — 2026-09-09
 
 Closes the trust and release-boundary findings discovered during the post-0.1.4
 audit, with each defect pinned against the 0.1.4 source baseline.
