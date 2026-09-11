@@ -91,7 +91,7 @@ def _release_tag_bytes(
 
 def test_current_metadata_is_consistent_and_tag_ready():
     metadata = _load_release_script("check_release_metadata")
-    expected = ("0.1.5", "2026-09-09")
+    expected = ("0.1.5", "2026-09-10")
     assert metadata.check(ROOT) == expected
     assert metadata.check(ROOT, release_tag="v0.1.5") == expected
 
