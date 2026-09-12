@@ -46,6 +46,15 @@ RELEASE_TAGGER_NAME = "Thomas Albrecht"
 RELEASE_TAGGER_EMAIL = "thequantumfalcon@users.noreply.github.com"
 SSH_SIGNATURE_BEGIN = "-----BEGIN SSH SIGNATURE-----"
 SSH_SIGNATURE_END = "-----END SSH SIGNATURE-----"
+# The complete `.git/config.worktree` that `git sparse-checkout disable` leaves
+# behind, normalized the way `git config --null --list` reports it. It is the
+# only per-worktree configuration the hosted checker admits; anything else,
+# including a duplicate or an enabled value, remains refused.
+INERT_WORKTREE_CONFIG = (
+    ("core.sparsecheckout", "false"),
+    ("core.sparsecheckoutcone", "false"),
+    ("index.sparse", "false"),
+)
 MAX_GITHUB_JSON_BYTES = 8 * 1024 * 1024
 MAX_RULESET_BYTES = 256 * 1024
 MAX_GIT_CONFIG_BYTES = 256 * 1024
@@ -564,6 +573,7 @@ class ReleaseGit:
         self.known_hosts_file = None
         self.transport_key = None
         self.ssh_auth_sock = None
+        self._worktree_config: tuple[Path, tuple[int, ...], str] | None = None
         try:
             if prepare:
                 fields = {
@@ -697,8 +707,33 @@ class ReleaseGit:
         git_directory = self.root / ".git"
         if git_directory.is_symlink() or not git_directory.is_dir():
             raise SystemExit("release Git requires a regular non-linked working tree")
-        if os.path.lexists(git_directory / "config.worktree"):
-            raise SystemExit("release Git refuses per-worktree configuration")
+        worktree_config = git_directory / "config.worktree"
+        worktree_payload = None
+        if os.path.lexists(worktree_config):
+            # Refusing this file by existence alone stopped release run
+            # 34562475819 before it bound the tag to anything: the pinned hosted
+            # checkout runs `git sparse-checkout disable`, which writes the file,
+            # and then `git config --local --unset-all extensions.worktreeConfig`,
+            # which removes the extension that would make Git read it. The
+            # filesystem shape is still judged here, ahead of every Git child, so
+            # nothing about this path relaxes when the content is judged below.
+            worktree_payload = _bounded_private_git_file(
+                worktree_config,
+                label="per-worktree Git configuration",
+                limit=MAX_GIT_CONFIG_BYTES,
+            )
+            # The allowlist below already refuses `extensions.worktreeConfig`,
+            # but it reaches that verdict one Git child too late. Measured on
+            # Git 2.50, `git config --file ... --no-includes --list` does not
+            # act on a live per-worktree `core.fsmonitor` while `git status`
+            # does; this refuses the combination outright so the ordering does
+            # not depend on that behaviour holding in a later Git.
+            if b"worktreeconfig" in _bounded_private_git_file(
+                git_directory / "config",
+                label="local Git configuration",
+                limit=MAX_GIT_CONFIG_BYTES,
+            ).lower():
+                raise SystemExit("release Git refuses per-worktree configuration")
         _reject_git_object_indirection(git_directory)
         config_path = git_directory / "config"
         try:
@@ -798,7 +833,57 @@ class ReleaseGit:
         origin = entries["remote.origin.url"]
         if entries.get("remote.origin.pushurl", origin) != origin:
             raise SystemExit("origin fetch and push URLs differ")
+        if worktree_payload is not None:
+            self._admit_worktree_residue(
+                worktree_config, worktree_payload, entries, origin)
         return config_path, hashlib.sha256(config_bytes).hexdigest(), origin
+
+    def _admit_worktree_residue(
+        self,
+        path: Path,
+        payload: bytes,
+        entries: dict[str, str],
+        origin: str,
+    ) -> None:
+        # Judged only after `.git/config` has cleared the allowlist above. That
+        # order is what proves `extensions.worktreeConfig` is absent, so this
+        # file is inert for the Git child that parses it, and an unadmitted
+        # configuration is still refused before any per-worktree byte is read.
+        if (
+            self.prepare
+            or origin not in RELEASE_HTTPS_ORIGINS
+            or entries.get("gc.auto") != "0"
+        ):
+            raise SystemExit("release Git refuses per-worktree configuration")
+        before = _path_snapshot(path)
+        output = self._run_config(path)
+        records: list[tuple[str, str]] = []
+        try:
+            for record in output.split(b"\0"):
+                if not record:
+                    continue
+                raw_key, separator, raw_value = record.partition(b"\n")
+                if not separator:
+                    raise ValueError("missing value separator")
+                records.append(
+                    (raw_key.decode("utf-8").lower(), raw_value.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit(
+                "release Git refuses per-worktree configuration") from exc
+        # Exact multiset equality, not containment: a duplicate, an extra key,
+        # an enabled value, or a program-bearing setting is a different file
+        # than the one the pinned checkout leaves behind (ADR-111).
+        if sorted(records) != sorted(INERT_WORKTREE_CONFIG):
+            raise SystemExit("release Git refuses per-worktree configuration")
+        try:
+            after = _path_snapshot(path)
+            settled = path.read_bytes()
+        except OSError as exc:
+            raise SystemExit(
+                "release Git refuses per-worktree configuration") from exc
+        if before != after or settled != payload:
+            raise SystemExit("release Git refuses per-worktree configuration")
+        self._worktree_config = (path, after, hashlib.sha256(payload).hexdigest())
 
     def _recheck_inputs(self) -> None:
         for label, path, expected in self._trusted_paths:
@@ -817,6 +902,25 @@ class ReleaseGit:
             raise SystemExit("local Git configuration became unavailable") from exc
         if hashlib.sha256(config_bytes).hexdigest() != self._config_digest:
             raise SystemExit("local Git configuration changed after admission")
+        # An inert file admitted once must stay the same file: a replacement
+        # carrying identical bytes still changes the inode, and a residue that
+        # appears after admission was never admitted at all.
+        diagnostic = "per-worktree Git configuration changed after admission"
+        if self._worktree_config is None:
+            if os.path.lexists(self.root / ".git" / "config.worktree"):
+                raise SystemExit(diagnostic)
+            return
+        worktree_path, worktree_snapshot, worktree_digest = self._worktree_config
+        try:
+            actual = _path_snapshot(worktree_path)
+            worktree_bytes = worktree_path.read_bytes()
+        except OSError as exc:
+            raise SystemExit(diagnostic) from exc
+        if (
+            actual != worktree_snapshot
+            or hashlib.sha256(worktree_bytes).hexdigest() != worktree_digest
+        ):
+            raise SystemExit(diagnostic)
 
     def _purpose(self, args: tuple[str, ...]) -> str:
         if not args:

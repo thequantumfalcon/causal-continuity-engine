@@ -2024,7 +2024,15 @@ requires structural authority barriers.
 Git, SSH, and SSH-signing executables; signer identity and public key; allowed
 signers; host-key file; transport public key; and agent socket are explicit
 absolute inputs. Local Git configuration is admitted against a narrow
-structural allowlist before any operational command. Every Git child starts
+structural allowlist before any operational command. Per-worktree
+configuration is refused, with one exception: in checker mode only, on an
+HTTPS-origin checkout that also carries `gc.auto=0`, a `.git/config.worktree`
+whose complete normalized record set is exactly `core.sparseCheckout=false`,
+`core.sparseCheckoutCone=false` and `index.sparse=false` is admitted. Its
+filesystem shape is judged before any Git child runs and its content only
+after `.git/config` itself has cleared the allowlist, which is what proves
+`extensions.worktreeConfig` absent and the file therefore inert; its metadata
+and digest are rechecked around every Git child. Every Git child starts
 from a fixed environment with hooks, filesystem monitors, credential helpers,
 replacement objects, ambient configuration, prompts, and non-SSH protocols
 disabled. Shallow history, redirected common Git storage, grafts, alternate
@@ -2044,7 +2052,14 @@ configuration. A configured filesystem monitor, hook, credential helper,
 signing program, SSH command, or URL rewrite could therefore execute with the
 release process's API credential before the tag checks ran. Environment
 scrubbing alone cannot suppress repository-local configuration, so admission
-and command-line neutralization are both required.
+and command-line neutralization are both required. Refusing per-worktree
+configuration by existence alone then failed the release it was protecting:
+the pinned hosted checkout runs `git sparse-checkout disable`, which writes
+`.git/config.worktree`, followed by
+`git config --local --unset-all extensions.worktreeConfig`, which removes the
+extension that would make Git read it. Release run 34562475819 died on that
+inert residue before it bound the v0.1.5 tag to a package version, so a
+correctly signed tag on a reviewed commit could not be built or published.
 
 **Limit.** This is a static contaminated-metadata boundary, not isolation from
 another process running concurrently as the owner. Such a process can replace
@@ -2059,6 +2074,15 @@ Windows release operation. The helper and every imported working-tree module
 must already be owner-reviewed at process start; this profile neutralizes Git
 metadata execution and inherited authority, not malicious Python already being
 executed.
+The per-worktree exception admits exactly one residue shape produced by one
+pinned checkout action. It is not a judgement that inactive configuration is
+safe in general, and it grants nothing to the owner SSH release path, to a
+non-HTTPS origin, to an extra or duplicated record, to an enabled value, or to
+any program-bearing setting. It establishes that the admitted file matched
+that shape and was inert when `.git/config` was admitted; it does not
+establish that a future checkout release will keep writing the same file, keep
+it inactive, or keep leaving it behind at all. A checkout that changes the
+residue fails this gate rather than silently widening it.
 
 ## ADR-112 — Release tag effects bind to one captured object
 
