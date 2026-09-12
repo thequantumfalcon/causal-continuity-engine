@@ -1279,6 +1279,254 @@ def test_release_git_rejects_ambiguous_or_per_worktree_configuration(
             root=repository, git_executable="/usr/bin/git")
 
 
+# Release run 34562475819 died here, before it bound the tag to anything. The
+# pinned `actions/checkout` path runs `git sparse-checkout disable` and then
+# `git config --local --unset-all extensions.worktreeConfig`: the first writes
+# `.git/config.worktree`, the second removes the extension that would make Git
+# read it. ADR-111 refused the file by existence alone, so a v0.1.5 tag that
+# satisfied every other control could never reach the build (ADR-111 limit).
+HOSTED_CHECKOUT_ORIGIN = (
+    "https://github.com/thequantumfalcon/causal-continuity-engine"
+)
+HOSTED_CHECKOUT_RESIDUE = (
+    "[core]\n\tsparseCheckout = false\n\tsparseCheckoutCone = false\n"
+    "[index]\n\tsparse = false\n"
+)
+
+
+def _hosted_checkout(
+        repository: Path, *, origin: str = HOSTED_CHECKOUT_ORIGIN) -> Path:
+    """Replay the Git sequence the pinned hosted checkout logged for run 34562475819."""
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", origin], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "--local", "gc.auto", "0"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "sparse-checkout", "disable"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "--local", "--unset-all", "extensions.worktreeConfig"],
+        cwd=repository,
+        check=True,
+    )
+    return repository / ".git" / "config.worktree"
+
+
+@_POSIX_RELEASE_GIT
+def test_release_checker_admits_inert_hosted_checkout_worktree_residue(
+        private_release_tmp):
+    checker = _load_release_script("check_release_tag")
+    repository = private_release_tmp / "repository"
+    residue = _hosted_checkout(repository)
+
+    # Pin the residue itself. A checkout that starts writing a different shape
+    # is a different decision, and the acceptance below must fail rather than
+    # widen to cover it.
+    assert residue.read_text(encoding="utf-8") == HOSTED_CHECKOUT_RESIDUE
+
+    runner = checker.ReleaseGit.checker(
+        root=repository, git_executable="/usr/bin/git")
+    try:
+        assert runner.origin_url == HOSTED_CHECKOUT_ORIGIN
+        # Drive a real Git child, not just construction: admission and the
+        # per-command recheck are both part of the deciding path.
+        assert runner.output(
+            "status", "--porcelain=v1", "--untracked-files=all") == ""
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "extra-key",
+        "duplicate-key",
+        "sparse-checkout-enabled",
+        "sparse-cone-enabled",
+        "index-sparse-enabled",
+        "program",
+        "include",
+        "symlink",
+        "extra-link",
+        "ssh-origin",
+        "uncollected-gc",
+        "activated",
+    ],
+)
+@_POSIX_RELEASE_GIT
+def test_release_checker_refuses_every_other_worktree_configuration(
+        private_release_tmp, defect):
+    checker = _load_release_script("check_release_tag")
+    repository = private_release_tmp / "repository"
+    if defect == "ssh-origin":
+        residue = _hosted_checkout(repository, origin=checker.RELEASE_SSH_ORIGIN)
+    else:
+        residue = _hosted_checkout(repository)
+
+    if defect == "extra-key":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE + "[core]\n\tignoreCase = false\n",
+            encoding="utf-8")
+    elif defect == "duplicate-key":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE + "[index]\n\tsparse = false\n",
+            encoding="utf-8")
+    elif defect == "sparse-checkout-enabled":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE.replace(
+                "sparseCheckout = false", "sparseCheckout = true"),
+            encoding="utf-8")
+    elif defect == "sparse-cone-enabled":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE.replace(
+                "sparseCheckoutCone = false", "sparseCheckoutCone = true"),
+            encoding="utf-8")
+    elif defect == "index-sparse-enabled":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE.replace(
+                "sparse = false", "sparse = true"), encoding="utf-8")
+    elif defect == "program":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE + "[core]\n\tfsmonitor = /tmp/capture-token\n",
+            encoding="utf-8")
+    elif defect == "include":
+        residue.write_text(
+            HOSTED_CHECKOUT_RESIDUE + "[include]\n\tpath = /tmp/capture-token\n",
+            encoding="utf-8")
+    elif defect == "symlink":
+        conforming = repository / ".git" / "elsewhere.worktree"
+        conforming.write_text(HOSTED_CHECKOUT_RESIDUE, encoding="utf-8")
+        residue.unlink()
+        residue.symlink_to(conforming)
+    elif defect == "extra-link":
+        os.link(residue, repository / ".git" / "config.worktree.link")
+    elif defect == "uncollected-gc":
+        subprocess.run(
+            ["git", "config", "--local", "--unset", "gc.auto"],
+            cwd=repository,
+            check=True,
+        )
+    elif defect == "activated":
+        # The residue itself conforms, but the extension that makes Git read it
+        # has been put back: an inert file is only inert while it is inactive.
+        subprocess.run(
+            ["git", "config", "--local", "extensions.worktreeConfig", "true"],
+            cwd=repository,
+            check=True,
+        )
+
+    with pytest.raises(SystemExit, match="per-worktree"):
+        checker.ReleaseGit.checker(
+            root=repository, git_executable="/usr/bin/git")
+
+
+@pytest.mark.parametrize("tamper", ["mutate", "relink", "extra-link", "remove"])
+@_POSIX_RELEASE_GIT
+def test_release_checker_rejects_worktree_residue_changed_after_admission(
+        private_release_tmp, tamper):
+    checker = _load_release_script("check_release_tag")
+    repository = private_release_tmp / "repository"
+    residue = _hosted_checkout(repository)
+    runner = checker.ReleaseGit.checker(
+        root=repository, git_executable="/usr/bin/git")
+    try:
+        if tamper == "mutate":
+            with residue.open("a", encoding="utf-8") as handle:
+                handle.write("[core]\n\tfsmonitor = /tmp/capture-token\n")
+        elif tamper == "relink":
+            # Byte-identical replacement: only the inode changes, so a digest
+            # alone would accept the swap.
+            residue.unlink()
+            residue.write_text(HOSTED_CHECKOUT_RESIDUE, encoding="utf-8")
+        elif tamper == "extra-link":
+            # A second hardlink moves nothing a stat snapshot of the path
+            # records — same device, inode, mode, owner, size and mtime — so
+            # only the link count witnesses it. Admission demanded a single
+            # link; keeping that promise means rechecking it, not just
+            # asserting it once.
+            os.link(residue, repository / ".git" / "post-admission.link")
+        else:
+            residue.unlink()
+        with pytest.raises(SystemExit, match="changed after admission"):
+            runner.output("status", "--porcelain=v1", "--untracked-files=all")
+    finally:
+        runner.close()
+
+
+@_POSIX_RELEASE_GIT
+def test_release_checker_rejects_worktree_residue_appearing_after_admission(
+        private_release_tmp):
+    checker = _load_release_script("check_release_tag")
+    repository = private_release_tmp / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", HOSTED_CHECKOUT_ORIGIN],
+        cwd=repository,
+        check=True,
+    )
+    runner = checker.ReleaseGit.checker(
+        root=repository, git_executable="/usr/bin/git")
+    try:
+        (repository / ".git" / "config.worktree").write_text(
+            HOSTED_CHECKOUT_RESIDUE, encoding="utf-8")
+        with pytest.raises(SystemExit, match="changed after admission"):
+            runner.output("status", "--porcelain=v1", "--untracked-files=all")
+    finally:
+        runner.close()
+
+
+@_POSIX_RELEASE_GIT
+def test_owner_release_profile_still_refuses_inert_worktree_residue(
+        private_release_tmp, monkeypatch):
+    tmp_path = private_release_tmp
+    checker = _load_release_script("check_release_tag")
+    repository = tmp_path / "repository"
+    residue = _hosted_checkout(repository, origin=checker.RELEASE_SSH_ORIGIN)
+    assert residue.read_text(encoding="utf-8") == HOSTED_CHECKOUT_RESIDUE
+    subprocess.run(
+        ["git", "config", "branch.main.remote", "origin"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "branch.main.merge", "refs/heads/main"],
+        cwd=repository,
+        check=True,
+    )
+    signing_key = tmp_path / "signing.pub"
+    allowed_signers = tmp_path / "allowed_signers"
+    known_hosts = tmp_path / "known_hosts"
+    transport_key = tmp_path / "transport.pub"
+    for path in (signing_key, transport_key):
+        path.write_text("ssh-ed25519 Zml4dHVyZQ== fixture\n", encoding="utf-8")
+    for path in (allowed_signers, known_hosts):
+        path.write_text("fixture\n", encoding="utf-8")
+    agent_path = tmp_path / "agent.sock"
+    agent_path.write_text("fixture socket seam\n", encoding="utf-8")
+    monkeypatch.setattr(
+        checker,
+        "_trusted_socket_path",
+        lambda value, *, root: (Path(value), checker._path_snapshot(Path(value))),
+    )
+
+    with pytest.raises(SystemExit, match="per-worktree"):
+        checker.ReleaseGit.owner_profile(
+            root=repository,
+            git_executable="/usr/bin/git",
+            tagger_name="Release Owner",
+            tagger_email="owner@example.invalid",
+            signing_key=os.fspath(signing_key),
+            ssh_keygen_executable="/usr/bin/ssh-keygen",
+            allowed_signers_file=os.fspath(allowed_signers),
+            ssh_executable="/usr/bin/ssh",
+            known_hosts_file=os.fspath(known_hosts),
+            transport_key=os.fspath(transport_key),
+            ssh_auth_sock=os.fspath(agent_path),
+        )
+
+
 @pytest.mark.parametrize(
     ("defect", "diagnostic"),
     [
