@@ -904,7 +904,11 @@ class ReleaseGit:
             raise SystemExit("local Git configuration changed after admission")
         # An inert file admitted once must stay the same file: a replacement
         # carrying identical bytes still changes the inode, and a residue that
-        # appears after admission was never admitted at all.
+        # appears after admission was never admitted at all. The link count is
+        # checked here as well as at admission because `_path_snapshot` does
+        # not record it, so a second hardlink created afterwards leaves every
+        # recorded field identical and would otherwise keep the single-link
+        # guarantee true only for the instant it was first asserted.
         diagnostic = "per-worktree Git configuration changed after admission"
         if self._worktree_config is None:
             if os.path.lexists(self.root / ".git" / "config.worktree"):
@@ -912,12 +916,14 @@ class ReleaseGit:
             return
         worktree_path, worktree_snapshot, worktree_digest = self._worktree_config
         try:
+            worktree_metadata = worktree_path.stat(follow_symlinks=False)
             actual = _path_snapshot(worktree_path)
             worktree_bytes = worktree_path.read_bytes()
         except OSError as exc:
             raise SystemExit(diagnostic) from exc
         if (
-            actual != worktree_snapshot
+            worktree_metadata.st_nlink != 1
+            or actual != worktree_snapshot
             or hashlib.sha256(worktree_bytes).hexdigest() != worktree_digest
         ):
             raise SystemExit(diagnostic)

@@ -1421,7 +1421,7 @@ def test_release_checker_refuses_every_other_worktree_configuration(
             root=repository, git_executable="/usr/bin/git")
 
 
-@pytest.mark.parametrize("tamper", ["mutate", "relink", "remove"])
+@pytest.mark.parametrize("tamper", ["mutate", "relink", "extra-link", "remove"])
 @_POSIX_RELEASE_GIT
 def test_release_checker_rejects_worktree_residue_changed_after_admission(
         private_release_tmp, tamper):
@@ -1439,6 +1439,13 @@ def test_release_checker_rejects_worktree_residue_changed_after_admission(
             # alone would accept the swap.
             residue.unlink()
             residue.write_text(HOSTED_CHECKOUT_RESIDUE, encoding="utf-8")
+        elif tamper == "extra-link":
+            # A second hardlink moves nothing a stat snapshot of the path
+            # records — same device, inode, mode, owner, size and mtime — so
+            # only the link count witnesses it. Admission demanded a single
+            # link; keeping that promise means rechecking it, not just
+            # asserting it once.
+            os.link(residue, repository / ".git" / "post-admission.link")
         else:
             residue.unlink()
         with pytest.raises(SystemExit, match="changed after admission"):
