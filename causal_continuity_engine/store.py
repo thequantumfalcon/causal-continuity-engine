@@ -374,6 +374,20 @@ class Store:
             self._conn.execute("PRAGMA busy_timeout=10000")
             self._lock = threading.RLock()
         except BaseException as initialization_error:
+            # A refused or failed open must not change the database. SQLite
+            # checkpoints a WAL into the main file when its last connection
+            # closes; where the sqlite3 module exposes the switch (Python 3.12
+            # and later) it is turned off for this connection. Python 3.11
+            # cannot, which ADR-114 records as a limit.
+            no_checkpoint = getattr(
+                sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+            try:
+                if no_checkpoint is not None and hasattr(self._conn, "setconfig"):
+                    self._conn.setconfig(no_checkpoint, True)
+            except Exception as cleanup_error:
+                initialization_error.add_note(
+                    "additionally failed to disable checkpoint-on-close: "
+                    f"{cleanup_error!r}")
             try:
                 self._conn.close()
             except Exception as cleanup_error:
