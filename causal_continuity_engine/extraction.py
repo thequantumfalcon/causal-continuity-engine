@@ -28,7 +28,7 @@ from .core import canonical_json, strict_json_loads
 from .ontology import AUTHORITY_RANK, authority_rank
 
 EXTRACTOR_NAME = "cce-deterministic"
-EXTRACTOR_VERSION = "1.2.0"
+EXTRACTOR_VERSION = "1.3.0"
 
 
 @dataclass

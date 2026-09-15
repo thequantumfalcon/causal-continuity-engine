@@ -305,6 +305,20 @@ def test_released_processor_one_zero_store_refuses(tmp_path):
     _assert_refused(database, directory)
 
 
+def test_store_processed_before_the_checkbox_fix_refuses(tmp_path):
+    """cce-processor/1.2.0 marker state, constructed here rather than replayed.
+
+    Extraction stopped recording a task-list checkbox as statement text after
+    1.2.0 stores were written, so such a store can hold "[ ] ..." statements
+    that this processor no longer produces.
+    """
+    directory = _private_dir(tmp_path, "pre-checkbox")
+    database = _ingested(directory)
+    _sql(database,
+         "UPDATE processed_events SET processor_version='cce-processor/1.2.0'")
+    _assert_refused(database, directory)
+
+
 def test_markerless_projection_refuses(tmp_path):
     directory = _private_dir(tmp_path, "markerless")
     database = _ingested(directory)
