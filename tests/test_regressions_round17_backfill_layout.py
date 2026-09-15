@@ -252,3 +252,24 @@ def test_same_origin_https_redirect_remains_usable(backfill):
 
     assert redirected.full_url == "https://api.github.com/repositories/4242"
     assert redirected.get_header("Authorization") == "Bearer secret"
+
+
+def test_backfill_reports_the_nodes_it_created(backfill, monkeypatch, capsys):
+    """The summary counted `report["nodes"]`, a key the ingest report does not
+    have, so it always printed 0 nodes even when statements were extracted."""
+    issue = {
+        "number": 1, "title": "Exporter", "state": "open",
+        "body": "The exporter must write CSV output.",
+        "author_association": "OWNER", "created_at": "2026-07-29T10:00:00Z",
+        "labels": [],
+    }
+    monkeypatch.setattr(
+        backfill, "_paged",
+        lambda path, token, **_kwargs: [issue] if path.endswith("/issues?state=all") else [])
+
+    assert backfill.main([REPOSITORY]) == 0
+
+    summary = next(line for line in capsys.readouterr().out.splitlines()
+                   if "ingested" in line)
+    created = int(summary.split("->")[1].split("node(s)")[0])
+    assert created > 0, summary
