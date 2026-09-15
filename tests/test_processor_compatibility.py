@@ -959,8 +959,10 @@ def test_simulated_processor_bump_refuses_each_other(tmp_path, monkeypatch):
     database = _ingested(directory)
     _assert_admitted(database, directory)
 
+    # Derived, not a literal: a real bump must never collide with the
+    # simulated one.
     monkeypatch.setattr(engine_module, "PROCESSOR_VERSION",
-                        "cce-processor/1.2.0")
+                        f"{PROCESSOR_VERSION}+simulated-bump")
     _assert_refused(database, directory)
 
     monkeypatch.undo()
@@ -977,8 +979,10 @@ def test_append_only_history_admits_under_a_simulated_bump(tmp_path,
         idempotency_key="k-bump", payload={"note": "x"},
         authority="agent_observed")
     store.close()
+    # Derived, not a literal: a real bump must never collide with the
+    # simulated one.
     monkeypatch.setattr(engine_module, "PROCESSOR_VERSION",
-                        "cce-processor/1.2.0")
+                        f"{PROCESSOR_VERSION}+simulated-bump")
     _assert_admitted(database, directory)
 
 

@@ -2242,9 +2242,11 @@ of `nodes` or `edges` and no pre-admission index or schema mutation.
 singleton row was added: every event already carries its own marker and its own
 attributable graph rows, and a singleton would introduce a new schema
 abstraction that the existing tables already make unnecessary. The processor
-version stays `cce-processor/1.1.0` because this change repairs admission and
-production evidence without altering event-derived projection semantics; S1 or
-any later semantic change must bump it.
+version stayed `cce-processor/1.1.0` when this boundary was introduced, because
+it repairs admission and production evidence without altering event-derived
+projection semantics; S1 or any later semantic change must bump it. The
+extraction fix that records a prohibition once did, to `cce-processor/1.2.0`,
+so stores processed by 1.1.0 are refused.
 
 **Compatibility.** Stores processed by v0.1.0–v0.1.3 carry
 `cce-processor/1.0.0` markers and refuse. The committed regression constructs

@@ -28,7 +28,7 @@ from .core import canonical_json, strict_json_loads
 from .ontology import AUTHORITY_RANK, authority_rank
 
 EXTRACTOR_NAME = "cce-deterministic"
-EXTRACTOR_VERSION = "1.1.0"
+EXTRACTOR_VERSION = "1.2.0"
 
 
 @dataclass
@@ -256,6 +256,24 @@ class DeterministicExtractor:
             accepted.append((kind, start, end))
             chosen.append((conf, kind, statement, start, end))
         chosen.sort(key=lambda c: c[3])   # restore document order
+        # A prohibition is a constraint and only a constraint. The requirement
+        # pattern excludes an adjacent "must never", but a modal verb earlier
+        # in the same clause ("X must hold: Y is never dropped") still matched
+        # both patterns and recorded one sentence as two authority nodes. A
+        # requirement is dropped only when an overlapping constraint already
+        # carries every one of its words; one that says more is a different
+        # statement and stays.
+        constraints = [
+            (start, end, f" {normalize_statement(statement)} ")
+            for _, kind, statement, start, end in chosen
+            if kind == "constraint"]
+        chosen = [
+            (conf, kind, statement, start, end)
+            for conf, kind, statement, start, end in chosen
+            if kind != "requirement" or not any(
+                c_start < end and c_end > start
+                and f" {normalize_statement(statement)} " in c_words
+                for c_start, c_end, c_words in constraints)]
         for conf, kind, statement, start, end in chosen:
             crit = _criticality(statement, kind)
             item = Extracted(

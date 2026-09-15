@@ -145,6 +145,40 @@ class TestExtraction:
         tasks = {i.statement: i.meta["done"] for i in r.items if i.kind == "task"}
         assert tasks == {"write the parser": False, "scaffold the repo": True}
 
+    def test_a_prohibition_is_not_also_recorded_as_a_requirement(self):
+        """A modal verb earlier in a prohibiting clause filed it twice.
+
+        The requirement pattern excluded only an adjacent `must never`, so
+        "X must hold: Y is never dropped" became a requirement and a constraint
+        with the same words: one sentence, two authority nodes. Found on real
+        repository history while measuring Resume Packet size.
+        """
+        def items(text, authority="human_intent"):
+            return [(i.kind, i.statement) for i in self.x.extract(
+                text, source_authority=authority).items]
+
+        assert items("The invariant must hold: authority is never silently dropped.") == [
+            ("constraint", "The invariant must hold: authority is never silently dropped")]
+        assert items("Saves must be isolated so they never change another resume.") == [
+            ("constraint", "Saves must be isolated so they never change another resume")]
+        assert items("The exporter must write CSV output and must never drop rows.") == [
+            ("constraint", "The exporter must write CSV output and must never drop rows")]
+        assert items("Acceptance criteria: output must never contain secrets.") == [
+            ("constraint", "Acceptance criteria: output must never contain secrets")]
+        # Demotion runs after selection, so an untrusted source proposes once.
+        assert items("The invariant must hold: authority is never silently dropped.",
+                     "untrusted_content") == [
+            ("claim", "The invariant must hold: authority is never silently dropped")]
+
+        # A requirement carrying words the constraint lacks is a different
+        # statement and is kept.
+        assert items("The exporter must write CSV output. Rows are never dropped.") == [
+            ("requirement", "The exporter must write CSV output"),
+            ("constraint", "Rows are never dropped")]
+        assert [kind for kind, _ in items(
+            "The exporter must write CSV output; it must not drop rows.")] == [
+            "requirement", "constraint"]
+
     def test_normalization_dedup_key(self):
         a = normalize_statement("The API returns JSON.")
         b = normalize_statement("the api returns json")
