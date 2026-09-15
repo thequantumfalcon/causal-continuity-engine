@@ -273,3 +273,31 @@ def test_backfill_reports_the_nodes_it_created(backfill, monkeypatch, capsys):
                    if "ingested" in line)
     created = int(summary.split("->")[1].split("node(s)")[0])
     assert created > 0, summary
+
+
+@pytest.mark.parametrize("suffix", ["\n", "\r", " ", "\t", "\x7f"])
+def test_a_malformed_token_is_refused_without_being_echoed(
+        monkeypatch, capsys, suffix):
+    """A token read from a file with a stray newline made http.client raise
+    `ValueError: Invalid header value b'Bearer <token>\\n'`, printing the
+    whole credential to stderr before any request left the machine."""
+    import socket
+
+    module = _load_example()
+    secret = "ghp_" + "S" * 36
+
+    def refuse_network(*_args, **_kwargs):
+        raise OSError("network is not available to this test")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse_network)
+    monkeypatch.setattr(socket, "create_connection", refuse_network)
+    monkeypatch.setenv("GITHUB_TOKEN", secret + suffix)
+
+    with pytest.raises(SystemExit) as caught:
+        module.main([REPOSITORY])
+
+    captured = capsys.readouterr()
+    assert secret not in str(caught.value.code)
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert "GITHUB_TOKEN" in str(caught.value.code)
