@@ -65,9 +65,9 @@ command are already used by an unrelated published project.
 can read a project's control state directly. Four read-only tools:
 `resume_packet`, `list_assumptions`, `list_invalidations`, `continuity_check`.
 
-The subcommand is included in the 0.1.5 source. Published versions through
-0.1.3 do not include it; 0.1.4 was prepared but never published. The current
-`main` lifecycle hardening has been driven end to end from a built wheel with
+The subcommand first ships in 0.1.6. The published 0.1.0, 0.1.2 and 0.1.3
+packages do not include it; 0.1.4 was prepared but never published, and 0.1.5
+was tagged but never published. The 0.1.6 wheel has been driven end to end with
 the reference MCP SDK; other clients are expected to work over the same
 transport but have not been exercised here.
 

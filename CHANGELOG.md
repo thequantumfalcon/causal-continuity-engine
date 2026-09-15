@@ -9,7 +9,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## 0.1.5 — 2026-09-10
+## 0.1.6 — not yet released
+
+Carries the unpublished 0.1.5 line forward, fixes the release check that
+stopped it, and adds the processor/projection compatibility boundary, two
+extraction fixes, two backfill example fixes, and current development tools.
+
+### Changed
+
+- **Breaking: a database this processor did not produce is refused.** Engine,
+  CLI, and MCP open a store only when its table columns, processing markers,
+  and projection rows match what `cce-processor/1.3.0` produces; ADR-114 lists
+  what the check does not cover. Anything else raises
+  `ProcessorProjectionCompatibilityError` before schema, metadata, signing-key,
+  or secret changes; the CLI exits with status 2 and the MCP server reports a
+  tool error and keeps serving. Stores processed by 0.1.0–0.1.3 or the prepared
+  but unpublished 0.1.4 (`cce-processor/1.0.0`), by the unpublished `v0.1.5`
+  tag (`cce-processor/1.1.0`), and by development builds that wrote
+  `cce-processor/1.2.0` are refused. Recovery is to keep the old database
+  unchanged and re-ingest its retained sources into a new database and
+  project; there is no migration. Unprocessed append-only history, a fully
+  retention-cleared and never-processed history in the pre-0.1.0 `events`
+  layout, and a first open that stopped before its schema was complete still
+  open (ADR-114). Clearing payloads under retention does not exempt a store
+  that an earlier processor version processed.
+- **Development tools are current.** ruff 0.16.7, build 1.6.1, and pip 26.2.1,
+  with the lock regenerated and the pre-commit ruff hook pinned to the same
+  release.
+
+### Fixed
+
+- **The release workflow refused its own hosted checkout.** The pinned
+  checkout action runs `git sparse-checkout disable`, which writes
+  `.git/config.worktree`, and then unsets `extensions.worktreeConfig`, so Git
+  never reads that file. The hosted release check refused per-worktree
+  configuration by its existence alone, so release run 34562475819 stopped
+  before it bound `v0.1.5` to a package version. The hosted check now admits
+  exactly that three-record file, only on the HTTPS origin with `gc.auto` set
+  to `0`; the owner tag helper and any other per-worktree configuration are
+  still refused (ADR-111).
+- **A direct `process_event()` call could leave projection rows with no
+  processing evidence.** The success marker is now written and read back inside
+  the transaction that owns the projection, so a failed or suppressed marker
+  rolls the projection back.
+- **A prohibition could be recorded twice, as a requirement and a
+  constraint.** A clause such as "the invariant must hold: authority is never
+  silently dropped" matched both patterns and produced two authority nodes with
+  the same words. A requirement is now dropped when an overlapping constraint
+  already contains its full normalized text.
+- **A checklist marker leaked into extracted statements.** A checklist line
+  that also matched a modal pattern recorded "[ ] ..." or "[x] ..." as the
+  requirement or constraint text. The checkbox is now stripped like other list
+  markup. With the prohibition fix, extraction is versioned as extractor 1.3.0
+  and processor `cce-processor/1.3.0`.
+- **The backfill example could print a malformed token.** A `GITHUB_TOKEN`
+  containing a newline or carriage return made the HTTP client quote the whole
+  Authorization header in its error. The example now refuses a token
+  containing whitespace or control characters before any request, without
+  showing its value.
+- **The backfill example always reported 0 nodes.** It counted a key the ingest
+  report does not have; it now counts the nodes each ingest created.
+
+## 0.1.5 — tagged 2026-09-10, never published
+
+`v0.1.5` was tagged and never published: release run 34562475819 stopped on
+hosted-checkout worktree residue before it bound the tag to a package version,
+for the reason recorded under 0.1.6 Fixed. The tag is left in place so that
+failure stays attributable, and the version was incremented rather than reused.
+Its changes are carried forward into 0.1.6.
 
 Closes the trust and release-boundary findings discovered during the post-0.1.4
 audit, with each defect pinned against the 0.1.4 source baseline.

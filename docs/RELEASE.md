@@ -45,10 +45,12 @@ which maintainer signed.
    changes.`, remove stale no-tag/not-yet-released language, and give
    `CITATION.cff` the same version and `date-released`. `pyproject.toml`
    derives distribution metadata from the package attribute; do not
-   reintroduce another package-version source.
+   reintroduce another package-version source. In the same commit, switch the
+   current-metadata test in `tests/test_release_controls.py` to its tag-ready
+   expectation with that version and date; the test gate fails otherwise.
 2. Regenerate `docs/CAPABILITIES.md` only with
    `python -m causal_continuity_engine.capabilities --write`.
-3. Run `python .github/scripts/check_release_metadata.py --release v0.1.5`,
+3. Run `python .github/scripts/check_release_metadata.py --release v0.1.6`,
    then `just setup` and `just release` from a clean checkout.
 4. Drive the MCP server by hand from the built wheel with a real client, and
    read the responses. Install the wheel into an empty virtual environment,
@@ -170,7 +172,7 @@ ambient token or `PATH` entry to choose the credential source:
     /opt/homebrew/bin/gh auth token)"
   /usr/bin/env -i GH_TOKEN="$release_token" LANG=C LC_ALL=C \
     /opt/homebrew/bin/python3 -I \
-    .github/scripts/prepare_release_tag.py v0.1.5 --push \
+    .github/scripts/prepare_release_tag.py v0.1.6 --push \
     --git-executable /usr/bin/git \
     --tagger-name "Thomas Albrecht" \
     --tagger-email "thequantumfalcon@users.noreply.github.com" \
@@ -365,7 +367,7 @@ ruleset immediately even if deletion fails, and read it back:
 ```bash
 REPO=thequantumfalcon/causal-continuity-engine
 RULESET=20590968
-TAG=v0.1.5
+TAG=v0.1.6
 ENDPOINT="repos/$REPO/rulesets/$RULESET"
 
 gh api "$ENDPOINT" --jq '{id,name,target,enforcement,bypass_actors,rules}'
