@@ -1004,6 +1004,422 @@ def _assert_statement_identity_compatible_path(path: str | Path) -> None:
             _IDENTITY_UNCLASSIFIABLE) from None
 
 
+class ProcessorProjectionCompatibilityError(ValueError):
+    """A stored projection was not produced by this processor's semantics.
+
+    A ValueError subclass so callers that already bound operator errors treat
+    it as one sanitized refusal rather than an unhandled crash.
+    """
+
+
+# The producer-consumed marker declaration, bound exactly: ordered columns,
+# declared types, NOT NULL flags and composite-PK ordinals. Store writes this
+# table positionally, so an equivalent-looking but reordered or resized layout
+# is not the same table and cannot certify anything.
+_MARKER_DECL = (
+    ("event_id", "TEXT", 1, None, 1),
+    ("processor_version", "TEXT", 1, None, 2),
+    ("processed_at", "TEXT", 1, None, 0),
+    ("status", "TEXT", 1, None, 0),
+    ("error", "TEXT", 0, None, 0),
+)
+_EVENT_COLUMNS = ("event_id", "tenant_id", "project_id")
+# The complete event-attributed projection witness, read off the real schema:
+# `nodes.event_id` and `edges.event_id` are the only per-event attributions.
+# `packet_watermark.last_event_seq` is a scalar high-water mark and cannot
+# witness or refute an individual event, so it is deliberately not used here.
+_NODE_COLUMNS = ("event_id", "tenant_id", "project_id", "node_id",
+                 "entity_type", "tx_to")
+_EDGE_COLUMNS = ("event_id", "tenant_id", "project_id")
+_TERMINAL_STATUSES = ("ok", "quarantined")
+_PROJECTION_REFUSAL = (
+    "stored projection was not produced by this processor; preserve this "
+    "database unchanged and re-ingest its retained authoritative sources "
+    "into a new database and project"
+)
+_COMPAT_ERRORS = (OSError, ValueError, sqlite3.Error)
+
+
+# Complete producer-consumed declarations, read off the installed schema:
+# (name, declared type, NOT NULL, default, primary-key ordinal). A subset test
+# accepts a compatibility-shaped table that the producer never wrote, so the
+# whole declaration is bound.
+# Finite set of `events` layouts this Store actually produces, captured from
+# it. (name, declared type, NOT NULL, default, PK ordinal, hidden) via
+# table_xinfo, so a hidden or generated column cannot masquerade as absent.
+#
+# Store's migration does two different things, and both outputs are real:
+#   * it ADDs a missing `stored_payload_digest` as a NULLABLE column, appended
+#     after `entry_hash`;
+#   * it additionally REBUILDS the table into canonical column order, but only
+#     when it detects an inline global UNIQUE on `idempotency_key`.
+# Collapsing those two would declare the no-inline-UNIQUE upgrade path
+# unsupported, which is exactly the regression P0-v6 shipped.
+_EVENTS_FRESH_CURRENT = (
+    ("event_id", "TEXT", 0, None, 1, 0), ("tenant_id", "TEXT", 1, None, 0, 0),
+    ("project_id", "TEXT", 1, None, 0, 0),
+    ("source_type", "TEXT", 1, None, 0, 0),
+    ("source_id", "TEXT", 0, None, 0, 0),
+    ("idempotency_key", "TEXT", 1, None, 0, 0),
+    ("observed_at", "TEXT", 1, None, 0, 0),
+    ("recorded_at", "TEXT", 1, None, 0, 0),
+    ("valid_from", "TEXT", 0, None, 0, 0),
+    ("valid_to", "TEXT", 0, None, 0, 0),
+    ("actor_type", "TEXT", 0, None, 0, 0),
+    ("actor_id", "TEXT", 0, None, 0, 0),
+    ("authority", "TEXT", 1, None, 0, 0),
+    ("sensitivity", "TEXT", 1, "'internal'", 0, 0),
+    ("capture_mode", "TEXT", 1, "'full'", 0, 0),
+    ("payload_digest", "TEXT", 1, None, 0, 0),
+    ("stored_payload_digest", "TEXT", 1, None, 0, 0),
+    ("payload", "TEXT", 0, None, 0, 0),
+    ("schema_version", "TEXT", 1, None, 0, 0),
+    ("seq", "INTEGER", 0, None, 0, 0), ("prev_hash", "TEXT", 0, None, 0, 0),
+    ("entry_hash", "TEXT", 0, None, 0, 0),
+)
+_NULLABLE_DIGEST = ("stored_payload_digest", "TEXT", 0, None, 0, 0)
+# Rebuild output: canonical order, digest nullable in slot 16.
+_EVENTS_REBUILT = tuple(
+    _NULLABLE_DIGEST if column[0] == "stored_payload_digest" else column
+    for column in _EVENTS_FRESH_CURRENT)
+# Add-column output: legacy order, nullable digest appended last.
+_EVENTS_ADDCOL = tuple(
+    column for column in _EVENTS_FRESH_CURRENT
+    if column[0] != "stored_payload_digest") + (_NULLABLE_DIGEST,)
+# Pre-migration input: no digest column at all.
+_EVENTS_RAW_LEGACY = tuple(
+    column for column in _EVENTS_FRESH_CURRENT
+    if column[0] != "stored_payload_digest")
+_EVENTS_MIGRATED = (_EVENTS_REBUILT, _EVENTS_ADDCOL)
+_EVENTS_SUPPORTED = (_EVENTS_FRESH_CURRENT,) + _EVENTS_MIGRATED
+_NODES_DECL = (
+    ("row_id", "INTEGER", 0, None, 1), ("node_id", "TEXT", 1, None, 0),
+    ("version", "INTEGER", 1, None, 0), ("entity_type", "TEXT", 1, None, 0),
+    ("tenant_id", "TEXT", 1, None, 0), ("project_id", "TEXT", 1, None, 0),
+    ("status", "TEXT", 0, None, 0), ("criticality", "TEXT", 0, None, 0),
+    ("authority", "TEXT", 0, None, 0), ("confidence", "REAL", 0, None, 0),
+    ("scope", "TEXT", 0, None, 0), ("data", "TEXT", 1, None, 0),
+    ("valid_from", "TEXT", 0, None, 0), ("valid_to", "TEXT", 0, None, 0),
+    ("tx_from", "TEXT", 1, None, 0), ("tx_to", "TEXT", 0, None, 0),
+    ("event_id", "TEXT", 0, None, 0), ("extractor", "TEXT", 0, None, 0),
+    ("extractor_version", "TEXT", 0, None, 0),
+)
+_EDGES_DECL = (
+    ("row_id", "INTEGER", 0, None, 1), ("edge_id", "TEXT", 1, None, 0),
+    ("version", "INTEGER", 1, None, 0), ("edge_type", "TEXT", 1, None, 0),
+    ("src_id", "TEXT", 1, None, 0), ("dst_id", "TEXT", 1, None, 0),
+    ("tenant_id", "TEXT", 1, None, 0), ("project_id", "TEXT", 1, None, 0),
+    ("strength", "REAL", 1, "1.0", 0), ("data", "TEXT", 0, None, 0),
+    ("valid_from", "TEXT", 0, None, 0), ("valid_to", "TEXT", 0, None, 0),
+    ("tx_from", "TEXT", 1, None, 0), ("tx_to", "TEXT", 0, None, 0),
+    ("event_id", "TEXT", 0, None, 0),
+)
+# CCE-owned processor/projection objects. If `events` is absent, none of these
+# may remain: projection state without its canonical log is unclassifiable.
+_CCE_PROJECTION_OBJECTS = ("processed_events", "nodes", "edges")
+
+
+def _declaration(connection, table):
+    """Visible declaration, refusing any hidden or generated column.
+
+    `PRAGMA table_info` omits generated columns, so a table carrying one would
+    otherwise match a declaration the producer never wrote.
+    """
+    rows = connection.execute(f"PRAGMA table_xinfo({table})").fetchall()
+    if any(row[6] for row in rows):
+        _refuse_projection()
+    return tuple(
+        (row[1], (row[2] or "").upper(), row[3], row[4], row[5])
+        for row in rows)
+
+
+def _x_declaration(connection, table):
+    """Full declaration including hidden/generated columns."""
+    return tuple(
+        (row[1], (row[2] or "").upper(), row[3], row[4], row[5], row[6])
+        for row in connection.execute(f"PRAGMA table_xinfo({table})"))
+
+
+def _census(connection):
+    """Reserved object names resolved case-insensitively.
+
+    SQLite resolves object names case-insensitively but `sqlite_master` stores
+    the declared spelling, so a case-sensitive membership test misses a store
+    whose canonical tables are spelled EVENTS/NODES. Canonical spelling and
+    object type are still required: an alias or a view is not the table the
+    producer wrote.
+    """
+    seen = {}
+    for name, kind in connection.execute(
+            "SELECT name, type FROM sqlite_master"):
+        lowered = (name or "").lower()
+        if lowered in {"events", "processed_events", "nodes", "edges"}:
+            seen.setdefault(lowered, []).append((name, kind))
+    return seen
+
+
+def _require_canonical(seen, lowered):
+    entries = seen.get(lowered) or []
+    if not entries:
+        return False
+    for name, kind in entries:
+        if name != lowered or kind != "table":
+            _refuse_projection()
+    return True
+
+
+def _refuse_projection() -> None:
+    raise ProcessorProjectionCompatibilityError(_PROJECTION_REFUSAL)
+
+
+def _assert_processor_projection_compatible(connection) -> None:
+    """Refuse a database whose per-event processing evidence is not exactly
+    what this processor produces.
+
+    Classification uses a fixed number of whole-table queries feeding
+    linear-sized maps; nothing rescans nodes or edges per event. The maps
+    are proportional to markers/nodes/edges, not bounded. The refusal is
+    fixed text and exposes no stored content.
+    """
+    started = False
+    try:
+        # One coherent read snapshot: every classification read observes the
+        # same SQLite state, so an interleaved writer cannot have one query
+        # see a marker and another miss its canonical node. It does NOT fence
+        # a writer that commits after admission returns.
+        if not connection.in_transaction:
+            connection.execute("BEGIN")
+            started = True
+
+        seen = _census(connection)
+        has_events = _require_canonical(seen, "events")
+        if not has_events:
+            # Projection or processor residue without its canonical log is
+            # unclassifiable, so it is refused rather than initialized over.
+            for lowered in _CCE_PROJECTION_OBJECTS:
+                if seen.get(lowered):
+                    _require_canonical(seen, lowered)
+                    _refuse_projection()
+            # Without canonical `events`, initialization is allowed only when
+            # SQLite exposes no reachable schema object at all. The reserved
+            # `sqlite_` prefix is a namespace property, not evidence that
+            # SQLite created the object: `PRAGMA writable_schema` can rename
+            # an ordinary populated table into that namespace, and its rows
+            # stay queryable afterwards. Counting every row -- with no
+            # prefix inference and no internal-name allowlist -- is what
+            # keeps a fresh schema from being installed beside retained
+            # history in one file.
+            #
+            # This establishes only that no reachable schema object exists
+            # before initialization. It does not establish erased file pages,
+            # default header pragmas, WAL state, rollback-journal state, or
+            # physical-byte virginity.
+            schema_objects = connection.execute(
+                "SELECT COUNT(*) FROM main.sqlite_schema").fetchone()[0]
+            if schema_objects:
+                _refuse_projection()
+            return
+
+        events_layout = _x_declaration(connection, "events")
+        if events_layout not in _EVENTS_SUPPORTED + (_EVENTS_RAW_LEGACY,):
+            _refuse_projection()
+        duplicate_events = connection.execute(
+            "SELECT COUNT(*) FROM (SELECT event_id FROM events"
+            " GROUP BY event_id HAVING COUNT(*) > 1)").fetchone()[0]
+        if duplicate_events:
+            _refuse_projection()
+
+        has_markers = _require_canonical(seen, "processed_events")
+        if (has_markers and _declaration(connection, "processed_events")
+                != _MARKER_DECL):
+            _refuse_projection()
+        has_nodes = _require_canonical(seen, "nodes")
+        has_edges = _require_canonical(seen, "edges")
+        if has_nodes and _declaration(connection, "nodes") != _NODES_DECL:
+            _refuse_projection()
+        if has_edges and _declaration(connection, "edges") != _EDGES_DECL:
+            _refuse_projection()
+        graph_tables = (("nodes", has_nodes), ("edges", has_edges))
+        if not (has_markers and has_nodes and has_edges):
+            # Store and Graph install these tables one statement at a time, so
+            # an interrupted or concurrent first open can observe them part
+            # way. A partial set is admissible only when nothing was processed:
+            # no marker and no event-attributed graph row. Store and Graph then
+            # complete the installation.
+            if has_markers and connection.execute(
+                    "SELECT COUNT(*) FROM processed_events").fetchone()[0]:
+                _refuse_projection()
+            for table, present in graph_tables:
+                if present and connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                        " WHERE event_id IS NOT NULL").fetchone()[0]:
+                    _refuse_projection()
+
+        if events_layout == _EVENTS_RAW_LEGACY:
+            # Store migrates this layout but does NOT backfill
+            # `stored_payload_digest`, so a row whose payload is still
+            # retained would migrate into a state that cannot authenticate
+            # its own bytes and would refuse itself on the next open. A
+            # retention-cleared row has no payload left to authenticate, so
+            # it upgrades safely: the deciding predicate is the payload, not
+            # the row count (SEC-006, ADR-063).
+            retained = connection.execute(
+                "SELECT COUNT(*) FROM events"
+                " WHERE payload IS NOT NULL").fetchone()[0]
+            if retained:
+                _refuse_projection()
+            if has_markers and connection.execute(
+                    "SELECT COUNT(*) FROM processed_events").fetchone()[0]:
+                _refuse_projection()
+            for table, present in graph_tables:
+                if present and connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                        " WHERE event_id IS NOT NULL").fetchone()[0]:
+                    _refuse_projection()
+            # Fall through: an unmarked, unprojected history is classified by
+            # the ordinary per-event rules rather than short-circuited here.
+        elif events_layout in _EVENTS_MIGRATED:
+            # Migration recreates the digest column nullable. Only a row that
+            # still has payload bytes needs one; a cleared payload legitimately
+            # carries neither. Whether a non-NULL digest actually authenticates
+            # its payload is deferred.
+            unauthenticated = connection.execute(
+                "SELECT COUNT(*) FROM events"
+                " WHERE stored_payload_digest IS NULL"
+                " AND payload IS NOT NULL").fetchone()[0]
+            if unauthenticated:
+                _refuse_projection()
+
+        markers: dict[str, tuple[int, int, int]] = {}
+        if has_markers:
+            orphan_markers = connection.execute(
+                "SELECT COUNT(*) FROM processed_events AS p WHERE NOT EXISTS ("
+                " SELECT 1 FROM events AS e WHERE e.event_id = p.event_id)"
+            ).fetchone()[0]
+            if orphan_markers:
+                _refuse_projection()
+            markers = {
+                row[0]: (row[1], row[2], row[3])
+                for row in connection.execute(
+                    "SELECT event_id,"
+                    " SUM(CASE WHEN processor_version = ? AND status = 'ok'"
+                    "          THEN 1 ELSE 0 END),"
+                    " SUM(CASE WHEN processor_version = ? AND status ="
+                    "          'quarantined' THEN 1 ELSE 0 END),"
+                    " COUNT(*)"
+                    " FROM processed_events GROUP BY event_id",
+                    (PROCESSOR_VERSION, PROCESSOR_VERSION))
+            }
+
+        attributed_nodes: dict[str, int] = {}
+        live_event_nodes: dict[str, int] = {}
+        edge_witness: dict[str, int] = {}
+        for table, present in graph_tables:
+            if not present:
+                continue
+            unscoped = connection.execute(
+                f"SELECT COUNT(*) FROM {table} AS g"
+                " WHERE g.event_id IS NOT NULL AND NOT EXISTS ("
+                " SELECT 1 FROM events AS e WHERE e.event_id = g.event_id"
+                " AND e.tenant_id = g.tenant_id"
+                " AND e.project_id = g.project_id)").fetchone()[0]
+            if unscoped:
+                _refuse_projection()
+        if has_nodes:
+            attributed_nodes = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    "SELECT event_id, COUNT(*) FROM nodes"
+                    " WHERE event_id IS NOT NULL GROUP BY event_id")
+            }
+            # The canonical event node is identified by its own identity, not
+            # by the event its current row is attributed to: a library call
+            # that versions an event node (a correction, a quarantine or an
+            # invalidation) writes the new row without an event attribution.
+            live_event_nodes = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    "SELECT n.node_id, COUNT(*) FROM nodes AS n"
+                    " JOIN events AS e ON e.event_id = n.node_id"
+                    " AND e.tenant_id = n.tenant_id"
+                    " AND e.project_id = n.project_id"
+                    " WHERE n.entity_type = 'event' AND n.tx_to IS NULL"
+                    " GROUP BY n.node_id")
+            }
+        if has_edges:
+            edge_witness = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    "SELECT event_id, COUNT(*) FROM edges"
+                    " WHERE event_id IS NOT NULL GROUP BY event_id")
+            }
+
+        event_ids = [row[0] for row in connection.execute(
+            "SELECT event_id FROM events")]
+    except ProcessorProjectionCompatibilityError:
+        raise
+    except _COMPAT_ERRORS:
+        raise ProcessorProjectionCompatibilityError(
+            _PROJECTION_REFUSAL) from None
+    finally:
+        if started and connection.in_transaction:
+            connection.rollback()
+
+    for event_id in event_ids:
+        current_ok, current_quarantined, total = markers.get(event_id,
+                                                             (0, 0, 0))
+        attributed = (attributed_nodes.get(event_id, 0)
+                      + edge_witness.get(event_id, 0))
+        if total == 0:
+            # Append-only history: legitimate only when nothing was projected.
+            if attributed:
+                _refuse_projection()
+            continue
+        if total != 1 or (current_ok + current_quarantined) != 1:
+            _refuse_projection()
+        if current_ok and live_event_nodes.get(event_id, 0) != 1:
+            _refuse_projection()
+        if current_quarantined and attributed:
+            _refuse_projection()
+
+
+def _require_persisted_marker(store, event_id, status, error) -> None:
+    """The marker this processor just wrote must be exactly what persisted."""
+    try:
+        rows = store._conn.execute(
+            "SELECT processor_version, status, error FROM processed_events"
+            " WHERE event_id = ?", (event_id,)).fetchall()
+    except sqlite3.Error:
+        raise ProcessorProjectionCompatibilityError(
+            _PROJECTION_REFUSAL) from None
+    if [tuple(row) for row in rows] != [(PROCESSOR_VERSION, status, error)]:
+        raise ProcessorProjectionCompatibilityError(_PROJECTION_REFUSAL)
+
+
+def _assert_processor_projection_compatible_path(path) -> None:
+    """Read-only preflight, before Store opens or installs anything."""
+    raw_path = str(path)
+    if raw_path == ":memory:":
+        return
+    try:
+        resolved = Path(raw_path).resolve()
+        if not resolved.exists() or resolved.stat().st_size == 0:
+            return
+        has_wal = Path(str(resolved) + "-wal").exists()
+        query = "?mode=ro" if has_wal else "?mode=ro&immutable=1"
+        connection = sqlite3.connect(resolved.as_uri() + query, uri=True)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            _assert_processor_projection_compatible(connection)
+        finally:
+            connection.close()
+    except ProcessorProjectionCompatibilityError:
+        raise
+    except _COMPAT_ERRORS:
+        raise ProcessorProjectionCompatibilityError(
+            _PROJECTION_REFUSAL) from None
+
+
 class Engine:
     def __init__(self, path=":memory:", *, tenant_id: str = "ten_local",
                  signer: Signer | None = None, tenant_max_level: int = 3,
@@ -1021,8 +1437,15 @@ class Engine:
         # falsey; truthiness is not an interface or an authorization signal.
         self.signer = signer
         _assert_statement_identity_compatible_path(path)
-        self.store = Store(
-            path, _pre_schema_check=_assert_statement_identity_compatible)
+        _assert_processor_projection_compatible_path(path)
+
+        def _pre_schema(connection):
+            # Re-checked on the connection Store will actually use, so a path
+            # replaced after the preflight cannot reach schema installation.
+            _assert_statement_identity_compatible(connection)
+            _assert_processor_projection_compatible(connection)
+
+        self.store = Store(path, _pre_schema_check=_pre_schema)
         try:
             self._initialize_components_and_schema(
                 tenant_max_level=tenant_max_level, workdir=workdir)
@@ -1582,12 +2005,9 @@ class Engine:
             # failure may quarantine the event, but must not leave half of
             # its nodes, edges, invalidations, or audits visible.
             with self.store.transaction():
+                # process_event() is the canonical producer of the success
+                # marker and writes it inside this same transaction.
                 report = self.process_event(event)
-                # The success marker is part of the projection commit. If it
-                # cannot be written, every node/edge/audit mutation rolls
-                # back and the outer failure path records quarantine alone.
-                self.store.mark_processed(
-                    event["event_id"], PROCESSOR_VERSION, "ok")
         except Exception as exc:  # quarantine and preserve replayability (ADR-036)
             self.store.mark_processed(event["event_id"], PROCESSOR_VERSION,
                                       "quarantined", repr(exc))
@@ -1604,7 +2024,23 @@ class Engine:
         # guarantee as ingest(). When ingest already owns a transaction this
         # becomes a nested savepoint, so both entry paths remain atomic.
         with self.store.transaction():
-            return self._process_event(event, envelope)
+            report = self._process_event(event, envelope)
+            # The success marker is part of the projection commit, not a
+            # caller's responsibility. Writing it here makes "this projection
+            # was produced by this processor" canonical evidence: a direct
+            # public call can no longer leave projection rows behind with no
+            # marker, and a projection failure rolls the marker back with it
+            # (ADR-114).
+            self.store.mark_processed(
+                event["event_id"], PROCESSOR_VERSION, "ok")
+            # Writing the marker is not the same as persisting it: a trigger
+            # can suppress or rewrite the row and leave a projection with no
+            # evidence. Read it back inside the transaction that owns the
+            # projection, so a missing or altered marker rolls the projection
+            # back instead of committing unattributable state.
+            _require_persisted_marker(
+                self.store, event["event_id"], "ok", None)
+            return report
 
     def _process_event(self, event: dict, envelope: dict | None = None) -> dict:
         """Project one canonical stored event inside an owned transaction."""
@@ -4470,8 +4906,6 @@ class Engine:
                     fresh.process_event(fresh.store.get_event(
                         event["event_id"], tenant_id=self.tenant_id,
                         project_id=project_id))
-                    fresh.store.mark_processed(
-                        event["event_id"], PROCESSOR_VERSION, "ok")
             except Exception as exc:
                 fresh.store.mark_processed(
                     event["event_id"], PROCESSOR_VERSION,

@@ -32,7 +32,11 @@ from .core import (
     validate_public_identifier,
     validate_repository_name,
 )
-from .engine import Engine, _assert_statement_identity_compatible_path
+from .engine import (
+    Engine,
+    _assert_processor_projection_compatible_path,
+    _assert_statement_identity_compatible_path,
+)
 from .github import SUBSCRIBED_EVENTS, WebhookError
 from .ontology import (
     ASSUMPTION_STATES,
@@ -602,6 +606,11 @@ def _engine(args) -> tuple[Engine, dict]:
     # A legacy-identity project is refused before compatibility handling can
     # rewrite metadata or provision runtime secrets (ADR-106).
     _assert_statement_identity_compatible_path(database_path)
+    # Refused before legacy signing-key migration, runtime-secret
+    # provisioning, or metadata replacement can touch the project. The refusal
+    # is a ValueError: `main` reports it as exit status 2, and the MCP server,
+    # which shares this opener, reports it as a tool error and keeps serving.
+    _assert_processor_projection_compatible_path(database_path)
     meta = _migrate_legacy_signing_key(cce_dir, meta_path, meta)
     meta = _validate_metadata(meta, allow_legacy=True)
     key_path = _secret_path(cce_dir, meta["signing_key_file"])

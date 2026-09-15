@@ -2170,3 +2170,120 @@ resource abuse on the disposable runner, or remove the publisher jobs'
 documented runner-image and service trust. The cross-runner structural check
 does not repeat raw ZIP/DEFLATE and gzip recompression identity; the producer's
 two builds establish that narrower property only within its resolved runtime.
+
+## ADR-114 — A projection is refused unless this processor produced it
+
+**Decision.** Durable projection state is admitted only when the database has
+a shape this processor produces and per-event evidence shows this processor's
+semantics produced its projection. `process_event()` becomes the sole producer
+of the successful marker: it writes the current-version `ok` row inside the
+transaction that owns the projection and reads it back before that transaction
+can commit, so `ingest` and `rebuild_projection` no longer duplicate that
+write, a direct public call can no longer leave projection rows with no
+marker, and a trigger that suppresses or rewrites the marker rolls the
+projection back. Admission runs twice — a read-only path preflight before the
+CLI touches metadata, signing keys or runtime secrets, and again on the
+connection `Store` will actually use, before journal selection or schema
+installation. Each run classifies one coherent read snapshot: the checker opens
+and rolls back its own read transaction and leaves a caller-owned transaction
+untouched.
+
+Declarations: the reserved names `events`, `processed_events`, `nodes` and
+`edges` are matched case-insensitively and must be tables with their canonical
+spelling; a view, alias or case variant refuses. `processed_events`, `nodes`
+and `edges` are bound to their complete declarations — ordered columns,
+declared types, NOT NULL flags, defaults and primary-key ordinals, with no
+hidden or generated column — because `Store` writes them positionally. `events` must match one of the finite layouts
+`Store` produces, read through `table_xinfo` so a hidden or generated column
+cannot pass as absent: the fresh current layout, the rebuilt migration output
+(canonical order with a nullable `stored_payload_digest`), the add-column
+migration output (legacy order with the nullable digest appended), or the raw
+pre-migration legacy layout. A duplicated `event_id` refuses. `Store` and
+`Graph` install `processed_events`, `nodes` and `edges` one statement at a
+time, so an interrupted or concurrent first open can observe them part way: a
+missing or partial set is admitted only when no marker and no event-attributed
+graph row exists, and installation then completes.
+
+Legacy and migrated history: a raw legacy `events` table admits only when no
+row still retains a payload, no processing marker exists and no node or edge
+row is event-attributed; per-event classification then proceeds as usual and
+`Store` migrates it. A retention-cleared legacy history therefore upgrades,
+while a retained payload, which migration cannot give an immutable commitment,
+refuses before migration. In a migrated layout only a row with a retained
+payload and a NULL `stored_payload_digest` refuses; a cleared payload
+legitimately carries neither.
+
+No canonical log: without a canonical `events` table, any remaining
+`processed_events`, `nodes` or `edges` object refuses, and initialization
+proceeds only when `main.sqlite_schema` has no rows at all. The `sqlite_` prefix
+is not evidence that SQLite created an object: `PRAGMA writable_schema` can
+rename a populated table into that namespace, and a retained `sqlite_sequence`
+also means the file is not schema-virgin.
+
+Per event: zero markers with zero event-attributed graph rows is legitimate
+append-only history and admits; exactly one current-version `ok` marker
+requires exactly one live canonical event node (`node_id = events.event_id`,
+`entity_type = "event"`, same tenant and project, `tx_to IS NULL`); exactly one
+current-version `quarantined` marker requires zero event-attributed node and
+edge rows. Every marker must resolve to an existing event, and every non-null
+`nodes.event_id` and `edges.event_id` must resolve to an event in the identical
+tenant and project, historical rows included. The canonical event node is
+counted by its own identity, so a later version written by a correction,
+quarantine or invalidation, which carries no event attribution, still counts. A
+marker with no graph schema, an old or mixed marker set, a malformed status, an
+orphan marker, a markerless projection, an `ok` without its canonical event
+node, a projected quarantine, or an orphan or cross-scope graph row refuses the
+entire database. One bad tenant or project refuses globally; a healthy project
+cannot hide it. Classification uses a fixed number of whole-table queries
+feeding maps proportional to markers, nodes and edges, with no per-event rescan
+of `nodes` or `edges` and no pre-admission index or schema mutation.
+
+**Rationale.** Complete per-event evidence is sufficient, so no store-level
+singleton row was added: every event already carries its own marker and its own
+attributable graph rows, and a singleton would introduce a new schema
+abstraction that the existing tables already make unnecessary. The processor
+version stays `cce-processor/1.1.0` because this change repairs admission and
+production evidence without altering event-derived projection semantics; S1 or
+any later semantic change must bump it.
+
+**Compatibility.** Stores processed by v0.1.0–v0.1.3 carry
+`cce-processor/1.0.0` markers and refuse. The committed regression constructs
+that marker state with the current producer rather than replaying a released
+binary; a store written by the published 0.1.3 wheel was checked against this
+boundary separately and refused without changing its main database, WAL,
+logical content or directory entries. Normal ingest histories written by this
+processor admit, as do genuinely unprocessed append-only history (including a
+bare `Store` database with no graph tables), retention-cleared legacy history,
+and an absent, empty or schema-free file. Projections written by a direct
+public `process_event()` before this change carry no marker and therefore
+refuse; that break is deliberate and is the defect being closed.
+
+**Recovery.** Preserve the old database unchanged and re-ingest its retained
+authoritative sources into a distinct new database and project. There is no
+migration, write-back, export, or lossless recovery, and recovery depends on
+payloads the retention policy has not cleared.
+
+**Limit.** Markers are mutable structural provenance, not cryptographic proof
+of the executable that produced a projection. Two binaries sharing a version
+are indistinguishable, and a privileged owner can forge SQLite state. A
+pre-boundary or concurrently running older binary is not fenced from opening a
+newer database, so cross-version operator discipline is still required.
+Inspecting a committed WAL may create or update transient shared-memory
+sidecar state, so refusal preserves the main database, the WAL and logical
+state rather than whole-filesystem byte identity. Where the `sqlite3` module
+does not expose `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` (Python 3.11, or a build
+without it), a refusal by the connection check can checkpoint a committed WAL
+into the main database; otherwise that is prevented. Without a WAL the path
+preflight opens the file immutably and does not consult a rollback journal; a
+hot rollback journal beside a non-WAL database has not been tested. The schema
+census
+establishes only that no reachable schema object exists before initialization;
+it does not establish erased file pages, header pragmas, or WAL or
+rollback-journal state. Declaration binding covers columns, not triggers,
+indexes or collations, and whether a non-NULL `stored_payload_digest` actually
+authenticates its payload is not checked here. The coherent read snapshot does
+not fence a writer that commits after admission returns, and the `quarantined`
+marker written when processing fails is not read back. The check does not
+prove arbitrary database correctness, and it does not version
+packet-composition semantics: a future change there needs its own
+control-basis decision.
