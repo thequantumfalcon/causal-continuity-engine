@@ -419,8 +419,11 @@ def _boundary_has_mark_or_zwj_continuation(text: str, index: int) -> bool:
         index += 1
     return False
 
-# Markdown that decorates a line rather than forming part of the statement.
-_LEADING_MARKUP = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|\|\s*)+")
+# Markdown that decorates a line rather than forming part of the statement,
+# including a task-list checkbox: a checklist line that also matches a modal
+# pattern otherwise recorded "[ ] ..." as the statement.
+_LEADING_MARKUP = re.compile(
+    r"^(?:[-*+]\s+|\d+[.)]\s+|#{1,6}\s+|\|\s*|\[[ xX]\]\s+)+")
 
 
 def _prose_only(text: str) -> str:

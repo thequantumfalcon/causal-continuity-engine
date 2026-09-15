@@ -179,6 +179,30 @@ class TestExtraction:
             "The exporter must write CSV output; it must not drop rows.")] == [
             "requirement", "constraint"]
 
+    def test_a_checkbox_is_not_part_of_an_extracted_statement(self):
+        """`_clean` stripped list bullets but not the checkbox, so a checklist
+        line that also matched a modal pattern recorded "[ ] ..." as the
+        statement of a constraint or requirement.
+        """
+        def items(text):
+            return [(i.kind, i.statement) for i in self.x.extract(
+                text, source_authority="human_intent").items]
+
+        for text, kind, statement in (
+                ("- [ ] Late saves never change another resume's data.",
+                 "constraint", "Late saves never change another resume's data"),
+                ("- [x] The exporter must stream rows instead of buffering.",
+                 "requirement", "The exporter must stream rows instead of buffering"),
+                ("* [X] Never store raw tokens in logs.",
+                 "constraint", "Never store raw tokens in logs")):
+            found = items(text)
+            assert (kind, statement) in found, found
+            assert ("task", statement) in found, found
+            assert not any(s.startswith("[") for _, s in found), found
+        # Brackets inside prose are content, not a checklist marker.
+        assert items("The [cache] layer must not be shared across tenants.") == [
+            ("constraint", "The [cache] layer must not be shared across tenants")]
+
     def test_normalization_dedup_key(self):
         a = normalize_statement("The API returns JSON.")
         b = normalize_statement("the api returns json")
