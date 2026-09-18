@@ -175,13 +175,17 @@ def main(argv: list[str] | None = None) -> int:
     if "/" not in args.repository:
         raise SystemExit("repository must be owner/repo")
     token = os.environ.get(args.token_env)
-    if token and any(char.isspace() or not char.isprintable() for char in token):
-        # Refuse before building a request. http.client rejects such a value
-        # inside the Authorization header with an error that quotes the whole
-        # header, so the credential would be printed in clear text.
+    if token and (not token.isascii()
+                  or any(char.isspace() or not char.isprintable()
+                         for char in token)):
+        # Refuse before building a request. http.client encodes the header as
+        # latin-1, and quotes the offending character and its offset inside
+        # the whole header when it cannot, so the credential would reach
+        # stderr in clear text.
         raise SystemExit(
-            f"{args.token_env} contains whitespace or control characters;"
-            " fix the variable and try again (its value is not shown)")
+            f"{args.token_env} must be ASCII with no whitespace or control"
+            " characters; fix the variable and try again (its value is not"
+            " shown)")
     if not token:
         print(f"no {args.token_env} set — using unauthenticated requests,"
               " which are rate limited to 60/hour", file=sys.stderr)
