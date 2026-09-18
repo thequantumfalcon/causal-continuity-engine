@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -676,3 +677,25 @@ def test_serve_rejects_non_ascii_api_token_without_echoing_bytes(
     assert "error: api token file must be ASCII" in err
     assert "0xc3" not in err
     assert "xc3" not in err
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows does not carry POSIX modes; stat() reports 0o666 whatever"
+           " chmod was asked for")
+def test_init_creates_the_database_private(tmp_path, monkeypatch):
+    """The database holds ingested issue text and was created 0644.
+
+    Only the 0700 .cce directory protected it, so copying or archiving the
+    file out of there exposed the project's content.
+    """
+    previous = os.umask(0o000)
+    try:
+        main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+              "--repo-id", "123456789"])
+    finally:
+        os.umask(previous)
+
+    database = tmp_path / ".cce" / "cce.db"
+    assert database.exists()
+    assert stat.S_IMODE(database.stat().st_mode) == 0o600
