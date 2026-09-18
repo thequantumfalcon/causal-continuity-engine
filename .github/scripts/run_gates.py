@@ -14,7 +14,13 @@ GATE_TIMEOUT_SECONDS = {
     "content integrity": 120,
     "commit metadata integrity": 60,
     "release metadata": 60,
-    "tests": 900,
+    # Raised from 900s. The suite grew about 5% in one evening and the
+    # Windows leg, which is the slowest, began timing out intermittently at
+    # 900s: the same tree passed on one runner and timed out on another, and
+    # a later commit with MORE tests passed. A gate that decides by runner
+    # speed is not deciding anything, so the budget now has real headroom.
+    # It is a ceiling against a hang, not a performance target.
+    "tests": 1800,
     "lint": 300,
     "stdlib boundary": 120,
     "benchmark": 300,
