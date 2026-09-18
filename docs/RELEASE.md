@@ -58,9 +58,9 @@ which maintainer signed.
    real content. No gate can do this: the packaged tests drive `serve()`
    in-process, and `tests/test_mcp_server.py` skips its protocol-revision check
    unless the reference SDK happens to be installed. The prepared — never
-   published — 0.1.4 tree advertised `2026-07-28`, a revision that does not
-   exist, and every automated check passed while no client could complete a
-   handshake.
+   published — 0.1.4 tree advertised `2026-07-28`, a revision that had not been
+   published then and that no client would accept, and every automated check
+   passed while no client could complete a handshake.
 5. Land the release commit on `main`. Require GitHub's exact commit API to
    report `commit.verification.verified == true`, and wait for the `ci`,
    `attribution`, and `secrets` push checks on that exact SHA to succeed. Each

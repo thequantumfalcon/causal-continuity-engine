@@ -115,7 +115,7 @@ vectors that *wrap* an envelope alongside its expected verdict, so passing
 one directly reports `E_SHAPE`; use `vectors/generate.py --check` for those.
 
 CLI subcommands, all real: `init ingest resume assumptions invalidations
-verify check migrate replay rebuild audit evidence policy serve`.
+verify check migrate replay rebuild audit evidence policy serve mcp`.
 
 ## Repo map
 

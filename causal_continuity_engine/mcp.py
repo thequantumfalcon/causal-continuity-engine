@@ -4,7 +4,7 @@ Every editor that matters now speaks MCP — GitHub retired Copilot Extensions i
 its favour, and Continue.dev deprecated its own context providers for it — so
 this is the surface through which a client reads CCE without adopting anything.
 
-Hand-rolled deliberately. The official SDK pulls sixteen dependencies including
+Hand-rolled deliberately. The official SDK pulls more than twenty dependencies including
 starlette, uvicorn and pyjwt, which would end this package's zero-runtime-
 dependency property to save a couple of hundred lines. `api.py` hand-rolls an
 HTTP server on `http.server` for exactly the same reason.
