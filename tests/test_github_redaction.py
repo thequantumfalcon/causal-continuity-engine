@@ -13,7 +13,12 @@ from causal_continuity_engine.github import (
     text_authority,
     verify_signature,
 )
-from causal_continuity_engine.redaction import apply_capture_mode, redact_text, scan_secrets
+from causal_continuity_engine.redaction import (
+    _SECRET_PATTERNS,
+    apply_capture_mode,
+    redact_text,
+    scan_secrets,
+)
 
 
 class TestSignature:
@@ -191,3 +196,46 @@ class TestRedaction:
     def test_unknown_mode_rejected(self):
         with pytest.raises(ValueError):
             apply_capture_mode({}, "everything")
+
+
+# Every kind in the denylist, with one realistic sample each. Six of these had
+# no test at all: deleting their patterns left the suite green while the
+# control they implement was gone.
+SECRET_SAMPLES = {
+    "github_token": "ghp_ABCDEFghijklmnopqrstuvwx123456",
+    "github_pat": "github_pat_" + "A" * 22 + "_" + "b" * 20,
+    "aws_access_key": "AKIAIOSFODNN7EXAMPLE",
+    "aws_secret": "aws_secret_access_key = " + "A" * 40,
+    "private_key_block": (
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIabcdefg\n-----END RSA PRIVATE KEY-----"),
+    "slack_token": "xoxb-123456789012-abcdefghijkl",
+    "jwt": ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+    "generic_assignment": "password: hunter2secret",
+    "anthropic_key": "sk-ant-" + "A" * 24,
+    "openai_key": "sk-" + "A" * 40,
+}
+
+# A secret does not stop being a secret because of what sits beside it. `_` and
+# `-` are word/identifier characters and diff markers, which is exactly where
+# the word-boundary anchors used to suppress the match.
+NEIGHBOURS = ["{s}", "_{s}", "{s}_", "-{s}", "{s}-", "x{s}", "{s}x", "9{s}",
+              "{s}9", "SECRET_{s}", "{s}_TAIL", "-{s}\n", "prefix_{s}_suffix"]
+
+
+def test_every_secret_pattern_has_a_sample():
+    """A new pattern without a sample fails here rather than shipping untested."""
+    assert {kind for kind, _ in _SECRET_PATTERNS} == set(SECRET_SAMPLES)
+
+
+@pytest.mark.parametrize("kind", sorted(SECRET_SAMPLES))
+@pytest.mark.parametrize("neighbour", NEIGHBOURS)
+def test_a_secret_is_redacted_whatever_sits_next_to_it(kind, neighbour):
+    sample = SECRET_SAMPLES[kind]
+    text = neighbour.format(s=sample)
+    clean, kinds = redact_text(text)
+    assert kind in kinds, (kind, text, kinds)
+    # Not just "a kind was reported": no part of the literal may survive, which
+    # is how a partially-redacted token leaves its tail in clear text.
+    assert sample not in clean, (kind, clean)
+    assert {finding["kind"] for finding in scan_secrets(text)} >= {kind}

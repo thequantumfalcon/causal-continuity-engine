@@ -25,4 +25,10 @@ regexes = [
   # tests/test_regressions_round2.py — obviously synthetic: sequential
   # alphabet followed by 123456.
   '''ghp_ABCDEFghijklmnopqrstuvwx123456''',
+  # tests/test_github_redaction.py — one sample per denylist kind, so a pattern
+  # that silently stops matching fails a test instead of shipping green. Both
+  # values are sequential filler: a Slack-shaped token flagged by the
+  # generic-api-key rule, and a JWT header flagged by the jwt rule.
+  '''xoxb-123456789012-abcdefghijkl''',
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.''',
 ]
