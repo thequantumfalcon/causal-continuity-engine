@@ -95,6 +95,10 @@ SDIST_GENERATED_FILES = {
     f"{EGG_INFO}/requires.txt",
     f"{EGG_INFO}/top_level.txt",
 }
+# Seven of the 45 test modules the wheel ships, chosen to cover the installed
+# CLI, the store and graph, trust, conformance vectors and the MCP server
+# against the artifact itself. The rest ship as audit evidence a reader can
+# run, not as checks this gate executes.
 WHEEL_BEHAVIOR_TESTS = (
     "tests/test_distribution_environment.py",
     "tests/test_store_graph.py",
