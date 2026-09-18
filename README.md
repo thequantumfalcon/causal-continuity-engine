@@ -83,7 +83,7 @@ The server is read-only by design. An MCP client is an untrusted caller in this
 project's authority model, so nothing exposed here mutates state, mints a proof,
 or grants autonomy — a test fails if a future tool name suggests otherwise. It
 adds no dependencies: the transport is hand-rolled on `json` and `sys` rather
-than the official SDK, which would pull in sixteen packages.
+than the official SDK, which would pull in more than twenty packages.
 
 ## Quickstart
 
@@ -351,7 +351,7 @@ green in CI. For headless use, `--json` is a global flag like `--dir` and theref
 goes **before** the subcommand — `cce-engine --json check`, not `cce-engine check --json`,
 which argparse rejects. The one exception is `resume`, which renders markdown
 regardless; ask for its structured form with `resume --format json`.
-`cce-engine --help` lists all fourteen subcommands.
+`cce-engine --help` lists every subcommand.
 
 `check` can also export a signed operator receipt and classify it later:
 

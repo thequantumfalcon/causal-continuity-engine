@@ -68,7 +68,7 @@ def test_an_unspoken_revision_falls_back_instead_of_being_echoed(revision):
 
 
 def test_no_advertised_revision_is_invented():
-    """Regression: 0.1.4 advertised `2026-07-28`, which no client accepts.
+    """Regression: 0.1.4 advertised `2026-07-28`, which no client then accepted.
 
     That value was guessed, not read, and nothing here caught it — the old
     handshake test compared the constant to itself. Only an external authority
