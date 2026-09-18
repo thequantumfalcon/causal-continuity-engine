@@ -12,21 +12,26 @@ import re
 
 CAPTURE_MODES = {"metadata_only", "redacted", "full"}
 
+# No word-boundary anchors. `_` and `-` are word or identifier characters and
+# diff markers, so `\b` next to one suppressed the match and the secret was
+# persisted in clear text. Redaction must fail safe: matching a secret embedded
+# in a longer identifier over-redacts, which is the harmless direction, while a
+# trailing anchor only forces the backtracking that left a token's tail behind.
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b")),
-    ("github_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
-    ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github_token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}")),
+    ("github_pat", re.compile(r"github_pat_[A-Za-z0-9_]{20,}")),
+    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("aws_secret", re.compile(
-        r"(?i)\baws[_-]?secret[_-]?(?:access[_-]?)?key\b[\"'\s:=]+[A-Za-z0-9/+=]{30,}")),
+        r"(?i)aws[_-]?secret[_-]?(?:access[_-]?)?key[\"'\s:=]+[A-Za-z0-9/+=]{30,}")),
     ("private_key_block", re.compile(
         r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")),
-    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")),
+    ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9_-]{10,}")),
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("generic_assignment", re.compile(
-        r"(?i)\b(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b"
+        r"(?i)(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
         r"\s*[:=]\s*[\"']?[^\s\"']{8,}")),
-    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")),
-    ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{32,}\b")),
+    ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}")),
+    ("openai_key", re.compile(r"sk-[A-Za-z0-9]{32,}")),
 ]
 
 _CONTENT_FIELDS = {"body", "text", "content", "message", "description", "output",
