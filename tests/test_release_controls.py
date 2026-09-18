@@ -96,6 +96,21 @@ def test_current_metadata_is_consistent_and_tag_ready():
     assert metadata.check(ROOT, release_tag="v0.1.5") == expected
 
 
+def test_the_processor_and_extractor_versions_are_pinned():
+    """CHANGELOG states the compatibility contract by version string.
+
+    Both constants decide whether a stored projection is admitted, and neither
+    was pinned: raising or lowering either one left the whole suite green, so a
+    reverted or mistyped bump could ship while the changelog still named the
+    old version.
+    """
+    from causal_continuity_engine import extraction as extraction_module
+    from causal_continuity_engine.engine import PROCESSOR_VERSION
+
+    assert PROCESSOR_VERSION == "cce-processor/1.3.0"
+    assert extraction_module.EXTRACTOR_VERSION == "1.3.0"
+
+
 def test_release_metadata_requires_matching_dates_and_reset_unreleased(tmp_path):
     metadata = _load_release_script("check_release_metadata")
     _metadata_fixture(tmp_path)
