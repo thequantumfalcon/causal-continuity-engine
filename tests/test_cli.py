@@ -232,6 +232,11 @@ def test_check_exits_zero_only_for_literal_success(
                 "open_invalidations": [],
             }
 
+        def replay_completeness(self, project_id):
+            assert project_id == "prj_cli_exit"
+            return {"events": 1, "redacted_payloads": 0, "replayable": True,
+                    "unprojected_events": 0, "note": None}
+
         def close(self):
             self.closed = True
 
@@ -252,6 +257,43 @@ def test_check_exits_zero_only_for_literal_success(
 
     assert engine.closed
     assert json.loads(capsys.readouterr().out)["conclusion"] == conclusion
+
+
+def test_check_fails_closed_when_an_event_was_never_projected(
+        monkeypatch, capsys):
+    """A committed event the projection never received is not success.
+
+    The log commits before the projection transaction, so a crash between the
+    two leaves an event with no marker. Every continuity signal is computed
+    from the projection, so it reports clean while the answer is partial.
+    """
+    class StubEngine:
+        closed = False
+
+        def continuity_check(self, project_id):
+            return {"conclusion": "success", "open_invalidations": []}
+
+        def replay_completeness(self, project_id):
+            return {"events": 3, "redacted_payloads": 0, "replayable": True,
+                    "unprojected_events": 2, "note": "2 of 3 events carry no"
+                    " processing marker"}
+
+        def close(self):
+            self.closed = True
+
+    engine = StubEngine()
+    monkeypatch.setattr(
+        "causal_continuity_engine.cli._engine",
+        lambda args: (engine, {"project_id": "prj_cli_exit"}),
+    )
+    args = SimpleNamespace(verify_receipt=None, export_receipt=None, json=False)
+
+    with pytest.raises(SystemExit) as stopped:
+        cmd_check(args)
+
+    assert stopped.value.code == 1
+    assert engine.closed
+    assert "unprojected events: 2" in capsys.readouterr().out
 
 
 def test_documented_bound_repository_quickstart_reaches_success(

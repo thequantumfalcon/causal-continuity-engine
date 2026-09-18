@@ -1992,8 +1992,25 @@ class Engine:
                 capture_mode=mode,
                 sensitivity="internal",
             )
-        except DuplicateEventError:
-            return None
+        except DuplicateEventError as exc:
+            # The log commits before the projection transaction, so a crash
+            # in between leaves a committed event with no marker and no
+            # projection rows. Re-delivering it is what an operator does
+            # next, and it used to do nothing at all. Project it now; an
+            # event that already carries any marker, including a quarantine,
+            # is still a benign duplicate.
+            event_id = exc.event_id
+            unprojected = set(self.store.unprocessed_event_ids(
+                project_id, tenant_id=self.tenant_id))
+            if event_id is None or event_id not in unprojected:
+                return None
+            event = self.store.get_event(
+                event_id, tenant_id=self.tenant_id, project_id=project_id)
+            with self.store.transaction():
+                report = self.process_event(event)
+            report["capture"] = capture_report
+            report["healed_unprojected_event"] = True
+            return report
         try:
             # Process the STORED event, not the incoming envelope: extraction
             # must see exactly what durably persisted. Handing it the raw
@@ -4756,14 +4773,25 @@ class Engine:
             total += 1
             if row["payload"] is None and row["payload_digest"] != empty:
                 redacted += 1
+        unprojected = self.store.unprocessed_event_ids(
+            project_id, tenant_id=self.tenant_id)
+        notes = []
+        if redacted:
+            notes.append(
+                f"{redacted} of {total} event payloads were cleared by the"
+                f" retention policy; the projection cannot be rebuilt from"
+                f" the log alone, and this is permanent by design")
+        if unprojected:
+            notes.append(
+                f"{len(unprojected)} of {total} events carry no processing"
+                f" marker, so the projection never received them; re-deliver"
+                f" each one to project it, or rebuild the projection")
         return {
             "events": total,
             "redacted_payloads": redacted,
             "replayable": redacted == 0,
-            "note": None if redacted == 0 else
-                    f"{redacted} of {total} event payloads were cleared by the"
-                    f" retention policy; the projection cannot be rebuilt from"
-                    f" the log alone, and this is permanent by design",
+            "unprojected_events": len(unprojected),
+            "note": None if not notes else "; ".join(notes),
         }
 
     @serialized_access

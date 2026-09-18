@@ -873,11 +873,19 @@ def cmd_check(args):
              f" (open invalidations: {len(check['open_invalidations'])})")
     if exported is not None:
         human += f"\nreceipt: {exported}"
+    # A committed event the projection never received makes every verdict
+    # above a statement about partial state, so say so and fail closed. The
+    # signed receipt keeps its published shape; this is a gate, not a verdict.
+    completeness = engine.replay_completeness(meta["project_id"])
+    unprojected = completeness.get("unprojected_events", 0)
+    if unprojected:
+        human += (f"\nunprojected events: {unprojected} (re-deliver each one,"
+                  f" or rebuild the projection)")
     _emit(args, check, human)
     engine.close()
     # A CI gate must fail closed: cancelled/neutral are absence of success,
     # not successful continuity.
-    if check["conclusion"] != "success":
+    if check["conclusion"] != "success" or unprojected:
         raise SystemExit(_CHECK_NOT_SUCCESS)
 
 
