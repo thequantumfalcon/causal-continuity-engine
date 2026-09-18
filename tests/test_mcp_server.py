@@ -153,12 +153,13 @@ def test_invalid_jsonrpc_does_not_echo_an_invalid_request_identifier(request_id)
     assert response["id"] is None
 
 
-def test_the_surface_is_read_only():
-    """An MCP client is an untrusted caller. Nothing here may mutate state.
+def test_no_tool_name_suggests_a_write_surface():
+    """A lexical tripwire, not the guarantee itself.
 
     Exposing verification, completion or policy over this transport would let
     a caller mint authority from outside the trust model, which is the failure
-    AD-006 exists to prevent.
+    AD-006 exists to prevent. This only reads tool names; the behavioural
+    guarantee is test_no_tool_writes_to_the_database below.
     """
     forbidden = ("verify", "complete", "policy", "grant", "ingest",
                  "quarantine", "promote", "attest")
@@ -387,6 +388,37 @@ def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
     }], directory=str(tmp_path))
 
     assert response["result"]["isError"] is False
+    assert _database_dump(tmp_path) == before
+
+
+@pytest.mark.parametrize("tool", sorted(mcp._TOOLS_BY_NAME))
+def test_no_tool_writes_to_the_database(tool, tmp_path):
+    """Read-only is a claim about behaviour, so assert behaviour.
+
+    Only resume_packet had a before/after comparison. A durable write added to
+    any of the other three tools left the whole suite green, so the read-only
+    guarantee rested on tool names alone.
+    """
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        engine.graph.put_node(
+            entity_type="constraint", tenant_id=engine.tenant_id,
+            project_id=meta["project_id"], status="active",
+            data={"statement": "the exporter must not buffer " + "x" * 20})
+    finally:
+        engine.close()
+    before = _database_dump(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is False, response
     assert _database_dump(tmp_path) == before
 
 
