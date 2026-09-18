@@ -24,14 +24,23 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("aws_secret", re.compile(
         r"(?i)aws[_-]?secret[_-]?(?:access[_-]?)?key[\"'\s:=]+[A-Za-z0-9/+=]{30,}")),
     ("private_key_block", re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")),
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?"
+        r"(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")),
     ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9_-]{10,}")),
     ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("generic_assignment", re.compile(
         r"(?i)(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)"
         r"\s*[:=]\s*[\"']?[^\s\"']{8,}")),
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}")),
+    # OpenAI has issued sk-proj-/sk-svcacct- keys by default since 2024; the
+    # hyphen after the prefix broke the single alphanumeric run below.
+    ("openai_key", re.compile(r"sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,}")),
     ("openai_key", re.compile(r"sk-[A-Za-z0-9]{32,}")),
+    ("gitlab_token", re.compile(r"glpat-[A-Za-z0-9_-]{16,}")),
+    ("google_api_key", re.compile(r"AIza[A-Za-z0-9_-]{30,}")),
+    ("npm_token", re.compile(r"npm_[A-Za-z0-9]{30,}")),
+    ("pypi_token", re.compile(r"pypi-[A-Za-z0-9_-]{30,}")),
+    ("stripe_key", re.compile(r"sk_(?:live|test)_[A-Za-z0-9]{16,}")),
 ]
 
 _CONTENT_FIELDS = {"body", "text", "content", "message", "description", "output",
