@@ -128,12 +128,14 @@ change GitHub — re-verify the live objects after any change.
 
 ### 2. Re-run the full-history secret scan
 
-Native push protection does not exist on this plan. The `secrets` workflow
-scans pull requests, pushes to `main`, and the full history every week. It
-becomes merge-blocking only after the ruleset blocker above is resolved. The
-workflow starts only after content has reached GitHub. The pre-commit scan is
-the sole local pre-remote scan only when gitleaks is installed and the hook is
-not bypassed; a missing binary emits a warning and does not block the commit.
+Secret scanning and push protection are enabled on the public repository;
+validity checks are not. The `secrets` workflow additionally scans pull
+requests, pushes to `main`, and the full history every week. It becomes
+merge-blocking only after the ruleset blocker above is resolved. The workflow
+starts only after content has reached GitHub. The pre-commit scan is the only
+one that runs before content reaches GitHub at all, and only when gitleaks is
+installed and the hook is not bypassed; a missing binary emits a warning and
+does not block the commit.
 The local scan must still be re-run against the exact history that will become public:
 
 ```bash

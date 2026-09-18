@@ -1,11 +1,11 @@
 # gitleaks configuration.
 #
-# Push protection is NOT available on this repository (private repo, personal
-# Pro plan). When gitleaks is installed and the hook is not bypassed, the
-# pre-commit hook is the only local scan before content reaches the remote;
-# the server workflow runs only after a push. It is therefore configured to
-# acknowledge specific known-synthetic values rather than skip files or relax
-# rules — a path-wide exclusion would let a real secret hide beside a known fake.
+# The repository is public, and GitHub secret scanning and push protection are
+# both enabled on it, so a pushed credential is caught server side. This hook
+# still runs first, before content reaches the remote at all, and the server
+# workflow runs after a push. It is configured to acknowledge specific
+# known-synthetic values rather than skip files or relax rules — a path-wide
+# exclusion would let a real secret hide beside a known fake.
 
 [extend]
 useDefault = true
