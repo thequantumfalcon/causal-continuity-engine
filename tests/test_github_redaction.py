@@ -213,7 +213,12 @@ SECRET_SAMPLES = {
             "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
     "generic_assignment": "password: hunter2secret",
     "anthropic_key": "sk-ant-" + "A" * 24,
-    "openai_key": "sk-" + "A" * 40,
+    "openai_key": "sk-proj-" + "A" * 32 + "T3BlbkFJ" + "B" * 24,
+    "gitlab_token": "glpat-" + "D" * 20,
+    "google_api_key": "AIzaSy" + "E" * 33,
+    "npm_token": "npm_" + "F" * 36,
+    "pypi_token": "pypi-" + "G" * 40,
+    "stripe_key": "sk_live_" + "H" * 24,
 }
 
 # A secret does not stop being a secret because of what sits beside it. `_` and
@@ -229,13 +234,19 @@ def test_every_secret_pattern_has_a_sample():
 
 
 @pytest.mark.parametrize("kind", sorted(SECRET_SAMPLES))
-@pytest.mark.parametrize("neighbour", NEIGHBOURS)
-def test_a_secret_is_redacted_whatever_sits_next_to_it(kind, neighbour):
+def test_a_secret_is_redacted_whatever_sits_next_to_it(kind):
+    """One case per kind; the neighbours are looped inside deliberately.
+
+    A case per neighbour as well multiplied into hundreds of cases whose
+    per-test overhead pushed the Windows leg past its 900s budget, for
+    assertions that each take microseconds.
+    """
     sample = SECRET_SAMPLES[kind]
-    text = neighbour.format(s=sample)
-    clean, kinds = redact_text(text)
-    assert kind in kinds, (kind, text, kinds)
-    # Not just "a kind was reported": no part of the literal may survive, which
-    # is how a partially-redacted token leaves its tail in clear text.
-    assert sample not in clean, (kind, clean)
-    assert {finding["kind"] for finding in scan_secrets(text)} >= {kind}
+    for neighbour in NEIGHBOURS:
+        text = neighbour.format(s=sample)
+        clean, kinds = redact_text(text)
+        assert kind in kinds, (kind, neighbour, kinds)
+        # Not just "a kind was reported": no part of the literal may survive,
+        # which is how a partial redaction leaves a token's tail in the clear.
+        assert sample not in clean, (kind, neighbour, clean)
+        assert {finding["kind"] for finding in scan_secrets(text)} >= {kind}
