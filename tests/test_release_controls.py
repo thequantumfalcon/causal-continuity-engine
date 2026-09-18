@@ -3252,3 +3252,30 @@ def test_checksum_rechecks_compare_the_manifest_in_filename_order():
     assert len(rechecks) == 3
     for recheck in rechecks:
         assert "LC_ALL=C sort -k2 >" in recheck
+
+
+def test_public_schema_registry_matches_the_directory(tmp_path):
+    """A schema added or renamed without its registry entry fails here.
+
+    The tagged-bytes half of this script needs the network and only runs at
+    release time, so until now nothing in CI checked the registry at all.
+    """
+    schemas = _load_release_script("verify_public_schemas")
+    assert set(schemas.verify_registry(ROOT)) == {
+        "anchor", "recovery_packet", "event", "resume_packet", "proof",
+        "proof_predicate", "capsule", "continuity_receipt"}
+
+    copy = tmp_path / "tree"
+    (copy / "schemas").mkdir(parents=True)
+    (copy / "causal_continuity_engine").mkdir()
+    (copy / "causal_continuity_engine" / "__init__.py").write_text(
+        'SCHEMA_VERSIONS = {"event": "cce.event.v1"}\n', encoding="utf-8")
+    with pytest.raises(SystemExit, match="declared but absent"):
+        schemas.verify_registry(copy)
+
+    (copy / "schemas" / "cce.event.v1.json").write_text("{}", encoding="utf-8")
+    assert schemas.verify_registry(copy) == {"event": "cce.event.v1"}
+
+    (copy / "schemas" / "cce.stray.v1.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="present but undeclared"):
+        schemas.verify_registry(copy)

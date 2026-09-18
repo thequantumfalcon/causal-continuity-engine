@@ -186,10 +186,41 @@ def verify(
         raise SystemExit("public schema $id set is incomplete or ambiguous")
 
 
+def verify_registry(root: Path) -> dict[str, str]:
+    """Registry and schema directory agree, without reaching the network.
+
+    The tagged-bytes comparison below can only run at release time, against a
+    host that must be reachable. This half is a pure local contract and runs
+    as an ordinary gate, so a schema added, renamed or dropped without its
+    registry entry fails in CI instead of at tag time.
+    """
+    versions = _runtime_schema_versions(root)
+    declared = {f"{name}.json" for name in versions.values()}
+    present = {path.name for path in sorted((root / "schemas").glob("*.json"))}
+    missing = sorted(declared - present)
+    undeclared = sorted(present - declared)
+    if missing or undeclared:
+        raise SystemExit(
+            "public schema registry and schemas/ disagree: "
+            f"declared but absent {missing}, present but undeclared {undeclared}")
+    return versions
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tag", required=True)
+    parser.add_argument("--tag")
+    parser.add_argument(
+        "--offline", action="store_true",
+        help="check the registry against schemas/ without fetching")
     args = parser.parse_args(argv)
+    if args.offline == bool(args.tag):
+        raise SystemExit("pass exactly one of --tag or --offline")
+    if args.offline:
+        versions = verify_registry(ROOT)
+        print(f"public schema registry declares {len(versions)} schemas,"
+              " each present in schemas/")
+        return 0
+    verify_registry(ROOT)
     verify(ROOT, args.tag)
     print(
         f"all {len(_schema_public_urls(ROOT))} public schemas exactly match tagged bytes "
