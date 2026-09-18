@@ -924,6 +924,28 @@ class Store:
             )
 
     @serialized_access
+    def unprocessed_event_ids(self, project_id: str | None = None, *,
+                              tenant_id: str | None = None) -> list[str]:
+        """Committed events that carry no processing marker of any kind.
+
+        The event log commits before the projection transaction, so a crash
+        between the two leaves exactly this state: a durable event whose
+        projection was rolled back and whose marker was never written.
+        """
+        q = ("SELECT e.event_id FROM events AS e WHERE NOT EXISTS ("
+             "SELECT 1 FROM processed_events AS p WHERE p.event_id = e.event_id)")
+        args: list = []
+        if tenant_id is not None:
+            q += " AND e.tenant_id = ?"
+            args.append(validate_public_identifier(tenant_id, field="tenant_id"))
+        if project_id is not None:
+            q += " AND e.project_id = ?"
+            args.append(validate_public_identifier(
+                project_id, field="project_id"))
+        q += " ORDER BY e.seq"
+        return [row["event_id"] for row in self._conn.execute(q, args)]
+
+    @serialized_access
     def quarantined(self, processor_version: str) -> list[dict]:
         return [
             dict(r)

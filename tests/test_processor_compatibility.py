@@ -2145,3 +2145,50 @@ def test_generated_column_on_a_bound_table_refuses(tmp_path, table):
     assert "shadow" not in [row[1] for row in _rows(
         database, f"PRAGMA table_info({table})")]
     _assert_refused(database, directory)
+
+
+# ------------------------------------------------- crash between the commits
+def test_a_crash_between_the_log_and_the_projection_is_visible_and_healable(
+        tmp_path):
+    """The log commits first, so a crash in between strands an event.
+
+    ingest() quarantines on Exception, but a real interruption is not an
+    Exception: the event stays committed, the projection transaction rolls
+    back, and no marker is written. That state reported clean from every API,
+    and re-delivering the event did nothing at all.
+    """
+    directory = _private_dir(tmp_path, "crash")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    try:
+        engine.create_project(
+            "p", project_id=PROJECT, repository_id=REPOSITORY_ID)
+        payload = _issue(1, "The exporter must write CSV output.")
+
+        def interrupted(*args, **kwargs):
+            raise KeyboardInterrupt("power loss between the two commits")
+
+        engine.process_event = interrupted
+        with pytest.raises(KeyboardInterrupt):
+            engine.ingest_github(PROJECT, "issues", "d1", payload)
+        del engine.process_event
+
+        completeness = engine.replay_completeness(PROJECT)
+        assert completeness["unprojected_events"] == 1
+        assert "no processing marker" in (completeness["note"] or "")
+        assert _rows(database, "SELECT COUNT(*) FROM events")[0][0] == 1
+        assert _rows(
+            database, "SELECT COUNT(*) FROM processed_events")[0][0] == 0
+
+        healed = engine.ingest_github(PROJECT, "issues", "d1", payload)
+        assert healed is not None
+        assert healed["healed_unprojected_event"] is True
+        assert engine.replay_completeness(PROJECT)["unprojected_events"] == 0
+        assert _rows(
+            database, "SELECT COUNT(*) FROM processed_events")[0][0] == 1
+
+        # A genuine duplicate is still a no-op, and healing does not repeat.
+        assert engine.ingest_github(PROJECT, "issues", "d1", payload) is None
+        assert engine.replay_completeness(PROJECT)["unprojected_events"] == 0
+    finally:
+        engine.close()
