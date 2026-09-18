@@ -79,7 +79,7 @@ from .store import (
 )
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
-PROCESSOR_VERSION = "cce-processor/1.2.0"
+PROCESSOR_VERSION = "cce-processor/1.3.0"
 # Version of the statement normalization contract that feeds stable_node_id.
 # It is deliberately separate from the extractor version: pattern behavior can
 # change without changing identity, while an identity change survives forever

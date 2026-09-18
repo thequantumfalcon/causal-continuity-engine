@@ -2246,7 +2246,8 @@ version stayed `cce-processor/1.1.0` when this boundary was introduced, because
 it repairs admission and production evidence without altering event-derived
 projection semantics; S1 or any later semantic change must bump it. The
 extraction fix that records a prohibition once did, to `cce-processor/1.2.0`,
-so stores processed by 1.1.0 are refused.
+so stores processed by 1.1.0 are refused, and the checkbox fix that followed
+did again, to `cce-processor/1.3.0`, so stores processed by 1.2.0 are refused.
 
 **Compatibility.** Stores processed by v0.1.0–v0.1.3 carry
 `cce-processor/1.0.0` markers and refuse. The committed regression constructs
