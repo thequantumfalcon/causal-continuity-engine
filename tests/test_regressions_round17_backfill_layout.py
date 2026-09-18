@@ -275,7 +275,8 @@ def test_backfill_reports_the_nodes_it_created(backfill, monkeypatch, capsys):
     assert created > 0, summary
 
 
-@pytest.mark.parametrize("suffix", ["\n", "\r", " ", "\t", "\x7f"])
+@pytest.mark.parametrize(
+    "suffix", ["\n", "\r", " ", "\t", "\x7f", "\u20ac", "\u00e9"])
 def test_a_malformed_token_is_refused_without_being_echoed(
         monkeypatch, capsys, suffix):
     """A token read from a file with a stray newline made http.client raise
