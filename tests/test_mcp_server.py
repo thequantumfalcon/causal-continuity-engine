@@ -191,17 +191,18 @@ def test_no_tool_name_suggests_a_write_surface():
 
 
 def test_a_tool_failure_is_a_result_not_a_protocol_error(tmp_path):
-    """The call was well formed; the client needs to see why it failed."""
+    """A well-formed call reports operational failure as a tool result."""
     (response,) = _drive_ready(
         [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
           "params": {"name": "list_assumptions", "arguments": {}}}],
         directory=str(tmp_path))          # no project here
     assert "error" not in response
     assert response["result"]["isError"] is True
-    assert response["result"]["content"][0]["text"]
+    assert response["result"]["content"][0]["text"] == "tool execution failed"
 
 
-def test_a_tool_local_cli_exit_does_not_terminate_the_stdio_session(monkeypatch):
+def test_a_tool_local_cli_exit_does_not_terminate_the_stdio_session(
+        capsys, monkeypatch):
     def exit_tool(*_args, **_kwargs):
         raise SystemExit(2)
 
@@ -212,10 +213,13 @@ def test_a_tool_local_cli_exit_does_not_terminate_the_stdio_session(monkeypatch)
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
         {"jsonrpc": "2.0", "id": 3, "method": "ping"},
     ])
+    diagnostics = capsys.readouterr().err
 
     assert [response["id"] for response in responses] == [1, 2, 3]
     assert responses[0]["result"]["isError"] is True
-    assert responses[0]["result"]["content"][0]["text"] == "SystemExit: 2"
+    assert responses[0]["result"]["content"][0]["text"] == "tool execution failed"
+    assert "SystemExit" in diagnostics
+    assert "2" not in diagnostics
     assert "tools" in responses[1]["result"]
     assert responses[2]["result"] == {}
 
@@ -230,6 +234,63 @@ def test_an_operator_interrupt_is_not_reclassified_as_a_tool_error():
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "list_assumptions", "arguments": {}},
         }, session)
+
+
+def test_tool_errors_do_not_echo_paths_in_results_or_diagnostics(tmp_path, capsys):
+    project = tmp_path / "private-project-name"
+    project.mkdir()
+
+    (response,) = _drive_ready(
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "list_assumptions", "arguments": {}}}],
+        directory=str(project))
+    captured = capsys.readouterr()
+    disclosed = json.dumps(response, sort_keys=True) + captured.err
+
+    assert response["result"]["isError"] is True
+    assert response["result"]["content"][0]["text"] == "tool execution failed"
+    assert str(project) not in disclosed
+
+
+def test_tool_errors_do_not_echo_exception_values(tmp_path, capsys):
+    sentinel = "secret-user-prose-that-must-not-leak"
+
+    def disclose(*_args, **_kwargs):
+        raise RuntimeError(f"{sentinel} at {tmp_path}")
+
+    response = mcp._handle({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_assumptions", "arguments": {}},
+    }, SimpleNamespace(state="ready", call=disclose))
+    captured = capsys.readouterr()
+    disclosed = json.dumps(response, sort_keys=True) + captured.err
+
+    assert response["result"]["content"][0]["text"] == "tool execution failed"
+    assert sentinel not in disclosed
+    assert str(tmp_path) not in disclosed
+    assert "RuntimeError" in captured.err
+
+
+def test_unexpected_request_errors_do_not_echo_exception_values(
+        tmp_path, capsys, monkeypatch):
+    sentinel = "internal-secret-that-must-not-leak"
+
+    def disclose(*_args, **_kwargs):
+        raise RuntimeError(f"{sentinel} at {tmp_path}")
+
+    monkeypatch.setattr(mcp, "_handle", disclose)
+    stdin = io.StringIO(json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n")
+    stdout = io.StringIO()
+    assert mcp.serve(str(tmp_path), stdin=stdin, stdout=stdout) == 0
+    response = json.loads(stdout.getvalue())
+    captured = capsys.readouterr()
+    disclosed = json.dumps(response, sort_keys=True) + captured.err
+
+    assert response["error"]["message"] == "internal server error"
+    assert sentinel not in disclosed
+    assert str(tmp_path) not in disclosed
+    assert "RuntimeError" in captured.err
 
 
 def test_tools_answer_from_a_real_project(tmp_path):
@@ -701,14 +762,23 @@ def test_missing_spent_proof_backfill_is_refused_without_migration(tmp_path):
         engine.close()
     before = _local_state_snapshot(tmp_path)
 
+    session = mcp._Session(str(tmp_path))
+    try:
+        with pytest.raises(
+                ValueError,
+                match="^current CCE schema is required for read-only access$"):
+            session._open()
+    finally:
+        session.close()
+    assert _local_state_snapshot(tmp_path) == before
+
     (response,) = _drive_ready([{
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "list_assumptions", "arguments": {}},
     }], directory=str(tmp_path))
 
     assert response["result"]["isError"] is True
-    assert response["result"]["content"][0]["text"] == (
-        "ValueError: current CCE schema is required for read-only access")
+    assert response["result"]["content"][0]["text"] == "tool execution failed"
     assert _local_state_snapshot(tmp_path) == before
 
 
@@ -763,8 +833,7 @@ def test_legacy_schema_is_refused_without_migration(tmp_path):
     }], directory=str(tmp_path))
 
     assert response["result"]["isError"] is True
-    assert response["result"]["content"][0]["text"] == (
-        "ValueError: current CCE schema is required for read-only access")
+    assert response["result"]["content"][0]["text"] == "tool execution failed"
     assert _local_state_snapshot(tmp_path) == before
 
 

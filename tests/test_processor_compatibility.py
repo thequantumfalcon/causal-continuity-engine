@@ -2004,7 +2004,7 @@ def test_cli_refuses_before_provisioning_legacy_runtime_secrets(tmp_path):
 
 
 def test_mcp_reports_a_refused_project_as_a_tool_error_and_keeps_serving(
-        tmp_path):
+        tmp_path, capsys):
     """The MCP server opens a project through the CLI's opener. Turning a
     refusal into SystemExit inside that opener killed the server on its first
     tool call, so the client's later requests were never answered."""
@@ -2050,8 +2050,12 @@ def test_mcp_reports_a_refused_project_as_a_tool_error_and_keeps_serving(
     assert status == 0
     assert responses[2]["result"]["isError"] is True
     text = responses[2]["result"]["content"][0]["text"]
-    assert text.startswith("ProcessorProjectionCompatibilityError: ")
-    assert "exporter" not in text and "CSV" not in text
+    diagnostics = capsys.readouterr().err
+    assert text == "tool execution failed"
+    assert "ProcessorProjectionCompatibilityError" in diagnostics
+    disclosed = text + diagnostics
+    assert str(directory) not in disclosed
+    assert "exporter" not in disclosed and "CSV" not in disclosed
     assert responses[3]["result"] == {}
 
 @pytest.mark.skipif(

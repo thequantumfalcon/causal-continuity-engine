@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import sys
-import traceback
 from pathlib import Path
 
 from .core import canonical_json
@@ -325,11 +324,12 @@ def _handle(request: dict, session: _Session) -> dict | None:
             body = session.call(name, arguments)
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - tool-local failure
             # A tool failure is a result with isError, not a protocol error:
-            # the call was well formed and the client needs to see why.
-            traceback.print_exc(file=sys.stderr)
+            # the call was well formed. Exception values can contain project
+            # paths or caller-controlled state, so neither output channel may
+            # repeat them.
+            print(f"MCP tool failure: {type(exc).__name__}", file=sys.stderr)
             return {"jsonrpc": "2.0", "id": request_id,
-                    "result": _text(f"{type(exc).__name__}: {exc}",
-                                    is_error=True)}
+                    "result": _text("tool execution failed", is_error=True)}
         return {"jsonrpc": "2.0", "id": request_id, "result": _text(body)}
     return _error(request_id, _METHOD_NOT_FOUND,
                   f"unknown method: {method!r}")
@@ -366,10 +366,11 @@ def serve(directory: str = ".", *, stdin=None, stdout=None) -> int:
                     try:
                         response = _handle(request, session)
                     except Exception as exc:  # noqa: BLE001
-                        traceback.print_exc(file=sys.stderr)
+                        print(f"MCP request failure: {type(exc).__name__}",
+                              file=sys.stderr)
                         response = {"jsonrpc": "2.0", "id": request.get("id"),
                                     "error": {"code": _INTERNAL_ERROR,
-                                              "message": str(exc)}}
+                                              "message": "internal server error"}}
             if response is not None:
                 sink.write(json.dumps(response, ensure_ascii=False) + "\n")
                 sink.flush()
