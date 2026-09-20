@@ -42,11 +42,13 @@ or branch reference even if review misses it.
 ### Release immutability — complete
 
 Release immutability was enabled through the repository settings UI on
-2026-08-08, while the repository still had no tags or releases. The current
-repository API does not expose the flag for read-back, so this is an
-owner-attested setting; verify it in the settings UI before the first
-publication. It applies to future releases and must remain enabled through
-the first publication.
+2026-08-08, while the repository still had no tags or releases. A 2026-09-20
+authenticated read of `GET /repos/thequantumfalcon/causal-continuity-engine/immutable-releases`
+returned `enabled: true`. Before each publication, re-read this
+[documented setting](https://docs.github.com/en/rest/repos/repos#check-if-immutable-releases-are-enabled-for-a-repository)
+and require `enabled: true`; a missing or failed response is not confirmation.
+The previous UI-only record is historical evidence, not proof that the current
+setting remains enabled. This check does not change the setting.
 
 ### Signed release-tag protection — complete
 
