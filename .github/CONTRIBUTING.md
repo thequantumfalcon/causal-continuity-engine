@@ -54,10 +54,10 @@ do. `just setup` installs every direct and transitive tool from
 source distributions, then installs `causal-continuity-engine` editable without dependency
 resolution or an isolated build environment. The reviewed direct inputs are
 `pytest` 9.1.1, `ruff` 0.16.7, `build` 1.6.1, `jsonschema` 4.26.0,
-`setuptools` 83.0.0, and `pip` 26.2.1. None is imported by the engine; jsonschema validates
+`setuptools` 84.0.0, and `pip` 26.2.1. None is imported by the engine; jsonschema validates
 emitted receipt instances only in the test/release gate.
 
-The pins were last revalidated on 2026-09-15. Setuptools 83.0.0 is the first
+The security review on 2026-09-15 recorded setuptools 83.0.0 as the first
 patched release for
 [GHSA-h35f-9h28-mq5c](https://github.com/advisories/GHSA-h35f-9h28-mq5c)
 and pip 26.2.1 is later than the first patched release for
@@ -68,9 +68,10 @@ and the lock carries Pygments 2.20.0, the fix for
 [GHSA-5239-wwwm-4pmq](https://github.com/advisories/GHSA-5239-wwwm-4pmq).
 On that date pytest 9.1.1, ruff 0.16.7, build 1.6.1, jsonschema 4.26.0 and pip
 26.2.1 were the current stable releases on PyPI; build 1.5.1 remains yanked.
-Setuptools stays at 83.0.0: 84.0.0 is a new major release that this review did
-not evaluate. This is a dated review record, not a claim that pins stay current
-without future review.
+That review retained setuptools 83.0.0 without evaluating 84.0.0. The current
+84.0.0 pin is a subsequent build-tool update, with matching direct inputs and
+hash lock. The security review is a dated record, not a claim that pins stay
+current without future review.
 
 When a direct pin changes, edit `pyproject.toml` and `requirements-dev.in`,
 regenerate the lock with the command recorded in its header, and review the
