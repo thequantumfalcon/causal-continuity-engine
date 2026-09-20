@@ -101,6 +101,14 @@ CCE's claim is auditable continuity, so an artifact that strips the proof
 specification or the tests that support its capability claims is incomplete.
 GitHub-generated source archives likewise retain `.github/` and `tests/`.
 
+Timeouts are nested so an inner control can report its own verdict instead of
+being killed first by its parent. The canonical pytest child has a 30-minute
+ceiling, the complete gate sequence has 45 minutes, and hosted jobs that run
+that sequence have 65 minutes. The 15-minute inner margin belongs to the other
+gates and process cleanup; the 20-minute outer margin belongs to checkout,
+interpreter setup, the isolated tool bootstrap, upload, and final reporting.
+These are failure ceilings, not performance targets.
+
 ## Sign and publish
 
 On the owner's Mac, use a dedicated clean checkout whose exact origin is

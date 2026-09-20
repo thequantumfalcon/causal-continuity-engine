@@ -33,7 +33,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 45-minute canonical child plus 20 minutes for checkout, Python setup,
+    # isolated tool bootstrap and final reporting.
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -85,7 +87,8 @@ jobs:
   # OS semantics while the Linux matrix owns interpreter-version coverage.
   windows:
     runs-on: windows-latest
-    timeout-minutes: 25
+    # Preserve the same nested budget on the slowest portability runner.
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -104,7 +107,8 @@ jobs:
   # behavior on Apple Silicon; the Linux matrix owns version coverage.
   macos:
     runs-on: macos-15
-    timeout-minutes: 25
+    # Preserve the same nested budget on the native ARM64 runner.
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

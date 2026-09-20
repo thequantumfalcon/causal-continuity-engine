@@ -17,7 +17,11 @@ ENSUREPIP_TIMEOUT_SECONDS = 300
 TOOL_INSTALL_TIMEOUT_SECONDS = 600
 TOOL_CHECK_TIMEOUT_SECONDS = 120
 LOCAL_INSTALL_TIMEOUT_SECONDS = 300
-GATE_RUNNER_TIMEOUT_SECONDS = 1500
+# The slowest child (pytest) has a 30-minute ceiling. Reserve another 15
+# minutes for the gates around it, output collection and descendant cleanup.
+# Hosted jobs that run this complete sequence reserve a further 20 minutes for
+# checkout, interpreter setup, this isolated bootstrap and final reporting.
+GATE_RUNNER_TIMEOUT_SECONDS = 45 * 60
 
 _CLOSURE_PROBE = r"""
 import importlib.metadata
