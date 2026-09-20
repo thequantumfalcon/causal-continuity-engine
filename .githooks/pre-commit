@@ -53,9 +53,10 @@ fi
 
 # --------------------------------------------------------------------- secrets
 # Load-bearing, not decoration. GitHub secret scanning and push protection are
-# unavailable here (private repository, personal Pro plan). When gitleaks is
-# installed and this hook is not bypassed, it is the only local scan before a
-# pasted credential reaches the remote; the server workflow runs after push.
+# enabled on this public repository and catch a pushed credential server side.
+# When gitleaks is installed and this hook is not bypassed, it is the only
+# scan that runs before a pasted credential reaches the remote at all; the
+# server workflow runs after push.
 # .gitleaks.toml allowlists the synthetic token the redaction tests need by
 # VALUE rather than by path, so a real secret in the same file is still caught.
 if command -v gitleaks >/dev/null 2>&1; then
