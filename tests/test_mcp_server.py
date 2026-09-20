@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import io
 import json
+import os
 import sqlite3
+import stat
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -230,7 +234,8 @@ def test_tools_answer_from_a_real_project(tmp_path):
     assert "CCE Resume Packet" in packet["content"][0]["text"]
 
 
-def test_continuity_check_answers_the_question_without_the_receipt(tmp_path):
+def test_continuity_check_answers_the_question_without_the_receipt(
+        tmp_path, monkeypatch):
     """A status answer must not ship the signed receipt.
 
     The receipt was four fifths of the payload — 8,244 of 10,602 characters on
@@ -239,9 +244,19 @@ def test_continuity_check_answers_the_question_without_the_receipt(tmp_path):
     It remains available through `cce-engine check --export-receipt`.
     """
     from causal_continuity_engine.cli import main
+    from causal_continuity_engine.core import Signer
 
     main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
           "--repo-id", "123"])
+    signed_receipts = []
+    original_sign = Signer.sign
+
+    def count_receipts(signer, body):
+        if body.get("schema_version") == "cce.continuity-receipt.v1":
+            signed_receipts.append(body)
+        return original_sign(signer, body)
+
+    monkeypatch.setattr(Signer, "sign", count_receipts)
     (response,) = _drive_ready(
         [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
           "params": {"name": "continuity_check", "arguments": {}}}],
@@ -250,6 +265,7 @@ def test_continuity_check_answers_the_question_without_the_receipt(tmp_path):
     assert response["result"]["isError"] is False
     report = json.loads(body)
     assert "continuity_receipt" not in report
+    assert signed_receipts == []
     # The fields a caller actually decides on are still present.
     assert "conclusion" in report and "open_invalidations" in report
 
@@ -381,6 +397,46 @@ def _database_dump(directory):
         connection.close()
 
 
+def _local_state_snapshot(directory):
+    """Bind every local-state entry and the SQLite header without opening it."""
+    root = directory / ".cce"
+    snapshot = []
+    paths = [root, *root.rglob("*")]
+    for path in sorted(paths, key=lambda item: item.relative_to(root).parts):
+        info = path.lstat()
+        record = {
+            "path": path.relative_to(root).as_posix(),
+            "type": stat.S_IFMT(info.st_mode),
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "mode": stat.S_IMODE(info.st_mode),
+            "uid": info.st_uid,
+            "gid": info.st_gid,
+            "nlink": info.st_nlink,
+            "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns,
+            "ctime_ns": info.st_ctime_ns,
+        }
+        if stat.S_ISREG(info.st_mode):
+            content = path.read_bytes()
+            record["sha256"] = hashlib.sha256(content).hexdigest()
+            if path.name == "cce.db" and len(content) >= 100:
+                record["sqlite_header"] = {
+                    "magic": content[:16],
+                    "write_version": content[18],
+                    "read_version": content[19],
+                    "change_counter": int.from_bytes(content[24:28], "big"),
+                    "schema_cookie": int.from_bytes(content[40:44], "big"),
+                    "schema_format": int.from_bytes(content[44:48], "big"),
+                    "user_version": int.from_bytes(content[60:64], "big"),
+                    "application_id": int.from_bytes(content[68:72], "big"),
+                }
+        elif stat.S_ISLNK(info.st_mode):
+            record["target"] = os.readlink(path)
+        snapshot.append(record)
+    return snapshot
+
+
 def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
     from causal_continuity_engine.cli import _engine, main
 
@@ -439,6 +495,246 @@ def test_no_tool_writes_to_the_database(tool, tmp_path):
 
     assert response["result"]["isError"] is False, response
     assert _database_dump(tmp_path) == before
+
+
+@pytest.mark.parametrize("tool", sorted(mcp._TOOLS_BY_NAME))
+def test_no_tool_mutates_any_local_state_entry(tool, tmp_path):
+    """Read-only binds metadata, secrets, sidecars and file metadata too."""
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    before = _local_state_snapshot(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is False, response
+    assert _local_state_snapshot(tmp_path) == before
+
+
+def test_mcp_storage_rejects_an_accidental_write_at_sqlite(tmp_path):
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    session = mcp._Session(str(tmp_path))
+    before = _local_state_snapshot(tmp_path)
+    try:
+        engine, _ = session._open()
+        assert engine.store._conn.execute(
+            "PRAGMA query_only").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            engine.store._conn.execute(
+                "CREATE TABLE mcp_write_probe (value TEXT)")
+    finally:
+        session.close()
+    assert _local_state_snapshot(tmp_path) == before
+
+
+def test_local_state_oracle_catches_header_only_sqlite_changes(tmp_path):
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    database = tmp_path / ".cce" / "cce.db"
+    before_dump = _database_dump(tmp_path)
+    before_state = _local_state_snapshot(tmp_path)
+
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA user_version=17")
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert _database_dump(tmp_path) == before_dump
+    after_state = _local_state_snapshot(tmp_path)
+    before_database = next(
+        item for item in before_state if item["path"] == "cce.db")
+    after_database = next(
+        item for item in after_state if item["path"] == "cce.db")
+    assert before_database["sha256"] != after_database["sha256"]
+    assert before_database["sqlite_header"]["user_version"] == 0
+    assert after_database["sqlite_header"]["user_version"] == 17
+
+
+def test_an_open_mcp_snapshot_does_not_block_a_writer_and_then_refuses_stale_state(
+        tmp_path):
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    session = mcp._Session(str(tmp_path))
+    reader, _ = session._open()
+    outcome = []
+    writer = None
+
+    def write_from_another_connection():
+        try:
+            engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+            try:
+                engine.graph.put_node(
+                    entity_type="constraint", tenant_id=engine.tenant_id,
+                    project_id=meta["project_id"], status="active",
+                    data={"statement": "the concurrent writer must finish"})
+            finally:
+                engine.close()
+        except BaseException as exc:  # collected and asserted in the test thread
+            outcome.append(exc)
+
+    try:
+        with reader.store.read_snapshot():
+            reader.store._conn.execute(
+                "SELECT COUNT(*) FROM events").fetchone()
+            writer = threading.Thread(target=write_from_another_connection)
+            writer.start()
+            writer.join(timeout=5)
+            assert not writer.is_alive(), "read-only MCP storage blocked the writer"
+            assert outcome == []
+        with pytest.raises(RuntimeError, match="changed while it was open"):
+            session.call("list_assumptions", {})
+    finally:
+        if writer is not None and writer.is_alive():
+            writer.join(timeout=5)
+        session.close()
+
+
+def test_legacy_metadata_is_refused_without_migration_or_secret_provisioning(
+        tmp_path):
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    cce_dir = tmp_path / ".cce"
+    meta_path = cce_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["signing_key_hex"] = (cce_dir / "secrets" / "signing.key").read_bytes().hex()
+    for field in ("signing_key_file", "api_token_file", "webhook_secret_file"):
+        meta.pop(field)
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    meta_path.chmod(0o600)
+    before = _local_state_snapshot(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_assumptions", "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is True
+    assert _local_state_snapshot(tmp_path) == before
+
+
+def test_current_spent_proof_history_needs_no_read_only_backfill(tmp_path):
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        engine.graph.put_node(
+            entity_type="task", tenant_id=engine.tenant_id,
+            project_id=meta["project_id"], status="complete",
+            data={"statement": "already complete",
+                  "completion_evidence": "proof_existing"})
+    finally:
+        engine.close()
+    engine, _ = _engine(SimpleNamespace(dir=str(tmp_path)))
+    engine.close()
+    before = _local_state_snapshot(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_assumptions", "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is False, response
+    assert _local_state_snapshot(tmp_path) == before
+
+
+def test_missing_spent_proof_backfill_is_refused_without_migration(tmp_path):
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        engine.graph.put_node(
+            entity_type="task", tenant_id=engine.tenant_id,
+            project_id=meta["project_id"], status="complete",
+            data={"statement": "legacy completion",
+                  "completion_evidence": "proof_needs_backfill"})
+    finally:
+        engine.close()
+    before = _local_state_snapshot(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_assumptions", "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is True
+    assert response["result"]["content"][0]["text"] == (
+        "ValueError: current CCE schema is required for read-only access")
+    assert _local_state_snapshot(tmp_path) == before
+
+
+def test_sqlite_sidecar_state_is_refused_without_being_opened(tmp_path):
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    database = tmp_path / ".cce" / "cce.db"
+    wal = database.with_name(database.name + "-wal")
+    wal.write_bytes(b"")
+    wal.chmod(0o600)
+    before = _local_state_snapshot(tmp_path)
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_assumptions", "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is True
+    assert _local_state_snapshot(tmp_path) == before
+
+
+def test_legacy_schema_is_refused_without_migration(tmp_path):
+    from causal_continuity_engine.cli import main
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    database = tmp_path / ".cce" / "cce.db"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "ALTER TABLE project_policy DROP COLUMN tracked_ref_revision")
+        connection.commit()
+    finally:
+        connection.close()
+    before = _local_state_snapshot(tmp_path)
+
+    session = mcp._Session(str(tmp_path))
+    try:
+        with pytest.raises(
+                ValueError,
+                match="^current CCE schema is required for read-only access$"):
+            session._open()
+    finally:
+        session.close()
+    assert _local_state_snapshot(tmp_path) == before
+
+    (response,) = _drive_ready([{
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "continuity_check", "arguments": {}},
+    }], directory=str(tmp_path))
+
+    assert response["result"]["isError"] is True
+    assert response["result"]["content"][0]["text"] == (
+        "ValueError: current CCE schema is required for read-only access")
+    assert _local_state_snapshot(tmp_path) == before
 
 
 def test_resume_tool_can_return_the_complete_canonical_packet(tmp_path):
