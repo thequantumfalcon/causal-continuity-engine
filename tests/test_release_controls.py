@@ -3252,3 +3252,30 @@ def test_checksum_rechecks_compare_the_manifest_in_filename_order():
     assert len(rechecks) == 3
     for recheck in rechecks:
         assert "LC_ALL=C sort -k2 >" in recheck
+
+
+def test_test_timeout_nests_inside_gate_runner_and_hosted_jobs():
+    orchestrator = _load_release_script("run_gates")
+    bootstrap = _load_release_script("bootstrap_tools")
+    test_timeout = orchestrator.GATE_TIMEOUT_SECONDS["tests"]
+    gate_runner_timeout = bootstrap.GATE_RUNNER_TIMEOUT_SECONDS
+
+    # A slow test run must leave the aggregate runner time to execute the
+    # gates around it and to terminate the child process cleanly.
+    assert gate_runner_timeout - test_timeout >= 15 * 60
+
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    job_blocks = [
+        ci.split("\n  test:", 1)[1].split("\n  windows:", 1)[0],
+        ci.split("\n  windows:", 1)[1].split("\n  macos:", 1)[0],
+        ci.split("\n  macos:", 1)[1].split("\n  artifacts:", 1)[0],
+        release.split("\n  verify:", 1)[1].split("\n  structural:", 1)[0],
+    ]
+    for block in job_blocks:
+        match = re.search(r"^    timeout-minutes: ([0-9]+)$", block, re.MULTILINE)
+        assert match is not None
+        # Checkout, interpreter setup, the isolated tool bootstrap and final
+        # reporting happen outside the aggregate child deadline.
+        assert int(match.group(1)) * 60 - gate_runner_timeout >= 20 * 60

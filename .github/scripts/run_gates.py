@@ -14,7 +14,12 @@ GATE_TIMEOUT_SECONDS = {
     "content integrity": 120,
     "commit metadata integrity": 60,
     "release metadata": 60,
-    "tests": 900,
+    # Raised from 900s. The suite grew about 5% in one evening and the
+    # Windows leg, which is the slowest, began timing out intermittently at
+    # 900s. The bootstrap gives the complete sequence another 15 minutes,
+    # and each hosted job gives bootstrap another 20; the regression test
+    # binds that hierarchy. This is a hang ceiling, not a performance target.
+    "tests": 1800,
     "lint": 300,
     "stdlib boundary": 120,
     "benchmark": 300,

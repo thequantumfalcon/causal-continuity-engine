@@ -16,7 +16,9 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45-minute release-gate child plus 20 minutes for setup, tag/schema
+    # preflight, isolated tool bootstrap, upload and final reporting.
+    timeout-minutes: 65
     outputs:
       artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
