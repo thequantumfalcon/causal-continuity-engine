@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import json
 import sqlite3
@@ -79,11 +80,29 @@ def test_no_advertised_revision_is_invented():
     The check that does not skip is the manual client drive in docs/RELEASE.md;
     a date heuristic was tried here first and rejected, because the revision
     that actually shipped was in the past and sailed through it.
+
+    Skip only when the SDK is absent. It moved this list from
+    mcp.shared.version to the separate mcp_types distribution at 2.0, so
+    guarding on the old module skipped with a false reason for anyone who had
+    the SDK installed, and pinned nothing at all.
     """
-    supported = pytest.importorskip(
-        "mcp.shared.version",
-        reason="reference MCP SDK not installed; RELEASE.md drives a real client",
-    ).SUPPORTED_PROTOCOL_VERSIONS
+    pytest.importorskip(
+        "mcp",
+        reason="reference MCP SDK not installed; RELEASE.md drives a real client")
+    supported = None
+    for module_name, attribute in (
+            ("mcp_types.version", "KNOWN_PROTOCOL_VERSIONS"),     # SDK 2.x
+            ("mcp.shared.version", "SUPPORTED_PROTOCOL_VERSIONS"),  # SDK 1.x
+    ):
+        try:
+            supported = getattr(importlib.import_module(module_name), attribute)
+            break
+        except (ImportError, AttributeError):
+            continue
+    assert supported is not None, (
+        "the reference MCP SDK is installed but its protocol-revision list is "
+        "in neither known place; find where it moved and update this test "
+        "rather than letting it skip")
     unknown = set(mcp.SUPPORTED_PROTOCOL_VERSIONS) - set(supported)
     assert not unknown, (
         f"advertised protocol revisions {sorted(unknown)} are unknown to the "
