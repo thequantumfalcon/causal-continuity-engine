@@ -620,7 +620,12 @@ def test_distribution_verifier_accepts_exact_sdist_contract(tmp_path):
 def _minimal_indexed_source_tree(tmp_path, verifier):
     root = tmp_path / "indexed-source"
     root.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "-c", "core.longpaths=true", "init", "-q"], cwd=root, check=True)
+    # Native Git has its own long-path switch, independently of Python and
+    # Windows. Keep the fixture usable under nested isolated tool directories.
+    subprocess.run(
+        ["git", "config", "core.longpaths", "true"], cwd=root, check=True)
     required = (
         verifier.SDIST_ROOT_FILES
         | verifier.GITHUB_ROOT_FILES

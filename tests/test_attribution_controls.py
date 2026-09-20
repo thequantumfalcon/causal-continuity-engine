@@ -347,7 +347,11 @@ def _control_fixture(tmp_path):
     if checker.exists():
         destination = repository / ".github" / "scripts" / checker.name
         shutil.copy2(checker, destination)
-    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "-c", "core.longpaths=true", "init", "-q"],
+        cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "core.longpaths", "true"], cwd=repository, check=True)
     subprocess.run(
         ["git", "config", "user.name", "Local Test"], cwd=repository, check=True)
     subprocess.run(
