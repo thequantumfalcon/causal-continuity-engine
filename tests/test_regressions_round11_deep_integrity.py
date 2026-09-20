@@ -445,7 +445,7 @@ def test_projection_and_success_marker_commit_or_roll_back_together(
     ] == []
     quarantined = engine.store.quarantined(PROCESSOR_VERSION)
     assert len(quarantined) == 1
-    assert "success-marker failure" in quarantined[0]["error"]
+    assert quarantined[0]["error"] == "event processing failed"
     engine.close()
 
 

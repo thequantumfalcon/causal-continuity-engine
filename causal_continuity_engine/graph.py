@@ -30,6 +30,7 @@ from .core import (
     canonical_json,
     is_rfc3339_datetime,
     new_id,
+    parse_ts,
     strict_json_loads,
     utcnow,
     validate_public_identifier,
@@ -143,11 +144,13 @@ class Graph:
         scope: dict | None = None,
         valid_from: str | None = None,
         valid_to: str | None = None,
+        reopen_validity: bool = False,
         event_id: str | None = None,
         extractor: str | None = None,
         extractor_version: str | None = None,
     ) -> Node:
-        """Create a node or append a new version of an existing node."""
+        """Create or version a node. Explicit reopening starts a new interval
+        without rewriting the prior belief's validity (ADR-118)."""
         if not isinstance(entity_type, str) or entity_type not in ENTITY_TYPES:
             raise ValueError(f"unknown entity type {entity_type!r}")
         tenant_id = validate_public_identifier(tenant_id, field="tenant_id")
@@ -164,6 +167,10 @@ class Graph:
             "node extractor_version", extractor_version)
         valid_from = _validate_optional_datetime("node valid_from", valid_from)
         valid_to = _validate_optional_datetime("node valid_to", valid_to)
+        if type(reopen_validity) is not bool:
+            raise ValueError("reopen_validity must be a boolean")
+        if reopen_validity and (valid_from is None or valid_to is not None):
+            raise ValueError("reopening validity requires a start and no end")
         if not isinstance(data, dict):
             raise ValueError("node data must be an object")
         if scope is not None and not isinstance(scope, dict):
@@ -195,6 +202,9 @@ class Graph:
             else:
                 prev = self._current_row("nodes", "node_id", node_id)
                 version = (prev["version"] + 1) if prev else 1
+            if reopen_validity and (prev is None or prev["valid_to"] is None
+                                    or parse_ts(valid_from) < parse_ts(prev["valid_to"])):
+                raise ValueError("reopening validity must follow a closed interval")
             if prev is not None:
                 identity = (entity_type, tenant_id, project_id)
                 previous_identity = (
@@ -218,8 +228,9 @@ class Graph:
                 # valid_to must carry forward like every other field: a status
                 # transition on a fact that was valid only until T must not
                 # silently reopen its validity to forever (ADR-003). Widening
-                # requires an explicit valid_to, or a new superseding node.
-                valid_to = valid_to if valid_to is not None else prev["valid_to"]
+                # requires an explicit end, or an explicit new interval.
+                if not reopen_validity:
+                    valid_to = valid_to if valid_to is not None else prev["valid_to"]
                 merged = strict_json_loads(prev["data"])
                 merged.update(data)
                 data = merged

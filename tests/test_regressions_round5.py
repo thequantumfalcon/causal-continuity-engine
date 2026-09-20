@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import causal_continuity_engine.evidence as evidence_module
-from causal_continuity_engine.engine import Engine
+from causal_continuity_engine.engine import PROCESSOR_VERSION, Engine
 from causal_continuity_engine.evidence import run_mutation_probe
 from causal_continuity_engine.lamport import LamportSigner
 from causal_continuity_engine.proof import verify_envelope
@@ -343,15 +343,29 @@ class TestR5QuarantinedEventDoesNotBreakReplay:
             tenant_id=e.tenant_id, project_id=PRJ, source_type="github:issues",
             idempotency_key="github:broken", payload={"totally": "malformed"},
             authority="human_intent")
-        # append_event is the storage primitive; normal ingestion would also
-        # project the event before a fingerprint is observed. Keep this legacy
-        # fixture faithful now that events are first-class graph nodes.
-        e.process_event(malformed)
+        # Store is the lower-level append-only primitive. Leave the malformed
+        # event genuinely unprocessed so replay, rather than a precomputed
+        # equally-wrong projection, decides its outcome.
+        assert e.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (malformed["event_id"],)).fetchone()[0] == 0
         before = e.projection_fingerprint(PRJ)
         fresh = e.rebuild_projection(PRJ)          # must not raise
-        assert fresh.projection_fingerprint(PRJ) == before
-        fresh.close()
-        e.close()
+        try:
+            marker = fresh.store._conn.execute(
+                "SELECT processor_version, status FROM processed_events"
+                " WHERE event_id = ?", (malformed["event_id"],)).fetchone()
+            assert tuple(marker) == (PROCESSOR_VERSION, "quarantined")
+            assert fresh.store._conn.execute(
+                "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+                (malformed["event_id"],)).fetchone()[0] == 0
+            assert fresh.store._conn.execute(
+                "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+                (malformed["event_id"],)).fetchone()[0] == 0
+            assert fresh.projection_fingerprint(PRJ) == before
+        finally:
+            fresh.close()
+            e.close()
 
 
 class TestR5ChainCoversEveryColumn:

@@ -285,6 +285,25 @@ class TestCaptureModeIntegration:
         assert "ghp_" not in _json.dumps(ev["payload"])
         e.close()
 
+    @pytest.mark.parametrize("mode", ["metadata_only", "redacted", "full"])
+    def test_secret_bearing_mapping_key_is_refused_before_persistence(self, mode):
+        e = Engine()
+        e.create_project(
+            "p", project_id=PRJ, repository_id=REPOSITORY_ID,
+            capture_mode=mode)
+        secret = "".join(("ghp_", "KEYMATERIAL0123456789abcdefghij"))
+        before = tuple(e.store._conn.iterdump())
+        try:
+            with pytest.raises(ValueError, match="secret-bearing object key") as caught:
+                e.ingest_agent_trace(
+                    PRJ, session_id=None, span_id=f"secret-key-{mode}",
+                    payload={"nested": {secret: "ordinary value"}})
+            assert secret not in str(caught.value)
+            assert tuple(e.store._conn.iterdump()) == before
+            assert secret not in "\n".join(e.store._conn.iterdump())
+        finally:
+            e.close()
+
 
 def test_a_project_can_declare_that_prose_never_mandates(tmp_path):
     """End to end: the policy setting reaches the extractor.

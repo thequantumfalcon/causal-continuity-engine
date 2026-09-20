@@ -251,6 +251,7 @@ def _validate_payload_shape(event_name: str, payload: dict) -> None:
         _text(comment, "body", context="payload.comment", required=True)
         _timestamp(
             comment, "created_at", context="payload.comment", required=True)
+        _timestamp(comment, "updated_at", context="payload.comment")
         for field in ("author_association",):
             _text(comment, field, context="payload.comment")
     elif event_name in ("check_run", "check_suite"):
@@ -398,13 +399,14 @@ def _pull_request(payload: dict, base: dict) -> dict:
     base["flags"] = {
         "action": payload.get("action"),
         "merged": bool(pr.get("merged")),
+        "source_revision_at": pr.get("updated_at"),
         "base_sha": (pr.get("base") or {}).get("sha"),
         "head_sha": (pr.get("head") or {}).get("sha"),
         "state": pr.get("state"),
         "author_association": association,
     }
     for field in ("title", "body"):
-        if pr.get(field):
+        if field in pr:
             base["text_blocks"].append({
                 "text": pr[field], "authority": authority,
                 "ref": f"pr:{pr.get('number')}:{field}",
@@ -424,7 +426,7 @@ def _pull_request_review(payload: dict, base: dict) -> dict:
     })
     base["flags"] = {"state": review.get("state"), "action": payload.get("action"),
                      "author_association": association}
-    if review.get("body"):
+    if "body" in review:
         base["text_blocks"].append({
             "text": review["body"], "authority": authority,
             "ref": f"review:{review.get('id')}",
@@ -443,10 +445,13 @@ def _issues(payload: dict, base: dict) -> dict:
     })
     base["flags"] = {"action": payload.get("action"),
                      "state": issue.get("state"),
+                     "source_revision_at": issue.get("updated_at"),
                      "author_association": association,
                      "labels": [lbl.get("name") for lbl in issue.get("labels", []) or []]}
     for field in ("title", "body"):
-        if issue.get(field):
+        # An explicitly empty body is still a complete source snapshot;
+        # omitting it would bypass withdrawal detection (ADR-118).
+        if field in issue:
             base["text_blocks"].append({
                 "text": issue[field], "authority": authority,
                 "ref": f"issue:{issue.get('number')}:{field}",
@@ -468,6 +473,7 @@ def _issue_comment(payload: dict, base: dict) -> dict:
     base["flags"] = {
         "action": payload.get("action"),
         "command": body.strip().split("\n")[0] if body.strip().startswith("/cce") else None,
+        "source_revision_at": comment.get("updated_at"),
         "author_association": association,
     }
     if body:

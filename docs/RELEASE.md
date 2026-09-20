@@ -39,6 +39,24 @@ which maintainer signed.
 
 ## Prepare the tree
 
+Processor 1.8.0 is not an in-place projection upgrade. Preserve older stores
+and re-ingest retained sources into a distinct project/store (ADR-114).
+For a current-version store interrupted during processing, redeliver retained
+unprocessed events in canonical sequence before retrying later deliveries.
+An older quarantine cannot be retried after later terminal processing: retain
+that store and re-ingest into a distinct project/store instead. Do not delete
+markers or edit sequence values to force admission. Redacted payloads remain
+unavailable history, not evidence of successful replay (ADR-120).
+
+If a rollback-journal sidecar exists, stop all writers and preserve the database
+and all sidecars together before attempting recovery. Work only on an independent
+copy. Open that copied database with SQLite and use its backup API to produce a
+second, clean database; run `PRAGMA integrity_check` there and then the application's
+chain and compatibility checks. Do not delete the original journal or copy only
+the main file: it may contain uncommitted pages. Cold journals also require this
+explicit procedure. A recovered older projection still refuses; re-ingest retained
+inputs into a separate current project instead of editing markers (ADR-121).
+
 1. Set `__version__` in `causal_continuity_engine/__init__.py`. Change the
    matching `CHANGELOG.md` heading from `not yet released` to the real ISO
    `YYYY-MM-DD` release date, reset `Unreleased` exactly to `No unreleased

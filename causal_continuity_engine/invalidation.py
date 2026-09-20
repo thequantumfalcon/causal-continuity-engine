@@ -880,10 +880,17 @@ class InvalidationEngine:
                         "target lifecycle refused replacement evidence")
             else:
                 restored = self._restored_status(target, target_receipt)
+                # A withdrawn source closed this belief's validity. Only an
+                # explicit resolution, with no remaining holder, may open a
+                # new interval; a prose reassertion cannot do so (ADR-118).
+                reopen = (target["entity_type"] == "assumption"
+                          and target["data"].get("source_withdrawn") is True)
                 self.graph.put_node(
                     entity_type=target["entity_type"], tenant_id=target["tenant_id"],
                     project_id=target["project_id"], node_id=target_id,
-                    data={"narrowed_scope": narrowed_scope}, status=restored,
+                    data={"narrowed_scope": narrowed_scope,
+                          **({"source_withdrawn": False} if reopen else {})}, status=restored,
+                    valid_from=utcnow() if reopen else None, reopen_validity=reopen,
                     scope=narrowed_scope, authority="human_decision", event_id=event_id,
                 )
                 released.append(target_id)
