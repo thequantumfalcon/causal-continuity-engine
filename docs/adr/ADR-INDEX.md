@@ -1404,6 +1404,19 @@ ends with an explicit truncation marker. The child starts in its own POSIX
 session or Windows process group. Timeout or inherited pipes trigger a
 best-effort whole-group/tree termination and an `inconclusive` outcome.
 
+**Windows launch amendment (2026-09-20, local candidate).** Windows permits
+long filesystem paths but rejects a process working directory above its
+legacy limit, including the extended-length spelling. For a long disposable
+workdir, ask `GetShortPathNameW` for its existing alias and verify that it names
+the same directory before passing it to process creation. Ordinary paths do
+not use that lookup. Moving the process outside its materialized subject or
+changing machine-wide path settings is not an alternative: neither preserves
+the original execution contract. No alias is created and no volume setting is
+changed. A missing, oversized, or different-directory alias leaves the check
+inconclusive; operators on volumes without short names must configure a shorter
+temporary root. This is compatibility with an existing OS alias, not support
+for arbitrary-length child paths or a stronger filesystem-race boundary.
+
 **Rationale.** `capture_output=True` followed by slicing was a storage limit,
 not a memory limit: a noisy or forked verifier could exhaust the parent before
 the slice ran. Bounded drains constrain retained memory while continuing to

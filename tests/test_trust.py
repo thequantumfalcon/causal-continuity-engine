@@ -5,6 +5,7 @@ import shlex
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,66 @@ def _python_command(source: str) -> str:
 
 PASS_COMMAND = _python_command("raise SystemExit(0)")
 FAIL_COMMAND = _python_command("raise SystemExit(1)")
+
+
+def test_windows_launch_directory_keeps_short_paths_without_native_lookup(
+        tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("short workdir did not need a Windows alias")
+
+    monkeypatch.setattr(verifier_module.ctypes, "WinDLL", forbidden, raising=False)
+    path = Path("C:/temp/work")
+    assert verifier_module._windows_launch_directory(path) == str(path)
+
+
+def test_windows_launch_directory_measures_utf16_units(monkeypatch):
+    def unavailable(path, buffer, size):
+        return 0
+
+    monkeypatch.setattr(verifier_module.ctypes, "WinDLL", lambda *a, **k:
+                        SimpleNamespace(GetShortPathNameW=unavailable), raising=False)
+    path = Path("C:/" + "\U0001f600" * 130)
+    assert len(str(path)) < 258
+    with pytest.raises(OSError, match="shorter temporary directory"):
+        verifier_module._windows_launch_directory(path)
+
+
+@pytest.mark.parametrize("native_length", [0, 259, 260, 1024])
+def test_windows_launch_directory_refuses_unavailable_or_oversized_alias(
+        tmp_path, monkeypatch, native_length):
+    def unavailable(path, buffer, size):
+        return native_length
+
+    monkeypatch.setattr(verifier_module.ctypes, "WinDLL", lambda *a, **k:
+                        SimpleNamespace(GetShortPathNameW=unavailable), raising=False)
+    with pytest.raises(OSError, match="shorter temporary directory"):
+        verifier_module._windows_launch_directory(Path("C:/" + "a/" * 140))
+
+
+@pytest.mark.parametrize("same_directory", [False, True])
+def test_windows_launch_directory_requires_same_physical_directory(
+        tmp_path, monkeypatch, same_directory):
+    original = Path("C:/" + "a/" * 140)
+    observed = []
+
+    def native(path, buffer, size):
+        assert path == str(original) and size == 260
+        buffer.value = "C:/SHORT/work"
+        return len(buffer.value)
+
+    def samefile(alias, target):
+        observed.append((str(alias), target))
+        return same_directory
+
+    monkeypatch.setattr(verifier_module.ctypes, "WinDLL", lambda *a, **k:
+                        SimpleNamespace(GetShortPathNameW=native), raising=False)
+    monkeypatch.setattr(Path, "samefile", samefile)
+    if same_directory:
+        assert verifier_module._windows_launch_directory(original) == "C:/SHORT/work"
+    else:
+        with pytest.raises(OSError, match="shorter temporary directory"):
+            verifier_module._windows_launch_directory(original)
+    assert observed == [(str(Path("C:/SHORT/work")), original)]
 
 
 @pytest.fixture
