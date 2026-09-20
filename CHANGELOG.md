@@ -9,7 +9,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## 0.1.5 — 2026-09-10
+## 0.1.6 — not yet released
+
+Carries the unpublished 0.1.5 line forward with processor compatibility,
+capture, continuity, read-only observation, and release-control corrections.
+
+### Changed
+
+- **Breaking: structurally incompatible processor projections are refused.**
+  Engine, CLI, and MCP enforce ADR-114's finite declaration and per-event
+  marker/projection checks for `cce-processor/1.8.0`. Passing establishes only
+  those structural conditions, not that this processor created every database
+  object or row. The scoped-idempotency index and its key collations are bound;
+  arbitrary triggers, other indexes, other collations, payload-digest
+  correctness at admission, and later writes are not certified. A failed check
+  raises `ProcessorProjectionCompatibilityError` before schema, metadata,
+  signing-key, or secret changes; the CLI exits with status 2 and the MCP server
+  reports a tool error and keeps serving. Stores processed by 0.1.0–0.1.3 or the prepared
+  but unpublished 0.1.4 (`cce-processor/1.0.0`), by the unpublished `v0.1.5`
+  tag (`cce-processor/1.1.0`), and by development builds that wrote
+  processor versions 1.2.0 through 1.7.0 are refused. Recovery is to keep the old database
+  unchanged and re-ingest its retained sources into a new database and
+  project; there is no projection migration. Compatible unprocessed append-only history, a fully
+  retention-cleared and never-processed history in the pre-0.1.0 `events`
+  layout, and a first open that stopped before its schema was complete still
+  open (ADR-114). Clearing payloads under retention does not exempt a store
+  that an earlier processor version processed. Retained markerless payloads
+  must already satisfy current capture rules. SQLite may update SHM while
+  inspecting WAL, and builds without the checkpoint-suppression API may
+  checkpoint WAL on refusal; this is not a whole-filesystem no-write promise.
+- **Development tools are pinned.** ruff 0.16.7, build 1.6.1, and pip 26.2.1,
+  with the lock regenerated and the pre-commit ruff hook pinned to the same
+  release.
+
+### Fixed
+
+- **Compatibility refusal could implicitly recover a rollback journal.** A hot
+  journal's spilled main pages could pass immutable preflight before SQLite
+  restored the committed database and refused it. Rollback-journal sidecars
+  now refuse before path reads and again before connection reads. Cold journals
+  also require explicit recovery on a preserved copy; never delete a journal
+  to force admission (ADR-121).
+- **An explicit prohibition could evade requirement conflict detection.** An
+  otherwise identical must/shall not/never constraint and positive requirement
+  now remain contested at equal authority, including within one source block.
+  Stronger authority still wins. This closed lexical rule does not detect
+  arbitrary semantic contradictions (ADR-119).
+- **Late source revisions could undo newer projected text.** Explicit GitHub
+  issue, pull-request, and comment revision times now fence strictly older
+  fields from the same source at no greater authority. Missing, equal, or
+  unauthenticated clocks do not prove source chronology; equal/absent clocks
+  retain arrival-order handling. Missing or quarantined fields establish no
+  fence. Separately, processing refuses to jump a retained canonical gap or
+  retry an older quarantine after later processing. Redeliver retained gaps
+  in sequence; otherwise preserve the store and re-ingest into a distinct
+  project/store. Already successful processing is an input-validated no-op
+  (ADR-120).
+- **Editing away an assumption left it active indefinitely.** Last-source
+  withdrawal now invalidates it and closes its validity; another source can
+  still sustain it. Explicitly empty source bodies reach this same path.
+  Reasserting the words does not clear the invalidation. A human narrowed-scope
+  resolution can start a new validity interval after all holders close, while
+  preserving prior history. Weaker or quarantined edits cannot withdraw a
+  stronger assumption. This is source withdrawal, not semantic contradiction
+  detection or source-revision ordering (ADR-118).
+- **Co-asserted requirements could supersede one another by sentence order.**
+  Requirements extracted from one complete source block now coexist without
+  a freshness ranking between them. Restated requirements count too. This
+  preserves assertions, not a proof that they are compatible: genuine
+  contradictions within the block are not detected by this rule (ADR-117).
+- **A committed event could be missing from an apparently current projection.**
+  Markerless events now make the packet frontier incomplete across CLI, MCP,
+  and signed receipts. Duplicate delivery can project the stored event once,
+  without recapturing its payload; a competing terminal marker wins over
+  reconciliation. A stricter incompatible current capture policy still refuses.
+- **Capture validation and normalization could be bypassed on direct processing.**
+  Processing refetches and validates the canonical event before projection;
+  failed GitHub normalization cannot produce an `ok` marker. Every terminal
+  quarantine write is read back within its owning transaction (ADRs 115–116).
+- **Credential redaction missed formats and could scan private keys quadratically.**
+  Secret-bearing object keys refuse; supported vendor credentials and complete,
+  truncated, or spaced private-key blocks are covered by bounded scanning.
+  A truncated key can consume ambiguous PEM-shaped text through EOF, but stops
+  at a syntactically distinct boundary. This remains a pattern-based
+  control, not a guarantee that every credential format is recognized.
+- **MCP observations could reserve a writer or modify local state.**
+  Tools now use an immutable read-only view and do not provision credentials
+  or sign discarded receipts. Tool-local failures return fixed diagnostics
+  and leave the session usable. Close writers cleanly before this immutable
+  observation: any WAL, SHM, or rollback-journal sidecar causes refusal rather
+  than silently certifying an incomplete view.
+- **Private database creation and backfill reporting were incomplete.**
+  Database creation applies restrictive permissions before exposing the file;
+  backfill counts only newly created nodes. Token validation rejects non-ASCII
+  and control characters before networking without echoing their values.
+- **Release checks could outgrow their surrounding time budgets.**
+  Test, bootstrap, and hosted-job ceilings now form an explicit hierarchy.
+  An offline schema inventory check complements the tagged-schema comparison;
+  installed API tests resolve resources from their package root.
+- **The release workflow refused its own hosted checkout.** The pinned
+  checkout action runs `git sparse-checkout disable`, which writes
+  `.git/config.worktree`, and then unsets `extensions.worktreeConfig`, so Git
+  never reads that file. The hosted release check refused per-worktree
+  configuration by its existence alone, so release run 34562475819 stopped
+  before it bound `v0.1.5` to a package version. The hosted check now admits
+  exactly that three-record file, only on the HTTPS origin with `gc.auto` set
+  to `0`; the owner tag helper and any other per-worktree configuration are
+  still refused (ADR-111).
+- **A direct `process_event()` call could leave projection rows with no
+  processing evidence.** The success marker is now written and read back inside
+  the transaction that owns the projection, so a failed or suppressed marker
+  rolls the projection back.
+- **A prohibition could be recorded twice, as a requirement and a
+  constraint.** A clause such as "the invariant must hold: authority is never
+  silently dropped" matched both patterns and produced two authority nodes with
+  the same words. A requirement is now dropped when an overlapping constraint
+  already contains its full normalized text.
+- **A checklist marker leaked into extracted statements.** A checklist line
+  that also matched a modal pattern recorded "[ ] ..." or "[x] ..." as the
+  requirement or constraint text. The checkbox is now stripped like other list
+  markup. With the prohibition fix, extraction is versioned as extractor 1.3.0
+  in this release; the cumulative processor identity is `cce-processor/1.8.0`.
+- **The backfill example could print a malformed token.** A `GITHUB_TOKEN`
+  containing a newline or carriage return made the HTTP client quote the whole
+  Authorization header in its error. The example now refuses a token
+  containing whitespace or control characters before any request, without
+  showing its value.
+- **The backfill example always reported 0 nodes.** It counted a key the ingest
+  report does not have; it now counts the nodes each ingest created.
+
+## 0.1.5 — tagged 2026-09-10, never published
+
+`v0.1.5` was tagged and never published: release run 34562475819 stopped on
+hosted-checkout worktree residue before it bound the tag to a package version,
+for the reason recorded under 0.1.6 Fixed. The tag is left in place so that
+failure stays attributable, and the version was incremented rather than reused.
+Its changes are carried forward into 0.1.6.
 
 Closes the trust and release-boundary findings discovered during the post-0.1.4
 audit, with each defect pinned against the 0.1.4 source baseline.

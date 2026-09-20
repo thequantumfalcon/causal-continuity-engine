@@ -4,7 +4,7 @@ Status: known-carrier scanning is implemented. The isolated-review launcher is
 a reference implementation with focused tests, but its privileged macOS
 acceptance test has not run against a provisioned root-controlled installation.
 The launcher is therefore not an active or release-relied-upon control for
-v0.1.5. Hosted enforcement and `cce-integrity-v1` are specified but not
+v0.1.6. Hosted enforcement and `cce-integrity-v1` are specified but not
 implemented.
 
 ## Decision
