@@ -24,6 +24,7 @@ GATE_TIMEOUT_SECONDS = {
     "stdlib boundary": 120,
     "benchmark": 300,
     "conformance corpus": 180,
+    "public schema registry": 60,
     "capability generation": 120,
     "capability drift": 60,
     "clean source before release": 60,
@@ -62,6 +63,10 @@ BASE_GATES = (
     ("benchmark", (
         sys.executable, "-W", "error", "benchmarks/continuitybench/run.py")),
     ("conformance corpus", (sys.executable, "vectors/generate.py", "--check")),
+    (
+        "public schema registry",
+        (sys.executable, ".github/scripts/verify_public_schemas.py", "--offline"),
+    ),
     (
         "capability generation",
         (sys.executable, "-m", "causal_continuity_engine.capabilities", "--write"),
