@@ -254,7 +254,9 @@ def main(argv: list[str] | None = None) -> int:
             report = engine.ingest_github(
                 project_id, event_name, delivery_id, payload)
             if report:
-                nodes += len(report.get("created", []))
+                nodes += sum(
+                    bool(item.get("new", True))
+                    for item in report.get("created", []))
                 invalidations += len(report.get("invalidations", []))
                 conflicts += len(report.get("conflicts", []))
         print(f"  ingested {len(events)} events -> {nodes} node(s),"
