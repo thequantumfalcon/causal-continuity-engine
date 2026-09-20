@@ -4,15 +4,47 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _gitleaks_value_is_allowed(value: str) -> bool:
+    config = tomllib.loads((ROOT / ".gitleaks.toml").read_text(encoding="utf-8"))
+    return any(re.search(pattern, value) for pattern in config["allowlist"]["regexes"])
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "".join(("ghp_", "ABCDEFghijklmnopqrstuvwx123456")),
+        "".join(("xoxb-", "123456789012-abcdefghijkl")),
+        "".join(
+            (
+                "eyJhbGciOiJIUzI1NiJ9",
+                ".",
+                "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+                ".",
+            )
+        ),
+    ],
+)
+def test_gitleaks_fixture_allowlist_matches_only_the_complete_value(value):
+    assert _gitleaks_value_is_allowed(value)
+    mutations = (
+        "x" + value,
+        value + "x",
+        value[:-1] + ("A" if value[-1] != "A" else "B"),
+    )
+    assert not any(_gitleaks_value_is_allowed(mutation) for mutation in mutations)
 
 
 def _load_checker():
