@@ -2886,3 +2886,46 @@ writers. Direct low-level Store/SQLite access is not this Engine boundary.
 WAL and shared-memory behavior retain ADR-114's distinct limits. SQLite recovery
 restores committed pages, not erased payloads, runtime migration or semantic
 compatibility. No new completion rejection gate is introduced.
+
+## ADR-122 — Release provenance retains an independently reviewed dependency closure
+
+**Status.** Prepared locally, 2026-09-20; adoption requires hosted validation.
+
+**Context.** The official attestation action's production dependency closure
+still matched retained GitHub advisory records. Updating to upstream
+`actions/attest` v4.2.2 alone did not remove those matches. They establish
+affected dependency versions, not exploitation of this release workflow.
+
+**Decision.** Pin the owner-maintained `cce-release-attest` snapshot by full
+commit identity. It retains upstream source, tests, license and action interface,
+with patched csv-parse and undici pins and an explicit `@sigstore/core` override.
+The override crosses a declared major-version range and is maintained here,
+not represented as upstream-supported. The action's UPSTREAM record binds its
+source and dated advisory assessment. Its generated bundle preserves upstream
+encoding-table values using explicit Unicode escapes; full token-stream equality
+and exact hosted rebuild comparison bind that representation change.
+
+Keep the public-visibility condition, exact `dist/*` subject, existing minimal
+publisher permissions, immutable artifact handoff, and no-checkout publication
+job unchanged. Provenance failure still stops publication. No fallback to an
+affected action or unsigned publication is introduced.
+
+**Verification.** The pin regression fails against the previous workflow.
+Admission of this snapshot additionally requires its manual hosted validation:
+unchanged upstream tests and reproducible bundle, refusal without identity
+permission, a real non-release attestation whose certificate/workflow/source and
+subject digest verify, altered-subject refusal, and an unchanged-subject recheck.
+Synthetic endpoint tests alone cannot satisfy that hosted prerequisite. The
+existing release structural/behavior controls remain required.
+
+**Alternatives and consequences.** Waiting for a fixed official action avoids
+fork maintenance but leaves the blocker unresolved. Suppressing advisories or
+removing provenance loses a control. This snapshot instead requires explicit
+upstream tracking, advisory review and revalidation for every new immutable pin.
+Return to a supported official release once equivalent checks pass.
+
+**Limit.** A dated zero-match advisory scan is not proof of no vulnerabilities.
+The hosted runner, GitHub identity issuance, certificate authority, transparency
+log, verification client and signing library remain trusted dependencies.
+Attestation authenticates artifact provenance, not application correctness.
+The toy validation is not a CCE release. No Engine completion gate is changed.

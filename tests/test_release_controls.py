@@ -3100,6 +3100,23 @@ def test_every_workflow_action_reference_uses_a_full_commit_sha():
     assert mutable == []
 
 
+def test_release_provenance_uses_reviewed_dependency_snapshot():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    publish = workflow.split("\n  publish:", 1)[1].split("\n  pypi:", 1)[0]
+    step = publish.split("      - name: Attest release provenance\n", 1)[1]
+    step = step.split("\n      #", 1)[0]
+    assert re.findall(r"uses:\s*([^#\s]+)", step) == [
+        "thequantumfalcon/cce-release-attest@7222071cbb16300546aa89e840e57a0c9ceeae89"
+    ]
+    assert "if: steps.visibility.outputs.public == 'true'" in step
+    assert 'subject-path: "dist/*"' in step
+    assert "continue-on-error:" not in step
+    assert publish.index("Attest release provenance") < publish.index(
+        "Publish immutable-ready GitHub release")
+    assert "actions/checkout@" not in publish
+
+
 def test_release_verifies_public_schemas_before_any_draft_or_publish():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8")

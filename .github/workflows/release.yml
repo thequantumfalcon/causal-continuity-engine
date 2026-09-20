@@ -282,7 +282,7 @@ jobs:
       # the release remains checksummed and reproducible until the public flip.
       - name: Attest release provenance
         if: steps.visibility.outputs.public == 'true'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
+        uses: thequantumfalcon/cce-release-attest@7222071cbb16300546aa89e840e57a0c9ceeae89  # ADR-122
         with:
           subject-path: "dist/*"
 
