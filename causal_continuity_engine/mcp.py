@@ -323,7 +323,7 @@ def _handle(request: dict, session: _Session) -> dict | None:
             return _error(request_id, _INVALID_PARAMS, argument_error)
         try:
             body = session.call(name, arguments)
-        except Exception as exc:  # noqa: BLE001 - reported to the caller
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - tool-local failure
             # A tool failure is a result with isError, not a protocol error:
             # the call was well formed and the client needs to see why.
             traceback.print_exc(file=sys.stderr)

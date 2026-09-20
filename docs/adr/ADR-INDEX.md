@@ -1974,7 +1974,9 @@ without writing a packet watermark or quarantine-collision audit entry.
 Collision disclosure remains in the returned packet. The stdio session
 implements the MCP initialization lifecycle, permits ping during initialization,
 never executes a notification, and validates request identifiers, parameter
-objects, and tool arguments before opening project state.
+objects, and tool arguments before opening project state. A tool-local CLI
+`SystemExit` is returned as that call's `isError` result; it cannot terminate
+the stdio loop or prevent later requests from receiving responses.
 
 **Rationale.** A transport described as read-only advanced the freshness
 watermark every time a client viewed a packet; the rare quarantine-collision
@@ -1997,7 +1999,8 @@ the session refuse rather than refresh silently, and file identity checks do
 not protect against a hostile process able to rewrite the same inode while
 forging its size and timestamps. This boundary establishes local non-mutation,
 not schema correctness or protection from a hostile process with the same OS
-authority.
+authority. Explicit process interrupts such as `KeyboardInterrupt` and
+`GeneratorExit` are not tool failures and remain able to stop the server.
 
 ## ADR-109 — Prose authority is evaluated at extraction and projection
 
