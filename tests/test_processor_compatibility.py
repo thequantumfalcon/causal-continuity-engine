@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ import pytest
 from causal_continuity_engine import engine as engine_module
 from causal_continuity_engine.core import canonical_json, sha256_hex
 from causal_continuity_engine.engine import PROCESSOR_VERSION, Engine
+from causal_continuity_engine.github import WebhookError, WebhookPayloadError
 from causal_continuity_engine.store import GENESIS, Store
 
 COMPAT_ERROR = getattr(
@@ -51,6 +53,13 @@ def _issue(number, body):
     }
 
 
+def _malformed_issue():
+    return {
+        "action": "opened",
+        "repository": {"id": REPOSITORY_ID, "full_name": "o/r"},
+    }
+
+
 def _ingested(directory, body="The exporter must write CSV output."):
     """A normal exact-S ingest history."""
     database = directory / "cce.sqlite3"
@@ -68,7 +77,14 @@ EDGE_BODY = ("The exporter must write CSV output.\n"
 
 def _ingested_with_edges(directory):
     """A history that really produces event-attributed edge rows."""
-    return _ingested(directory, EDGE_BODY)
+    database = _ingested(directory)
+    engine = Engine(database, workdir=str(directory))
+    try:
+        engine.ingest_github(
+            PROJECT, "issues", "d2", _issue(2, "The exporter must write JSON output."))
+    finally:
+        engine.close()
+    return database
 
 
 def _sql(database, *statements):
@@ -95,6 +111,41 @@ def _rows(database, query, parameters=()):
         return connection.execute(query, parameters).fetchall()
     finally:
         connection.close()
+
+
+def _quarantine_tamper_trigger(tamper):
+    if tamper == "suppress":
+        return (
+            "CREATE TRIGGER tamper_quarantine BEFORE INSERT ON processed_events"
+            " WHEN NEW.status='quarantined' BEGIN SELECT RAISE(IGNORE); END"
+        )
+    if tamper == "rewrite":
+        return (
+            "CREATE TRIGGER tamper_quarantine AFTER INSERT ON processed_events"
+            " WHEN NEW.status='quarantined' BEGIN UPDATE processed_events"
+            " SET error='rewritten' WHERE event_id=NEW.event_id"
+            " AND processor_version=NEW.processor_version; END"
+        )
+    if tamper == "inject-node":
+        return (
+            "CREATE TRIGGER tamper_quarantine AFTER INSERT ON processed_events"
+            " WHEN NEW.status='quarantined' BEGIN INSERT INTO nodes"
+            " (node_id,version,entity_type,tenant_id,project_id,status,authority,"
+            "data,tx_from,event_id) VALUES"
+            " ('nod_tamper000000000000000000',1,'claim','ten_local','prj_compat',"
+            "'active','agent_observed','{}','2026-01-01T00:00:00Z',NEW.event_id); END"
+        )
+    if tamper == "inject-edge":
+        return (
+            "CREATE TRIGGER tamper_quarantine AFTER INSERT ON processed_events"
+            " WHEN NEW.status='quarantined' BEGIN INSERT INTO edges"
+            " (edge_id,version,edge_type,src_id,dst_id,tenant_id,project_id,"
+            "strength,data,tx_from,event_id) VALUES"
+            " ('edg_tamper000000000000000000',1,'supports','src_tamper',"
+            "'dst_tamper','ten_local','prj_compat',1.0,'{}',"
+            "'2026-01-01T00:00:00Z',NEW.event_id); END"
+        )
+    raise AssertionError(f"unknown quarantine tamper {tamper}")
 
 
 def _clone_row(database, table, **overrides):
@@ -240,6 +291,1100 @@ def test_direct_process_event_writes_projection_and_marker(tmp_path):
     _assert_admitted(database, directory)
 
 
+def test_malformed_github_ingest_rejects_before_append(tmp_path):
+    directory = _private_dir(tmp_path, "malformed-github-ingest")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    try:
+        with pytest.raises(WebhookPayloadError, match="payload.issue"):
+            engine.ingest_github(
+                PROJECT, "issues", "malformed-ingest", _malformed_issue())
+        assert engine.store.events(PROJECT, tenant_id=TENANT) == []
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events").fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id IS NOT NULL"
+        ).fetchone()[0] == 0
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    ("case", "source_type", "idempotency_key", "payload", "error_type", "match"),
+    [
+        (
+            "malformed-shape", "github:issues", "github:malformed-direct",
+            _malformed_issue(), WebhookPayloadError, "payload.issue",
+        ),
+        (
+            "unknown-suffix", "github:not_subscribed", "github:unknown-direct",
+            _issue(7, "ordinary text"), WebhookError, "unsubscribed event",
+        ),
+        (
+            "missing-delimiter", "github:issues", "missing-delimiter",
+            _issue(8, "ordinary text"), WebhookPayloadError,
+            "idempotency_key.*delimiter",
+        ),
+        (
+            "wrong-prefix", "github:issues", "evil:delivery",
+            _issue(8, "ordinary text"), WebhookPayloadError,
+            "GitHub event identity",
+        ),
+        (
+            "extra-delimiter", "github:issues", "github:a:b",
+            _issue(8, "ordinary text"), WebhookPayloadError,
+            "GitHub event identity",
+        ),
+        (
+            "empty-delivery", "github:issues", "github:",
+            _issue(8, "ordinary text"), WebhookPayloadError,
+            "GitHub event identity",
+        ),
+    ],
+)
+def test_direct_process_event_requires_github_normalization(
+        tmp_path, case, source_type, idempotency_key, payload,
+        error_type, match):
+    directory = _private_dir(tmp_path, f"github-direct-{case}")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type=source_type,
+        idempotency_key=idempotency_key, payload=payload,
+        authority="repository_authoritative")
+    before = canonical_json(event)
+    try:
+        with pytest.raises(error_type, match=match):
+            engine.process_event(event)
+        assert canonical_json(engine.store.get_event(
+            event["event_id"], tenant_id=TENANT, project_id=PROJECT)) == before
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        engine.close()
+    _assert_admitted(database, directory)
+
+
+def test_direct_process_event_preserves_valid_github_normalization(tmp_path):
+    directory = _private_dir(tmp_path, "valid-github-direct")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="github:issues",
+        idempotency_key="github:valid-direct",
+        payload=_issue(9, "The exporter must write CSV output."),
+        authority="human_intent")
+    fresh = None
+    try:
+        report = engine.process_event(event)
+        assert report["created"]
+        assert _rows(
+            database,
+            "SELECT processor_version, status FROM processed_events"
+            " WHERE event_id = ?", (event["event_id"],)) == [
+                (PROCESSOR_VERSION, "ok")]
+        before = engine.projection_fingerprint(PROJECT)
+        fresh = engine.rebuild_projection(PROJECT)
+        assert fresh.projection_fingerprint(PROJECT) == before
+    finally:
+        if fresh is not None:
+            fresh.close()
+        engine.close()
+
+
+@pytest.mark.parametrize("failure_type", [WebhookPayloadError, MemoryError],
+                         ids=("payload-error", "memory-error"))
+def test_live_github_reconstruction_failure_quarantines_after_capture(
+        tmp_path, monkeypatch, failure_type):
+    directory = _private_dir(
+        tmp_path, f"github-live-{failure_type.__name__}")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    calls = 0
+    original_normalize = engine_module.normalize
+
+    def fail_reconstruction(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise failure_type("forced canonical reconstruction failure")
+        return original_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "normalize", fail_reconstruction)
+    try:
+        with pytest.raises(failure_type, match="reconstruction failure"):
+            engine.ingest_github(
+                PROJECT, "issues", "live-reconstruction",
+                _issue(10, "The exporter must write CSV output."))
+        assert calls == 2
+        event = engine.store.events(PROJECT, tenant_id=TENANT)[0]
+        assert _rows(
+            database,
+            "SELECT processor_version, status, error FROM processed_events"
+            " WHERE event_id = ?", (event["event_id"],)) == [
+                (PROCESSOR_VERSION, "quarantined",
+                 "event processing failed")]
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        engine.close()
+    _assert_admitted(database, directory)
+
+
+def test_direct_oversized_github_suffix_propagates_without_projection(tmp_path):
+    directory = _private_dir(tmp_path, "github-direct-oversized-suffix")
+    database = directory / "cce.sqlite3"
+    suffix = "x" * 270_000
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type=f"github:{suffix}",
+        idempotency_key="github:oversized-direct",
+        payload=_issue(11, "ordinary text"),
+        authority="repository_authoritative")
+    before = canonical_json(event)
+    try:
+        with pytest.raises(WebhookError) as caught:
+            engine.process_event(event)
+        assert suffix in str(caught.value)
+        assert canonical_json(engine.store.get_event(
+            event["event_id"], tenant_id=TENANT, project_id=PROJECT)) == before
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        engine.close()
+    _assert_admitted(database, directory)
+
+
+def test_rebuild_quarantines_malformed_github_and_continues(tmp_path):
+    directory = _private_dir(tmp_path, "github-rebuild-normalization")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    malformed = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="github:issues",
+        idempotency_key="github:malformed-rebuild",
+        payload=_malformed_issue(), authority="repository_authoritative")
+    oversized_suffix = "x" * 270_000
+    oversized = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT,
+        source_type=f"github:{oversized_suffix}",
+        idempotency_key="github:oversized-rebuild",
+        payload=_issue(11, "ordinary text"),
+        authority="repository_authoritative")
+    wrong_prefix = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="github:issues",
+        idempotency_key="evil:delivery",
+        payload=_issue(12, "ordinary text"),
+        authority="repository_authoritative")
+    valid = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="github:issues",
+        idempotency_key="github:valid-rebuild",
+        payload=_issue(13, "The exporter must write JSON output."),
+        authority="human_intent")
+    source_before = canonical_json(
+        engine.store.events(PROJECT, tenant_id=TENANT))
+    fresh = engine.rebuild_projection(PROJECT)
+    try:
+        markers = {
+            row[0]: (row[1], row[2])
+            for row in fresh.store._conn.execute(
+                "SELECT event_id, status, error FROM processed_events")
+        }
+        assert markers == {
+            malformed["event_id"]: (
+                "quarantined", "event processing failed"),
+            oversized["event_id"]: (
+                "quarantined", "event processing failed"),
+            wrong_prefix["event_id"]: (
+                "quarantined", "event processing failed"),
+            valid["event_id"]: ("ok", None),
+        }
+        assert oversized_suffix not in markers[oversized["event_id"]][1]
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (malformed["event_id"],)).fetchone()[0] == 0
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (malformed["event_id"],)).fetchone()[0] == 0
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (oversized["event_id"],)).fetchone()[0] == 0
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (oversized["event_id"],)).fetchone()[0] == 0
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (wrong_prefix["event_id"],)).fetchone()[0] == 0
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (wrong_prefix["event_id"],)).fetchone()[0] == 0
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE node_id = ? AND event_id = ?",
+            (valid["event_id"], valid["event_id"])).fetchone()[0] == 1
+        assert canonical_json(
+            engine.store.events(PROJECT, tenant_id=TENANT)) == source_before
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events").fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id IS NOT NULL"
+        ).fetchone()[0] == 0
+    finally:
+        fresh.close()
+        engine.close()
+
+
+def test_rebuild_quarantine_diagnostic_is_total_and_continues(
+        tmp_path, monkeypatch):
+    directory = _private_dir(tmp_path, "github-rebuild-hostile-error-name")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    hostile = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="github:issues",
+        idempotency_key="github:hostile-error-name",
+        payload=_issue(13, "ordinary text"),
+        authority="repository_authoritative")
+    valid = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="github:issues",
+        idempotency_key="github:after-hostile-error",
+        payload=_issue(14, "The exporter must write YAML output."),
+        authority="human_intent")
+    hostile_error = type("Bad\nName", (Exception,), {})
+    original_normalize = engine_module.normalize
+
+    def fail_first(event_name, delivery_id, payload):
+        if delivery_id == "hostile-error-name":
+            raise hostile_error("source-shaped detail")
+        return original_normalize(event_name, delivery_id, payload)
+
+    monkeypatch.setattr(engine_module, "normalize", fail_first)
+    fresh = engine.rebuild_projection(PROJECT)
+    try:
+        marker = fresh.store._conn.execute(
+            "SELECT processor_version, status, error FROM processed_events"
+            " WHERE event_id = ?", (hostile["event_id"],)).fetchone()
+        assert tuple(marker) == (
+            PROCESSOR_VERSION, "quarantined", "event processing failed")
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (hostile["event_id"],)).fetchone()[0] == 0
+        marker = fresh.store._conn.execute(
+            "SELECT processor_version, status, error FROM processed_events"
+            " WHERE event_id = ?", (valid["event_id"],)).fetchone()
+        assert tuple(marker) == (PROCESSOR_VERSION, "ok", None)
+        assert fresh.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE node_id = ? AND event_id = ?",
+            (valid["event_id"], valid["event_id"])).fetchone()[0] == 1
+    finally:
+        fresh.close()
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "tamper", ["suppress", "rewrite", "inject-node", "inject-edge"])
+def test_live_quarantine_requires_exact_terminal_state(
+        tmp_path, monkeypatch, tamper):
+    directory = _private_dir(tmp_path, f"live-quarantine-{tamper}")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    engine.close()
+    _sql(database, _quarantine_tamper_trigger(tamper))
+
+    engine = Engine(database, workdir=str(directory))
+    attempts = []
+    original_process_text = engine._process_text
+    original_mark_processed = Store.mark_processed
+
+    def fail_after_witness(event, block, report):
+        original_process_text(event, block, report)
+        raise RuntimeError("forced post-witness projection failure")
+
+    def observed_mark(store, event_id, processor_version, status="ok", error=None):
+        if store is engine.store and status == "quarantined":
+            attempts.append((event_id, processor_version, status, error))
+        return original_mark_processed(
+            store, event_id, processor_version, status, error)
+
+    monkeypatch.setattr(engine, "_process_text", fail_after_witness)
+    monkeypatch.setattr(Store, "mark_processed", observed_mark)
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest") as refusal:
+            engine.ingest_agent_trace(
+                PROJECT, session_id=None, span_id=f"live-{tamper}",
+                payload={"message": "The exporter must write CSV output."})
+        assert refusal.value.__suppress_context__ is True
+        event = engine.store.events(PROJECT, tenant_id=TENANT)[0]
+        assert attempts == [(
+            event["event_id"], PROCESSOR_VERSION, "quarantined",
+            "event processing failed")]
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        engine.close()
+    _assert_admitted(database, directory)
+
+
+@pytest.mark.parametrize(
+    "tamper", ["suppress", "rewrite", "inject-node", "inject-edge"])
+def test_rebuild_quarantine_requires_exact_terminal_state(
+        tmp_path, monkeypatch, tamper):
+    directory = _private_dir(tmp_path, f"rebuild-quarantine-{tamper}")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    failed = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        source_id=f"failed-{tamper}", idempotency_key=f"trace:failed-{tamper}",
+        payload={"message": "The exporter must write CSV output."},
+        authority="agent_observed")
+    later = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        source_id=f"later-{tamper}", idempotency_key=f"trace:later-{tamper}",
+        payload={"message": "The exporter must write JSON output."},
+        authority="agent_observed")
+    attempts = []
+    fresh_stores = []
+    original_process_text = Engine._process_text
+    original_mark_processed = Store.mark_processed
+
+    def fail_first(instance, event, block, report):
+        if event["event_id"] == failed["event_id"]:
+            original_process_text(instance, event, block, report)
+            raise RuntimeError("forced post-witness projection failure")
+        return original_process_text(instance, event, block, report)
+
+    def observed_mark(store, event_id, processor_version, status="ok", error=None):
+        if store is not engine.store and status == "quarantined":
+            attempts.append((event_id, processor_version, status, error))
+            if not fresh_stores:
+                fresh_stores.append(store)
+                store._conn.execute(_quarantine_tamper_trigger(tamper))
+        return original_mark_processed(
+            store, event_id, processor_version, status, error)
+
+    monkeypatch.setattr(Engine, "_process_text", fail_first)
+    monkeypatch.setattr(Store, "mark_processed", observed_mark)
+    rebuilt = None
+    caught = None
+    try:
+        try:
+            rebuilt = engine.rebuild_projection(PROJECT)
+        except Exception as exc:  # the concrete verdict is asserted below
+            caught = exc
+        assert isinstance(
+            caught, engine_module.ProcessorProjectionCompatibilityError)
+        assert attempts == [(
+            failed["event_id"], PROCESSOR_VERSION, "quarantined",
+            "event processing failed")]
+        assert fresh_stores
+        with pytest.raises(sqlite3.ProgrammingError):
+            fresh_stores[0]._conn.execute("SELECT 1")
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events").fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id IN (?, ?)",
+            (failed["event_id"], later["event_id"])).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id IN (?, ?)",
+            (failed["event_id"], later["event_id"])).fetchone()[0] == 0
+    finally:
+        if rebuilt is not None:
+            rebuilt.close()
+        engine.close()
+
+
+def test_rebuild_preserves_quarantine_baseexception_when_cleanup_fails(
+        tmp_path, monkeypatch):
+    directory = _private_dir(tmp_path, "rebuild-quarantine-baseexception")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        source_id="baseexception", idempotency_key="trace:baseexception",
+        payload={"message": "The exporter must write CSV output."},
+        authority="agent_observed")
+    original_close = Engine.close
+
+    def fail_processing(_instance, _event, _block, _report):
+        raise RuntimeError("forced post-witness projection failure")
+
+    def interrupt_quarantine(_store, _event_id, _exc):
+        raise KeyboardInterrupt("forced process-control interruption")
+
+    def close_with_failure(instance):
+        result = original_close(instance)
+        if instance is not engine:
+            raise SystemExit("forced close failure")
+        return result
+
+    monkeypatch.setattr(Engine, "_process_text", fail_processing)
+    monkeypatch.setattr(
+        engine_module, "_mark_event_quarantined", interrupt_quarantine)
+    monkeypatch.setattr(Engine, "close", close_with_failure)
+    try:
+        with pytest.raises(
+                KeyboardInterrupt,
+                match="process-control interruption") as interruption:
+            engine.rebuild_projection(PROJECT)
+        assert interruption.value.__notes__ == [
+            "additionally failed to close rebuilt projection"]
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("concurrent_state", ["success", "graph-only"])
+def test_quarantine_cannot_overwrite_concurrent_terminal_state(
+        tmp_path, monkeypatch, concurrent_state):
+    directory = _private_dir(
+        tmp_path, f"quarantine-concurrent-{concurrent_state}")
+    database = directory / "cce.sqlite3"
+    failing = Engine(database, workdir=str(directory))
+    failing.create_project("p", project_id=PROJECT,
+                           repository_id=REPOSITORY_ID)
+    succeeding = Engine(database, workdir=str(directory))
+    before_quarantine = threading.Event()
+    resume_quarantine = threading.Event()
+    worker_errors = []
+    original_diagnostic = engine_module._quarantine_diagnostic
+
+    def fail_after_witness(_event, _block, _report):
+        raise RuntimeError("forced post-witness projection failure")
+
+    def pause_before_quarantine(exc):
+        before_quarantine.set()
+        if not resume_quarantine.wait(10):
+            raise RuntimeError("timed out waiting for concurrent success")
+        return original_diagnostic(exc)
+
+    def run_failing_ingest():
+        try:
+            failing.ingest_agent_trace(
+                PROJECT, session_id=None,
+                span_id=f"concurrent-{concurrent_state}",
+                payload={"message": "The exporter must write CSV output."})
+        except BaseException as exc:  # captured for the main test thread
+            worker_errors.append(exc)
+
+    monkeypatch.setattr(failing, "_process_text", fail_after_witness)
+    monkeypatch.setattr(
+        engine_module, "_quarantine_diagnostic", pause_before_quarantine)
+    worker = threading.Thread(target=run_failing_ingest)
+    worker.start()
+    try:
+        try:
+            assert before_quarantine.wait(10), \
+                "failing ingest did not reach quarantine"
+            events = succeeding.store.events(PROJECT, tenant_id=TENANT)
+            assert len(events) == 1
+            event = events[0]
+            if concurrent_state == "success":
+                succeeding.process_event(event)
+            else:
+                succeeding.graph.put_node(
+                    entity_type="claim", tenant_id=TENANT,
+                    project_id=PROJECT,
+                    node_id="clm_concurrent0000000000000000",
+                    status="active", authority="agent_observed",
+                    data={"statement": "concurrent attributed state"},
+                    event_id=event["event_id"])
+        finally:
+            resume_quarantine.set()
+            worker.join(10)
+        assert not worker.is_alive(), "failing ingest did not finish"
+        assert len(worker_errors) == 1
+        assert isinstance(
+            worker_errors[0], engine_module.ProcessorProjectionCompatibilityError)
+        marker_rows = succeeding.store._conn.execute(
+            "SELECT processor_version, status, error FROM processed_events"
+            " WHERE event_id = ?", (event["event_id"],)).fetchall()
+        if concurrent_state == "success":
+            assert [tuple(row) for row in marker_rows] == [
+                (PROCESSOR_VERSION, "ok", None)]
+        else:
+            assert marker_rows == []
+        assert succeeding.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] > 0
+        assert succeeding.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        resume_quarantine.set()
+        if worker.is_alive():
+            worker.join(10)
+        failing.close()
+        succeeding.close()
+    if concurrent_state == "success":
+        _assert_admitted(database, directory)
+    else:
+        _assert_refused(database, directory)
+
+
+@pytest.mark.parametrize("secret", [
+    "sk-proj-" + "A" * 40,
+    ("-----BEGIN RSA PRIVATE KEY-----\n"
+     "MIIE AABB\n"
+     "REVG"),
+], ids=("token", "spaced-truncated-pem"))
+def test_direct_process_event_refuses_unredacted_canonical_payload_atomically(
+        tmp_path, secret):
+    """A Store caller cannot stamp current semantics over secret-bearing bytes."""
+    directory = _private_dir(tmp_path, "direct-unredacted")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    record = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="k-direct-unredacted",
+        payload={"message": f"Requirement: deploy with {secret}"},
+        authority="agent_observed")
+    stored = engine.store.get_event(
+        record["event_id"], tenant_id=TENANT, project_id=PROJECT)
+    before = canonical_json(stored)
+
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest"):
+            engine.process_event(stored)
+
+        assert canonical_json(engine.store.get_event(
+            record["event_id"], tenant_id=TENANT, project_id=PROJECT)) == before
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (record["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (record["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
+            (record["event_id"],)).fetchone()[0] == 0
+        assert secret not in "\n".join(
+            row[0] for row in engine.store._conn.execute("SELECT data FROM nodes"))
+    finally:
+        engine.close()
+
+    frozen = _frozen_state(database)
+    _assert_refused(database, directory)
+    assert _frozen_state(database) == frozen
+
+
+@pytest.mark.parametrize("mode", ["metadata_only", "redacted", "full"])
+def test_current_capture_boundary_preserves_normal_ingest_and_rebuild(
+        tmp_path, mode):
+    directory = _private_dir(tmp_path, f"ingest-{mode}-rebuild")
+    database = directory / "cce.sqlite3"
+    token = "sk-proj-" + "B" * 40
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID,
+                          capture_mode=mode)
+    payload = _issue(2, f"Requirement: deploy with {token}")
+    payload["changes"] = {"secret": "x" * 40}
+    engine.ingest_github(
+        PROJECT, "issues", "redacted-rebuild", payload)
+
+    event = engine.store.events(PROJECT, tenant_id=TENANT)[0]
+    assert token not in canonical_json(event["payload"])
+    if mode == "metadata_only":
+        assert (event["payload"]["changes"]["secret"]
+                == "[DROPPED:secret:40chars]")
+    else:
+        assert event["payload"]["changes"]["secret"] == "x" * 40
+    assert _rows(
+        database,
+        "SELECT processor_version, status FROM processed_events"
+        " WHERE event_id = ?",
+        (event["event_id"],)) == [(PROCESSOR_VERSION, "ok")]
+    before = engine.projection_fingerprint(PROJECT)
+    fresh = engine.rebuild_projection(PROJECT)
+    try:
+        assert fresh.projection_fingerprint(PROJECT) == before
+        assert token not in canonical_json(
+            fresh.store.events(PROJECT, tenant_id=TENANT)[0]["payload"])
+    finally:
+        fresh.close()
+        engine.close()
+
+
+def test_metadata_ingest_recaptures_sentinel_source_and_rebuilds(tmp_path):
+    directory = _private_dir(tmp_path, "metadata-sentinel-rebuild")
+    database = directory / "cce.sqlite3"
+    source = "[DROPPED:body:4111111111111111chars]"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project(
+        "p", project_id=PROJECT, repository_id=REPOSITORY_ID,
+        capture_mode="metadata_only")
+    engine.ingest_github(
+        PROJECT, "issues", "metadata-sentinel", _issue(3, source))
+
+    event = engine.store.events(PROJECT, tenant_id=TENANT)[0]
+    assert event["payload"]["issue"]["body"] == (
+        f"[DROPPED:body:{len(source)}chars]")
+    assert event["payload"]["issue"]["body"] != source
+    before = engine.projection_fingerprint(PROJECT)
+    fresh = engine.rebuild_projection(PROJECT)
+    try:
+        assert fresh.projection_fingerprint(PROJECT) == before
+    finally:
+        fresh.close()
+        engine.close()
+
+
+def test_ingest_does_not_turn_a_redaction_refusal_into_quarantine(
+        tmp_path, monkeypatch):
+    directory = _private_dir(tmp_path, "ingest-redaction-refusal")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+
+    def refuse(_payload, _mode):
+        engine_module._refuse_projection()
+
+    monkeypatch.setattr(
+        engine_module, "_assert_payload_uses_current_capture", refuse)
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest"):
+            engine.ingest_agent_trace(
+                PROJECT, session_id=None, span_id="compat-refusal",
+                payload={"message": "ordinary text"})
+        event_id = engine.store.events(PROJECT, tenant_id=TENANT)[0]["event_id"]
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event_id,)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event_id,)).fetchone()[0] == 0
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("failure_type", [MemoryError, RuntimeError],
+                         ids=("memory-error", "unexpected-error"))
+def test_ingest_validator_failure_never_mints_current_quarantine(
+        tmp_path, monkeypatch, failure_type):
+    directory = _private_dir(tmp_path, f"ingest-{failure_type.__name__}")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+
+    def fail_validation(_payload, _mode):
+        raise failure_type("capture validation failed")
+
+    monkeypatch.setattr(
+        engine_module, "_capture_payload_is_current", fail_validation)
+    caught = None
+    try:
+        try:
+            engine.ingest_agent_trace(
+                PROJECT, session_id=None, span_id="validator-failure",
+                payload={"message": "ordinary text"})
+        except Exception as exc:
+            caught = exc
+        event_id = engine.store.events(
+            PROJECT, tenant_id=TENANT)[0]["event_id"]
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event_id,)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event_id,)).fetchone()[0] == 0
+        assert isinstance(
+            caught, engine_module.ProcessorProjectionCompatibilityError)
+    finally:
+        engine.close()
+
+
+def test_ingest_reload_failure_cannot_quarantine_unvalidated_payload(
+        tmp_path, monkeypatch):
+    directory = _private_dir(tmp_path, "ingest-reload-failure")
+    database = directory / "cce.sqlite3"
+    token = "sk-proj-" + "F" * 40
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    get_event_calls = 0
+    original_get_event = Store.get_event
+
+    def bypass_capture(payload, mode):
+        return payload, {
+            "mode": mode, "redactions": [], "dropped_fields": 0}
+
+    def fail_second_reload(store, *args, **kwargs):
+        nonlocal get_event_calls
+        if store is engine.store:
+            get_event_calls += 1
+            if get_event_calls == 2:
+                raise MemoryError("canonical event reload failed")
+        return original_get_event(store, *args, **kwargs)
+
+    monkeypatch.setattr(engine_module, "apply_capture_mode", bypass_capture)
+    monkeypatch.setattr(Store, "get_event", fail_second_reload)
+    caught = None
+    try:
+        try:
+            engine.ingest_agent_trace(
+                PROJECT, session_id=None, span_id="reload-failure",
+                payload={"message": f"Requirement: deploy with {token}"})
+        except Exception as exc:
+            caught = exc
+        event = engine.store.events(PROJECT, tenant_id=TENANT)[0]
+        assert get_event_calls == 2
+        assert token in canonical_json(event["payload"])
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert isinstance(
+            caught, engine_module.ProcessorProjectionCompatibilityError)
+    finally:
+        engine.close()
+
+
+def test_rebuild_does_not_turn_a_redaction_refusal_into_quarantine(
+        tmp_path, monkeypatch):
+    directory = _private_dir(tmp_path, "rebuild-redaction-refusal")
+    database = directory / "cce.sqlite3"
+    token = "sk-proj-" + "C" * 40
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="rebuild-unredacted",
+        payload={"message": f"Requirement: deploy with {token}"},
+        authority="agent_observed")
+    marker_calls = []
+    original = Store.mark_processed
+
+    def observed(store, *args, **kwargs):
+        marker_calls.append((args, kwargs))
+        return original(store, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "mark_processed", observed)
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest"):
+            engine.rebuild_projection(PROJECT)
+        assert marker_calls == []
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("failure_type", [MemoryError, RuntimeError],
+                         ids=("memory-error", "unexpected-error"))
+def test_rebuild_validator_failure_never_mints_current_quarantine(
+        tmp_path, monkeypatch, failure_type):
+    directory = _private_dir(tmp_path, f"rebuild-{failure_type.__name__}")
+    database = directory / "cce.sqlite3"
+    token = "sk-proj-" + "D" * 40
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="rebuild-validator-failure",
+        payload={"message": f"Requirement: deploy with {token}"},
+        authority="agent_observed")
+    marker_calls = []
+    original_mark_processed = Store.mark_processed
+
+    def fail_validation(_payload, _mode):
+        raise failure_type("capture validation failed")
+
+    def observed_mark(store, *args, **kwargs):
+        marker_calls.append((args, kwargs))
+        return original_mark_processed(store, *args, **kwargs)
+
+    monkeypatch.setattr(
+        engine_module, "_capture_payload_is_current", fail_validation)
+    monkeypatch.setattr(Store, "mark_processed", observed_mark)
+    caught = None
+    fresh = None
+    try:
+        try:
+            fresh = engine.rebuild_projection(PROJECT)
+        except Exception as exc:
+            caught = exc
+        finally:
+            if fresh is not None:
+                fresh.close()
+        assert marker_calls == []
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert isinstance(
+            caught, engine_module.ProcessorProjectionCompatibilityError)
+    finally:
+        engine.close()
+
+
+def test_rebuild_reload_failure_cannot_quarantine_unvalidated_payload(
+        tmp_path, monkeypatch):
+    directory = _private_dir(tmp_path, "rebuild-reload-failure")
+    database = directory / "cce.sqlite3"
+    token = "sk-proj-" + "E" * 40
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID)
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="rebuild-reload-failure",
+        payload={"message": f"Requirement: deploy with {token}"},
+        authority="agent_observed")
+    marker_calls = []
+    reload_failed = False
+    original_get_event = Store.get_event
+    original_mark_processed = Store.mark_processed
+
+    def fail_first_fresh_reload(store, *args, **kwargs):
+        nonlocal reload_failed
+        if store is not engine.store and not reload_failed:
+            reload_failed = True
+            raise MemoryError("canonical event reload failed")
+        return original_get_event(store, *args, **kwargs)
+
+    def observed_mark(store, *args, **kwargs):
+        marker_calls.append((args, kwargs))
+        return original_mark_processed(store, *args, **kwargs)
+
+    monkeypatch.setattr(Store, "get_event", fail_first_fresh_reload)
+    monkeypatch.setattr(Store, "mark_processed", observed_mark)
+    caught = None
+    fresh = None
+    try:
+        try:
+            fresh = engine.rebuild_projection(PROJECT)
+        except Exception as exc:
+            caught = exc
+        finally:
+            if fresh is not None:
+                fresh.close()
+        assert reload_failed is True
+        assert marker_calls == []
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert isinstance(
+            caught, engine_module.ProcessorProjectionCompatibilityError)
+    finally:
+        engine.close()
+
+
+def test_direct_process_event_uses_project_capture_mode_not_event_claim(
+        tmp_path):
+    directory = _private_dir(tmp_path, "direct-metadata-policy")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project(
+        "p", project_id=PROJECT, repository_id=REPOSITORY_ID,
+        capture_mode="metadata_only")
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="direct-metadata-policy",
+        payload={"message": "private ordinary deployment detail"},
+        authority="agent_observed")
+    before = canonical_json(event)
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest"):
+            engine.process_event(event)
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert canonical_json(engine.store.get_event(
+            event["event_id"], tenant_id=TENANT, project_id=PROJECT)) == before
+    finally:
+        engine.close()
+
+
+def test_direct_process_event_also_binds_recorded_metadata_mode(tmp_path):
+    directory = _private_dir(tmp_path, "direct-recorded-metadata-policy")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID,
+                          capture_mode="redacted")
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="direct-recorded-metadata-policy",
+        payload={"message": "private ordinary deployment detail"},
+        authority="agent_observed", capture_mode="metadata_only")
+    before = canonical_json(event)
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest"):
+            engine.process_event(event)
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert canonical_json(engine.store.get_event(
+            event["event_id"], tenant_id=TENANT, project_id=PROJECT)) == before
+    finally:
+        engine.close()
+
+
+def test_recorded_full_sentinel_cannot_claim_current_metadata_output(tmp_path):
+    directory = _private_dir(tmp_path, "direct-full-sentinel-metadata-policy")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID,
+                          capture_mode="metadata_only")
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="direct-full-sentinel-metadata-policy",
+        payload={"description": {
+            "password": "[DROPPED:password:16chars]"}},
+        authority="agent_observed", capture_mode="full")
+    try:
+        with pytest.raises(
+                engine_module.ProcessorProjectionCompatibilityError,
+                match="re-ingest"):
+            engine.process_event(event)
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM processed_events WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
+            (event["event_id"],)).fetchone()[0] == 0
+    finally:
+        engine.close()
+
+
+def test_recorded_metadata_output_survives_relaxed_project_mode(tmp_path):
+    directory = _private_dir(tmp_path, "metadata-output-redacted-project")
+    database = directory / "cce.sqlite3"
+    payload, _ = engine_module.apply_capture_mode(
+        {"description": {"password": "abcdefghijklmnop"}},
+        "metadata_only")
+    assert payload["description"]["password"] == (
+        "[DROPPED:password:16chars]")
+    engine = Engine(database, workdir=str(directory))
+    engine.create_project("p", project_id=PROJECT,
+                          repository_id=REPOSITORY_ID,
+                          capture_mode="redacted")
+    event = engine.store.append_event(
+        tenant_id=TENANT, project_id=PROJECT, source_type="agent_trace",
+        idempotency_key="metadata-output-redacted-project",
+        payload=payload, authority="agent_observed",
+        capture_mode="metadata_only")
+    fresh = None
+    try:
+        engine.process_event(event)
+        before = engine.projection_fingerprint(PROJECT)
+        fresh = engine.rebuild_projection(PROJECT)
+        assert fresh.projection_fingerprint(PROJECT) == before
+        assert _rows(
+            database,
+            "SELECT processor_version, status FROM processed_events"
+            " WHERE event_id = ?", (event["event_id"],)) == [
+                (PROCESSOR_VERSION, "ok")]
+    finally:
+        if fresh is not None:
+            fresh.close()
+        engine.close()
+    _assert_admitted(database, directory)
+
+
+def test_markerless_admission_uses_recorded_metadata_capture_mode(tmp_path):
+    raw_directory = _private_dir(tmp_path, "markerless-metadata-raw")
+    raw_database = raw_directory / "cce.sqlite3"
+    store = Store(str(raw_database))
+    try:
+        store.append_event(
+            tenant_id=TENANT, project_id=PROJECT,
+            source_type="agent_trace", idempotency_key="metadata-raw",
+            payload={"message": "private ordinary deployment detail"},
+            authority="agent_observed", capture_mode="metadata_only")
+    finally:
+        store.close()
+    before = _frozen_state(raw_database)
+    _assert_refused(raw_database, raw_directory)
+    assert _frozen_state(raw_database) == before
+
+    captured_directory = _private_dir(tmp_path, "markerless-metadata-captured")
+    captured_database = captured_directory / "cce.sqlite3"
+    payload, _ = engine_module.apply_capture_mode(
+        {"message": "private ordinary deployment detail"}, "metadata_only")
+    store = Store(str(captured_database))
+    try:
+        store.append_event(
+            tenant_id=TENANT, project_id=PROJECT,
+            source_type="agent_trace", idempotency_key="metadata-captured",
+            payload=payload, authority="agent_observed",
+            capture_mode="metadata_only")
+    finally:
+        store.close()
+    _assert_admitted(captured_database, captured_directory)
+
+
 def test_projection_failure_leaves_neither_projection_nor_marker(tmp_path,
                                                                  monkeypatch):
     directory = _private_dir(tmp_path, "rollback")
@@ -317,6 +1462,187 @@ def test_store_processed_before_the_checkbox_fix_refuses(tmp_path):
     _sql(database,
          "UPDATE processed_events SET processor_version='cce-processor/1.2.0'")
     _assert_refused(database, directory)
+
+
+def test_store_processed_before_current_redaction_semantics_refuses(
+        tmp_path, monkeypatch):
+    """1.3.0 projection can retain credentials 1.4.0 recognizes.
+
+    The old producer is represented by its version marker and persisted
+    output, not by importing a second implementation into this test.  The
+    selected ``sk-proj-`` form is one the exact 1.3.0 source retained and the
+    current redactor replaces. Retention then clears the canonical payload so
+    only the version boundary can protect the credential left in graph state.
+    """
+    directory = _private_dir(tmp_path, "pre-redaction-semantics")
+    database = directory / "cce.sqlite3"
+    token = "sk-proj-" + "A" * 40
+
+    monkeypatch.setattr(
+        engine_module, "PROCESSOR_VERSION", "cce-processor/1.3.0")
+    monkeypatch.setattr(
+        engine_module, "apply_capture_mode",
+        lambda payload, mode: (
+            payload,
+            {"mode": mode, "redactions": [], "dropped_fields": 0},
+        ),
+    )
+    monkeypatch.setattr(
+        engine_module, "_capture_payload_is_current",
+        lambda payload, mode: True)
+    engine = Engine(database, workdir=str(directory))
+    try:
+        engine.create_project(
+            "p", project_id=PROJECT, repository_id=REPOSITORY_ID)
+        engine.ingest_github(
+            PROJECT, "issues", "pre-redaction-semantics-1",
+            _issue(1, f"We assume deployment uses {token}."))
+    finally:
+        engine.close()
+    monkeypatch.undo()
+
+    assert token in _scalar(database, "SELECT payload FROM events")
+    assert any(token in row[0] for row in _rows(
+        database, "SELECT data FROM nodes"))
+    _sql(database, "UPDATE events SET payload = NULL")
+    assert _scalar(database, "SELECT payload FROM events") is None
+    before = _frozen_state(database)
+    _assert_refused(database, directory)
+    assert _frozen_state(database) == before
+
+
+def test_synthetic_processor_one_four_projection_refuses_unchanged(tmp_path):
+    """A 1.4 marker-bearing projection cannot be opened by processor 1.5.
+
+    This is synthetic producer state: the current test producer creates a
+    valid projection, then only its marker is rewritten to the literal 1.4
+    identity. No released 1.4 artifact is invoked or claimed here.
+    """
+    directory = _private_dir(tmp_path, "pre-normalization-semantics")
+    database = _ingested(directory)
+    _sql(database,
+         "UPDATE processed_events SET processor_version='cce-processor/1.4.0'")
+    before = _frozen_state(database)
+    _assert_refused(database, directory)
+    assert _frozen_state(database) == before
+
+
+def test_current_marker_payload_skips_admission_redaction(tmp_path,
+                                                           monkeypatch):
+    """The marker already binds a current projection to current semantics."""
+    directory = _private_dir(tmp_path, "current-marker-scan")
+    database = _ingested(directory)
+    assert _scalar(database, "SELECT payload FROM events") is not None
+    calls = []
+    original = engine_module._capture_payload_is_current
+
+    def observed(payload, mode):
+        calls.append((payload, mode))
+        return original(payload, mode)
+
+    monkeypatch.setattr(engine_module, "_capture_payload_is_current", observed)
+    _assert_admitted(database, directory)
+
+    assert calls == []
+
+
+def test_old_marker_payload_skips_redaction_then_refuses_unchanged(
+        tmp_path, monkeypatch):
+    """An old marker is already a deciding incompatibility."""
+    directory = _private_dir(tmp_path, "old-marker-scan")
+    database = _ingested(directory)
+    _sql(database,
+         "UPDATE processed_events SET processor_version='cce-processor/1.3.0'")
+    assert _scalar(database, "SELECT payload FROM events") is not None
+    before = _frozen_state(database)
+    calls = []
+    original = engine_module._capture_payload_is_current
+
+    def observed(payload, mode):
+        calls.append((payload, mode))
+        return original(payload, mode)
+
+    monkeypatch.setattr(engine_module, "_capture_payload_is_current", observed)
+    _assert_refused(database, directory)
+
+    assert calls == []
+    assert _frozen_state(database) == before
+
+
+def test_markerless_clean_payload_is_still_checked(tmp_path, monkeypatch):
+    """The optimization must not bypass the only semantic witness."""
+    directory = _private_dir(tmp_path, "markerless-clean-scan")
+    database = directory / "cce.sqlite3"
+    store = Store(str(database))
+    try:
+        store.append_event(
+            tenant_id=TENANT, project_id=PROJECT,
+            source_type="agent_trace", idempotency_key="markerless-clean",
+            payload={"note": "ordinary text"}, authority="agent_observed")
+    finally:
+        store.close()
+    calls = []
+    original = engine_module._capture_payload_is_current
+
+    def observed(payload, mode):
+        calls.append((payload, mode))
+        return original(payload, mode)
+
+    monkeypatch.setattr(engine_module, "_capture_payload_is_current", observed)
+    _assert_admitted(database, directory)
+
+    # Engine checks once through the immutable path and once on Store's exact
+    # connection before schema installation.
+    assert calls == [({"note": "ordinary text"}, "full")] * 2
+
+
+@pytest.mark.parametrize("payload", [
+    {"note": "sk-proj-" + "A" * 40},
+    {"sk-proj-" + "A" * 40: "value"},
+])
+def test_markerless_retained_secret_refuses_before_projection(tmp_path, payload):
+    """A version marker cannot protect an event that has no projection yet."""
+    directory = _private_dir(tmp_path, "markerless-retained-secret")
+    database = directory / "cce.sqlite3"
+    store = Store(str(database))
+    try:
+        store.append_event(
+            tenant_id=TENANT, project_id=PROJECT,
+            source_type="agent_trace", idempotency_key="legacy-secret",
+            payload=payload, authority="agent_observed")
+    finally:
+        store.close()
+
+    before = _frozen_state(database)
+    _assert_refused(database, directory)
+    assert _frozen_state(database) == before
+
+
+def test_redaction_recursion_is_a_fixed_compatibility_refusal(
+        tmp_path, monkeypatch):
+    """A nested retained payload must not escape the admission boundary."""
+    directory = _private_dir(tmp_path, "recursive-retained-payload")
+    database = directory / "cce.sqlite3"
+    store = Store(str(database))
+    try:
+        store.append_event(
+            tenant_id=TENANT, project_id=PROJECT,
+            source_type="agent_trace", idempotency_key="recursive-payload",
+            payload={"note": "nested"}, authority="agent_observed")
+    finally:
+        store.close()
+
+    def recursion_at_redaction(_payload, _mode):
+        raise RecursionError("retained payload exceeds the redaction walk")
+
+    monkeypatch.setattr(
+        engine_module, "_capture_payload_is_current", recursion_at_redaction)
+    before = _frozen_state(database)
+    with pytest.raises(
+            engine_module.ProcessorProjectionCompatibilityError,
+            match="re-ingest"):
+        Engine(database, workdir=str(directory))
+    assert _frozen_state(database) == before
 
 
 def test_markerless_projection_refuses(tmp_path):
@@ -968,7 +2294,7 @@ def test_quarantine_then_successful_retry_is_consistent(tmp_path):
 
 # ---------------------------------------------------------------- G8
 def test_simulated_processor_bump_refuses_each_other(tmp_path, monkeypatch):
-    """Forward control: this passes only at the candidate."""
+    """Version-separation control in both directions, not an older-bug pin."""
     directory = _private_dir(tmp_path, "bump")
     database = _ingested(directory)
     _assert_admitted(database, directory)
@@ -978,9 +2304,26 @@ def test_simulated_processor_bump_refuses_each_other(tmp_path, monkeypatch):
     monkeypatch.setattr(engine_module, "PROCESSOR_VERSION",
                         f"{PROCESSOR_VERSION}+simulated-bump")
     _assert_refused(database, directory)
+    future_directory = _private_dir(tmp_path, "bump-new")
+    future_database = _ingested(future_directory)
+    _assert_admitted(future_database, future_directory)
 
     monkeypatch.undo()
     _assert_admitted(database, directory)
+    _assert_refused(future_database, future_directory)
+
+
+@pytest.mark.parametrize("version", ["1.5.0", "1.6.0", "1.7.0"])
+def test_pre_source_lifecycle_processor_marker_refuses(tmp_path, version):
+    """Structural version control; this is not a released-producer fixture."""
+    directory = _private_dir(tmp_path, "pre-co-assertion")
+    database = _ingested(directory)
+    _assert_admitted(database, directory)
+    _sql(database,
+         f"UPDATE processed_events SET processor_version='cce-processor/{version}'")
+    before = _frozen_state(database)
+    _assert_refused(database, directory)
+    assert _frozen_state(database) == before
 
 
 def test_append_only_history_admits_under_a_simulated_bump(tmp_path,
@@ -1091,6 +2434,28 @@ def _indexes(database, table="events"):
         connection.close()
 
 
+def _index_xinfo(database, index):
+    connection = sqlite3.connect(database)
+    try:
+        return tuple(connection.execute(
+            f'PRAGMA index_xinfo("{index}")'))
+    finally:
+        connection.close()
+
+
+_SCOPED_INDEX_XINFO = (
+    (0, 1, "tenant_id", 0, "BINARY", 1),
+    (1, 2, "project_id", 0, "BINARY", 1),
+    (2, 5, "idempotency_key", 0, "BINARY", 1),
+    (3, -1, None, 0, "BINARY", 0),
+)
+
+
+def _duplicate_scoped_key(database):
+    _clone_row(
+        database, "events", event_id="evt_ffffffffffffffffffffffff")
+
+
 def _legacy_events_database(directory, inline_unique):
     """A full Engine-shaped database whose events table is raw legacy."""
     database = directory / "cce.sqlite3"
@@ -1150,6 +2515,139 @@ def test_fresh_current_events_layout_is_admitted(tmp_path):
     Engine(database, workdir=str(directory)).close()
     assert _xdecl(database) == _FRESH_CURRENT_EVENTS
     _assert_admitted(database, directory)
+
+
+def test_duplicate_scoped_idempotency_without_index_refuses_unchanged(
+        tmp_path):
+    """Refuse before Store can add one index and fail on the next."""
+    directory = _private_dir(tmp_path, "duplicate-scope-no-index")
+    database = _ingested(directory)
+    _sql(database, "DROP INDEX idx_events_idempotency_scope",
+         "DROP INDEX idx_events_project")
+    _duplicate_scoped_key(database)
+    before = _frozen_state(database)
+
+    _assert_refused(database, directory)
+
+    assert _frozen_state(database) == before
+
+
+def test_duplicate_scoped_idempotency_with_counterfeit_index_refuses(
+        tmp_path):
+    """A correctly named index on the wrong column cannot certify scope."""
+    directory = _private_dir(tmp_path, "duplicate-scope-fake-index")
+    database = _ingested(directory)
+    _sql(database, "DROP INDEX idx_events_idempotency_scope",
+         "CREATE UNIQUE INDEX idx_events_idempotency_scope"
+         " ON events(event_id)")
+    _duplicate_scoped_key(database)
+    before = _frozen_state(database)
+
+    _assert_refused(database, directory)
+
+    assert _frozen_state(database) == before
+
+
+def test_counterfeit_scoped_index_refuses_without_duplicate_rows(tmp_path):
+    """Bind index identity independently of the duplicate-row guard."""
+    directory = _private_dir(tmp_path, "fake-index-identity")
+    database = _ingested(directory)
+    _sql(database, "DROP INDEX idx_events_idempotency_scope",
+         "CREATE UNIQUE INDEX idx_events_idempotency_scope"
+         " ON events(event_id)")
+    before = _frozen_state(database)
+
+    _assert_refused(database, directory)
+
+    assert _frozen_state(database) == before
+
+
+@pytest.mark.parametrize("definition", [
+    "CREATE INDEX idx_events_idempotency_scope"
+    " ON events(tenant_id, project_id, idempotency_key)",
+    "CREATE UNIQUE INDEX idx_events_idempotency_scope"
+    " ON events(project_id, tenant_id, idempotency_key)",
+    "CREATE UNIQUE INDEX idx_events_idempotency_scope"
+    " ON events(tenant_id COLLATE NOCASE, project_id, idempotency_key)",
+    "CREATE UNIQUE INDEX idx_events_idempotency_scope"
+    " ON events(tenant_id, project_id, idempotency_key)"
+    " WHERE idempotency_key <> ''",
+    "CREATE UNIQUE INDEX IDX_EVENTS_IDEMPOTENCY_SCOPE"
+    " ON events(tenant_id, project_id, idempotency_key)",
+])
+def test_scoped_index_definition_is_bound(tmp_path, definition):
+    directory = _private_dir(tmp_path, "fake-index-definition")
+    database = _ingested(directory)
+    _sql(database, "DROP INDEX idx_events_idempotency_scope", definition)
+    before = _frozen_state(database)
+
+    _assert_refused(database, directory)
+
+    assert _frozen_state(database) == before
+
+
+def test_missing_scoped_index_with_unique_rows_is_repaired(tmp_path):
+    """An interrupted index installation remains a supported repair path."""
+    directory = _private_dir(tmp_path, "missing-index-repair")
+    database = _ingested(directory)
+    _sql(database, "DROP INDEX idx_events_idempotency_scope")
+
+    _assert_admitted(database, directory)
+
+    assert _SCOPED_INDEX in _indexes(database)
+    assert _index_xinfo(
+        database, "idx_events_idempotency_scope") == _SCOPED_INDEX_XINFO
+    _assert_admitted(database, directory)
+    assert _index_xinfo(
+        database, "idx_events_idempotency_scope") == _SCOPED_INDEX_XINFO
+
+
+@pytest.mark.parametrize("column", [
+    "tenant_id",
+    "project_id",
+    "idempotency_key",
+])
+def test_missing_scoped_index_with_nonbinary_column_refuses_unchanged(
+        tmp_path, column):
+    """Index repair must not inherit a non-producer column collation."""
+    directory = _private_dir(tmp_path, f"missing-index-{column}-nocase")
+    declaration = _engine_ddl()["events"]
+    canonical = {
+        "tenant_id": "tenant_id       TEXT NOT NULL,",
+        "project_id": "project_id      TEXT NOT NULL,",
+        "idempotency_key": "idempotency_key TEXT NOT NULL,",
+    }[column]
+    altered = declaration.replace(
+        canonical, canonical[:-1] + " COLLATE NOCASE,", 1)
+    assert altered != declaration, "fixture did not alter the declaration"
+    database = _build(directory, [altered])
+    before = _frozen_state(database)
+
+    _assert_refused(database, directory)
+
+    assert _frozen_state(database) == before, "refusal mutated the database"
+
+
+def test_binary_scoped_index_cannot_mask_nonbinary_column(tmp_path):
+    """The producer's table declaration is bound, not only its index."""
+    directory = _private_dir(tmp_path, "binary-index-nocase-column")
+    declaration = _engine_ddl()["events"]
+    canonical = "tenant_id       TEXT NOT NULL,"
+    altered = declaration.replace(
+        canonical, canonical[:-1] + " COLLATE NOCASE,", 1)
+    database = _build(directory, [
+        altered,
+        "CREATE UNIQUE INDEX idx_events_idempotency_scope ON events("
+        "tenant_id COLLATE BINARY, project_id COLLATE BINARY, "
+        "idempotency_key COLLATE BINARY)",
+    ])
+    assert _index_xinfo(
+        database, "idx_events_idempotency_scope") == _SCOPED_INDEX_XINFO
+    before = _frozen_state(database)
+
+    _assert_refused(database, directory)
+
+    assert _frozen_state(database) == before, "refusal mutated the database"
 
 
 @pytest.mark.parametrize("inline_unique", [True, False])
@@ -2149,3 +3647,251 @@ def test_generated_column_on_a_bound_table_refuses(tmp_path, table):
     assert "shadow" not in [row[1] for row in _rows(
         database, f"PRAGMA table_info({table})")]
     _assert_refused(database, directory)
+
+
+# ------------------------------------------------- crash between the commits
+def _strand_issue_after_log_commit(engine, payload, delivery_id):
+    original = engine._process_prepared_event
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt("power loss between the two commits")
+
+    engine._process_prepared_event = interrupted
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            engine.ingest_github(PROJECT, "issues", delivery_id, payload)
+    finally:
+        engine._process_prepared_event = original
+    return engine.store.events(PROJECT, tenant_id=TENANT)[-1]["event_id"]
+
+
+def test_a_crash_between_the_log_and_the_projection_is_visible_and_healable(
+        tmp_path):
+    """The log commits first, so a crash in between strands an event.
+
+    ingest() quarantines on Exception, but a real interruption is not an
+    Exception: the event stays committed, the projection transaction rolls
+    back, and no marker is written. Before the continuity frontier was bound
+    to packet completeness, that state reported clean; and re-delivering the
+    event did nothing at all.
+    """
+    directory = _private_dir(tmp_path, "crash")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    try:
+        engine.create_project(
+            "p", project_id=PROJECT, repository_id=REPOSITORY_ID)
+        payload = _issue(1, "The exporter must write CSV output.")
+
+        def interrupted(*args, **kwargs):
+            raise KeyboardInterrupt("power loss between the two commits")
+
+        engine._process_prepared_event = interrupted
+        with pytest.raises(KeyboardInterrupt):
+            engine.ingest_github(PROJECT, "issues", "d1", payload)
+        del engine._process_prepared_event
+
+        completeness = engine.replay_completeness(PROJECT)
+        assert completeness["unprojected_events"] == 1
+        assert "no processing marker" in (completeness["note"] or "")
+        assert _rows(database, "SELECT COUNT(*) FROM events")[0][0] == 1
+        assert _rows(
+            database, "SELECT COUNT(*) FROM processed_events")[0][0] == 0
+
+        healed = engine.ingest_github(PROJECT, "issues", "d1", payload)
+        assert healed is not None
+        assert healed["healed_unprojected_event"] is True
+        assert engine.replay_completeness(PROJECT)["unprojected_events"] == 0
+        assert _rows(
+            database, "SELECT COUNT(*) FROM processed_events")[0][0] == 1
+
+        # A genuine duplicate is still a no-op, and healing does not repeat.
+        assert engine.ingest_github(PROJECT, "issues", "d1", payload) is None
+        assert engine.replay_completeness(PROJECT)["unprojected_events"] == 0
+    finally:
+        engine.close()
+
+
+def test_two_reconcilers_project_an_unprocessed_event_exactly_once(tmp_path):
+    directory = _private_dir(tmp_path, "concurrent-reconcilers")
+    database = directory / "cce.sqlite3"
+    builder = Engine(database, workdir=str(directory))
+    payload = _issue(1, "The exporter must write CSV output.")
+    builder.create_project(
+        "p", project_id=PROJECT, repository_id=REPOSITORY_ID)
+    event_id = _strand_issue_after_log_commit(
+        builder, payload, "concurrent-reconciliation")
+    builder.close()
+
+    first = Engine(database, workdir=str(directory))
+    second = Engine(database, workdir=str(directory))
+    barrier = threading.Barrier(2)
+    observed = {}
+    reports = {}
+    errors = {}
+    try:
+        for label, engine in (("first", first), ("second", second)):
+            original = engine.store.unprocessed_event_ids
+
+            def synchronized(*args, _label=label, _engine=engine,
+                             _original=original, **kwargs):
+                result = _original(*args, **kwargs)
+                if not _engine.store._conn.in_transaction:
+                    observed[_label] = list(result)
+                    barrier.wait(timeout=10)
+                return result
+
+            engine.store.unprocessed_event_ids = synchronized
+
+        def reconcile(label, engine):
+            try:
+                reports[label] = engine.ingest_github(
+                    PROJECT, "issues", "concurrent-reconciliation", payload)
+            except BaseException as exc:
+                errors[label] = exc
+
+        threads = [
+            threading.Thread(target=reconcile, args=("first", first)),
+            threading.Thread(target=reconcile, args=("second", second)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=20)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert errors == {}
+        assert all(event_id in observed[label] for label in ("first", "second"))
+        healed = [report for report in reports.values()
+                  if report is not None and report.get("healed_unprojected_event")]
+        assert len(healed) == 1
+        assert list(reports.values()).count(None) == 1
+        assert _rows(
+            database, "SELECT COUNT(*) FROM nodes WHERE node_id = ?", (event_id,)
+        ) == [(1,)]
+        assert _rows(
+            database, "SELECT COUNT(*) FROM nodes WHERE event_id = ?", (event_id,)
+        ) == [(2,)]
+        assert _rows(
+            database,
+            "SELECT processor_version, status, error FROM processed_events "
+            "WHERE event_id = ?",
+            (event_id,),
+        ) == [(PROCESSOR_VERSION, "ok", None)]
+    finally:
+        first.close()
+        second.close()
+
+
+def test_reconciliation_does_not_overwrite_a_competing_quarantine(tmp_path):
+    directory = _private_dir(tmp_path, "quarantine-interposition")
+    database = directory / "cce.sqlite3"
+    marker_writer = Engine(database, workdir=str(directory))
+    payload = _issue(1, "The exporter must write CSV output.")
+    marker_writer.create_project(
+        "p", project_id=PROJECT, repository_id=REPOSITORY_ID)
+    event_id = _strand_issue_after_log_commit(
+        marker_writer, payload, "quarantine-interposition")
+    reconciler = Engine(database, workdir=str(directory))
+    original = reconciler.store.unprocessed_event_ids
+    observations = 0
+
+    def quarantine_after_initial_observation(*args, **kwargs):
+        nonlocal observations
+        result = original(*args, **kwargs)
+        observations += 1
+        if observations == 1:
+            assert event_id in result
+            marker_writer.store.mark_processed(
+                event_id, PROCESSOR_VERSION, "quarantined",
+                "competing processor failure")
+        return result
+
+    reconciler.store.unprocessed_event_ids = quarantine_after_initial_observation
+    try:
+        report = reconciler.ingest_github(
+            PROJECT, "issues", "quarantine-interposition", payload)
+        assert report is None
+        assert observations == 2
+        assert _rows(
+            database,
+            "SELECT processor_version, status, error FROM processed_events "
+            "WHERE event_id = ?",
+            (event_id,),
+        ) == [(PROCESSOR_VERSION, "quarantined", "competing processor failure")]
+        assert _rows(
+            database, "SELECT COUNT(*) FROM nodes WHERE event_id = ?", (event_id,)
+        ) == [(0,)]
+        assert _rows(
+            database, "SELECT COUNT(*) FROM edges WHERE event_id = ?", (event_id,)
+        ) == [(0,)]
+    finally:
+        reconciler.close()
+        marker_writer.close()
+
+
+@pytest.mark.parametrize(
+    ("stored_mode", "current_mode"),
+    [("full", "metadata_only"), ("metadata_only", "full")],
+)
+def test_healing_reports_the_capture_mode_of_the_stored_event(
+        tmp_path, stored_mode, current_mode):
+    directory = _private_dir(tmp_path, f"stored-capture-report-{stored_mode}")
+    database = directory / "cce.sqlite3"
+    engine = Engine(database, workdir=str(directory))
+    try:
+        engine.create_project(
+            "p", project_id=PROJECT, repository_id=REPOSITORY_ID,
+            capture_mode=stored_mode)
+        payload = _issue(1, "The exporter must preserve every row in order.")
+
+        def interrupted(*args, **kwargs):
+            raise KeyboardInterrupt("power loss between the two commits")
+
+        engine._process_prepared_event = interrupted
+        with pytest.raises(KeyboardInterrupt):
+            engine.ingest_github(PROJECT, "issues", "capture-d1", payload)
+        del engine._process_prepared_event
+        event = engine.store.events(
+            PROJECT, tenant_id=engine.tenant_id)[-1]
+        assert event["capture_mode"] == stored_mode
+
+        project = engine.graph.get(
+            PROJECT, tenant_id=engine.tenant_id, project_id=PROJECT)
+        project_data = dict(project["data"])
+        project_data["capture_mode"] = current_mode
+        engine.graph.put_node(
+            entity_type="project", tenant_id=engine.tenant_id,
+            project_id=PROJECT, node_id=PROJECT, status="active",
+            data=project_data)
+        assert engine.project_capture_mode(PROJECT) == current_mode
+        if stored_mode == "full":
+            # A retry is not permission to reinterpret retained full-capture
+            # bytes under a stricter policy. Refusal must leave the gap visible.
+            before = _frozen_state(database)
+            with pytest.raises(COMPAT_ERROR):
+                engine.ingest_github(PROJECT, "issues", "capture-d1", payload)
+            assert _frozen_state(database) == before
+            assert engine.store.unprocessed_event_ids(
+                PROJECT, tenant_id=engine.tenant_id) == [event["event_id"]]
+            project_data["capture_mode"] = stored_mode
+            engine.graph.put_node(
+                entity_type="project", tenant_id=engine.tenant_id,
+                project_id=PROJECT, node_id=PROJECT, status="active",
+                data=project_data)
+        healed = engine.ingest_github(
+            PROJECT, "issues", "capture-d1", payload)
+
+        assert healed is not None
+        assert healed["healed_unprojected_event"] is True
+        assert healed["capture"] == {
+            "mode": stored_mode, "redactions": [], "dropped_fields": 0}
+        stored_body = engine.store.get_event(
+            event["event_id"], tenant_id=engine.tenant_id,
+            project_id=PROJECT)["payload"]["issue"]["body"]
+        if stored_mode == "full":
+            assert stored_body == "The exporter must preserve every row in order."
+        else:
+            assert stored_body.startswith("[DROPPED:body:")
+    finally:
+        engine.close()

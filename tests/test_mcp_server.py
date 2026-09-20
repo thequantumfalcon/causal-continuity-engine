@@ -326,6 +326,62 @@ def test_tools_answer_from_a_real_project(tmp_path):
     assert "CCE Resume Packet" in packet["content"][0]["text"]
 
 
+def test_spaced_truncated_private_key_never_reaches_mcp(tmp_path):
+    """The public read surface must see only the persisted redacted form."""
+    from causal_continuity_engine.cli import main
+    from causal_continuity_engine.engine import PROCESSOR_VERSION
+
+    main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
+          "--repo-id", "123"])
+    begin = "-" * 5 + "BEGIN RSA PRIVATE KEY" + "-" * 5
+    body_lines = ("MIIESPACEBODY AABBSPACEBODY",
+                  "CCDDTABBODY\tEEFFTABBODY", "QUJDRA==")
+    fragments = ("MIIESPACEBODY", "AABBSPACEBODY", "CCDDTABBODY",
+                 "EEFFTABBODY", "QUJDRA==")
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({
+        "action": "opened",
+        "repository": {"id": 123, "full_name": "octo/demo"},
+        "issue": {"number": 1, "title": "key handling", "state": "open",
+                  "body": (f"We assume {begin}\n" + "\n".join(body_lines)
+                           + "\nthe deployment key is managed externally."),
+                  "author_association": "OWNER", "labels": [],
+                  "created_at": "2026-08-01T00:00:00Z",
+                  "updated_at": "2026-08-01T00:00:00Z"},
+    }), encoding="utf-8")
+    main(["--dir", str(tmp_path), "ingest", "--event", "issues",
+          "--delivery-id", "pem-1", "--file", str(issue)])
+
+    connection = sqlite3.connect(tmp_path / ".cce" / "cce.db")
+    try:
+        dump = "\n".join(connection.iterdump())
+        marker = connection.execute(
+            "SELECT processor_version, status, error FROM processed_events"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert "[REDACTED:private_key_block]" in dump
+    assert marker == [(PROCESSOR_VERSION, "ok", None)]
+    for fragment in fragments:
+        assert fragment not in dump
+
+    responses = _drive_ready([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "list_assumptions", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+         "params": {"name": "resume_packet", "arguments": {}}},
+    ], directory=str(tmp_path))
+    assert [response.get("id") for response in responses] == [1, 2]
+    assumptions, packet = (response["result"] for response in responses)
+    assert assumptions["isError"] is False
+    assert packet["isError"] is False
+    exposed = json.dumps(responses, sort_keys=True)
+    assert "[REDACTED:private_key_block]" in exposed
+    assert "the deployment key is managed externally" in exposed
+    for fragment in fragments:
+        assert fragment not in exposed
+
+
 def test_continuity_check_answers_the_question_without_the_receipt(
         tmp_path, monkeypatch):
     """A status answer must not ship the signed receipt.
@@ -360,6 +416,44 @@ def test_continuity_check_answers_the_question_without_the_receipt(
     assert signed_receipts == []
     # The fields a caller actually decides on are still present.
     assert "conclusion" in report and "open_invalidations" in report
+
+
+def test_continuity_tool_refuses_success_for_an_unprojected_event(
+        tmp_path, capsys, request):
+    """The MCP summary must use the same fail-closed signed frontier."""
+    from causal_continuity_engine.cli import _engine, main
+
+    main(["--dir", str(tmp_path), "init"])
+    capsys.readouterr()
+    engine, meta = _engine(SimpleNamespace(dir=str(tmp_path)))
+    request.addfinalizer(engine.close)
+    project_id = meta["project_id"]
+    engine.policy.set_project_config(project_id, {
+        "require_proof_for": [], "required_verifiers": [],
+        "min_evidence_grade": None,
+    })
+    original = engine._process_prepared_event
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt("interrupted after the canonical append")
+
+    engine._process_prepared_event = interrupted
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            engine.ingest_human_decision(
+                project_id, actor="owner", decision="Ship the release")
+    finally:
+        engine._process_prepared_event = original
+    engine.resume_packet(project_id)
+    engine.close()
+
+    (response,) = _drive_ready(
+        [{"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+          "params": {"name": "continuity_check", "arguments": {}}}],
+        directory=str(tmp_path))
+    report = json.loads(response["result"]["content"][0]["text"])
+    assert response["result"]["isError"] is False
+    assert report["conclusion"] == "neutral"
 
 
 def test_an_unknown_project_is_an_error_not_an_empty_answer(tmp_path):

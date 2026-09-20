@@ -119,6 +119,28 @@ requirement node's `statement` — and made `rebuild_projection` diverge from
 live state, breaking CCG-006. Redaction is only meaningful if everything
 downstream of persistence sees the redacted form.
 
+**Limit.** Secret recognition is a denylist and can both miss new formats and
+over-redact ambiguous text. A visibly truncated private-key block scans across
+blank lines and accepts legacy PEM header lines or lines made only of the
+base64 alphabet after removing inline SP and HT. VT and FF are also ignored as
+a conservative fail-closed extension, not because RFC 7468 names them as WSP;
+CR, LF and CRLF delimit lines, including a CR-only input. A trailing blank-only
+line remains outside the redacted span unless later accepted content advances
+the span past it.
+
+This is a syntax-only policy choice: it does not use padding or decoded key
+structure that could disambiguate some inputs. Consequently, an uppercase
+token such as `REQUIREMENT` or `TODO`, and even whitespace-separated control
+text made only from base64-alphabet characters, is treated as possible key
+material after an unclosed BEGIN marker. Such text is deliberately and
+irreversibly removed in the fail-closed direction, potentially through EOF;
+the first line containing a nonmatching character remains the boundary.
+Outside the accepted legacy-header form, a non-whitespace, non-base64
+punctuation byte therefore terminates this truncated-block detector even
+though a more tolerant downstream decoder might ignore it. A complete block
+removes everything through its END marker even when the intervening key
+material is malformed.
+
 ## ADR-017 — Contested statements are preserved, not silently superseded
 
 **Decision.** When two sources of equal authority state contradicting
@@ -1018,12 +1040,23 @@ are captured in one transaction. The signed packet commits to the scoped graph
 nodes and edges, policy, grants, downgrades, memory assignments, event sequence,
 and the chained audit commitment. The watermark stores the packet digest and
 control-basis digest; a changed or replayed control row makes the packet stale.
+A watermark is also stale while any canonical project event lacks a terminal
+processing marker. Composing another packet from that partial projection does
+not make it current. The existing `resume_packet_current` receipt predicate
+therefore fails closed without changing the published v1 receipt shape.
 
 **Rationale.** A packet can reproduce the same markdown while a decision,
 edge, privilege or policy underneath it has changed. Text equality therefore
 cannot establish continuity. Binding the complete control projection turns
 freshness into an explicit state comparison and makes direct database edits
 visible through the audit-chain commitment.
+
+**Limit.** A processing marker is structural producer evidence, not proof that
+the extractor assigned the right semantics. Engine admission separately binds
+a current successful marker to one live canonical event node (ADR-114), but
+neither check independently replays every retained payload. Markerless history
+remains admissible for repair; it is the continuity decision, not database
+opening, that refuses to call its projection current.
 
 ## ADR-071 — The receipt is a signed counterfactual frontier, not history
 
@@ -2233,8 +2266,19 @@ hidden or generated column — because `Store` writes them positionally. `events
 cannot pass as absent: the fresh current layout, the rebuilt migration output
 (canonical order with a nullable `stored_payload_digest`), the add-column
 migration output (legacy order with the nullable digest appended), or the raw
-pre-migration legacy layout. A duplicated `event_id` refuses. `Store` and
-`Graph` install `processed_events`, `nodes` and `edges` one statement at a
+pre-migration legacy layout. Because `table_xinfo` omits column collations,
+the stored `CREATE TABLE` statement is parsed again by SQLite in an isolated
+in-memory database and a probe index binds the resolved default collations of
+`tenant_id`, `project_id` and `idempotency_key` to `BINARY` before any
+on-disk index repair. A duplicated `event_id` or duplicated
+`(tenant_id, project_id, idempotency_key)` refuses before `Store` can attempt
+schema installation. If `idx_events_idempotency_scope` is present, its exact
+spelling, uniqueness, creation origin, non-partial form, ascending ordered
+columns and binary collations are bound through `index_list` and `index_xinfo`;
+a same-name index on another definition refuses. Its absence remains
+repairable only when the underlying scoped keys are unique, because `Store`
+installs it and may have been interrupted between schema statements. `Store`
+and `Graph` install `processed_events`, `nodes` and `edges` one statement at a
 time, so an interrupted or concurrent first open can observe them part way: a
 missing or partial set is admitted only when no marker and no event-attributed
 graph row exists, and installation then completes.
@@ -2247,6 +2291,45 @@ while a retained payload, which migration cannot give an immutable commitment,
 refuses before migration. In a migrated layout only a row with a retained
 payload and a NULL `stored_payload_digest` refuses; a cleared payload
 legitimately carries neither.
+
+Redaction upgrades: secret-redaction behavior is projection semantics because
+it decides both the canonical payload bytes and the graph extracted from them.
+Such a change bumps `PROCESSOR_VERSION`, so every projection carrying an older
+marker refuses even when the newly recognized secret is no longer present in
+its retained event payload. Before `process_event()` can write graph state or a
+current marker, the exact canonical stored payload must satisfy the event's
+recorded capture-output grammar first and any distinct, stricter current
+project grammar as well. A valid metadata-only output already omits content
+and therefore remains valid when the project later relaxes to redacted or
+full; its exact placeholders are not reinterpreted as raw assignment text.
+The inverse never holds: a full/redacted event still has to satisfy a current
+metadata-only project. `Store.append_event()` remains a lower-level append-only
+API and does not apply capture policy, so this check in the deciding projection
+path prevents a direct caller from certifying raw Store bytes as current
+output, lying about the event's recorded mode, or evading a metadata-only
+project. It runs inside the projection transaction and before its first graph
+write, making refusal leave neither graph attribution nor a marker.
+For metadata-only output, every string below a content field must instead have
+the exact placeholder syntax for its current key. That syntax is recognized
+only by stored-output validation; ordinary capture never exempts
+sentinel-shaped source text and replaces it with a placeholder carrying its
+actual length. Strings outside content receive ordinary secret handling, not
+placeholder privilege. Markerless append-only history has no processor marker
+to bind its semantics; every retained payload of a markerless event is
+therefore parsed and checked under the capture mode recorded on that event
+during admission, before project state is used to process it. Any payload that
+does not satisfy that recorded grammar, including one with a secret-bearing
+object key, refuses before projection or schema work. Events with any marker
+skip the admission scan: a current marker is their structural witness, while
+an old or mixed marker set refuses independently. A capture-compatibility
+refusal is not an event-level extraction failure: both live ingestion and
+rebuild propagate it without writing a current `quarantined` marker, because
+such a marker would suppress the retained-payload check on the next open.
+Their broad event-level quarantine handlers become reachable only after a
+per-call witness confirms canonical refetch, equality and every required
+capture grammar. A failure anywhere in that prefix, including an unexpected
+capture-validator failure, is a fixed compatibility refusal rather than
+permission to mint a current marker.
 
 No canonical log: without a canonical `events` table, any remaining
 `processed_events`, `nodes` or `edges` object refuses, and initialization
@@ -2273,6 +2356,12 @@ cannot hide it. Classification uses a fixed number of whole-table queries
 feeding maps proportional to markers, nodes and edges, with no per-event rescan
 of `nodes` or `edges` and no pre-admission index or schema mutation.
 
+A duplicate delivery can reconcile a canonical event stranded without a
+marker, but its initial markerless observation is not authority to project.
+Eligibility is checked again after acquiring the projection writer transaction;
+that transaction therefore chooses exactly one of concurrent reconcilers and
+preserves a success or quarantine marker written after the initial observation.
+
 **Rationale.** Complete per-event evidence is sufficient, so no store-level
 singleton row was added: every event already carries its own marker and its own
 attributable graph rows, and a singleton would introduce a new schema
@@ -2283,6 +2372,12 @@ projection semantics; S1 or any later semantic change must bump it. The
 extraction fix that records a prohibition once did, to `cce-processor/1.2.0`,
 so stores processed by 1.1.0 are refused, and the checkbox fix that followed
 did again, to `cce-processor/1.3.0`, so stores processed by 1.2.0 are refused.
+Expanding durable secret redaction did again, to `cce-processor/1.4.0`, so a
+1.3.0 projection that may already contain newly recognized credential material
+cannot be read through a current Engine, CLI or MCP session. That 1.4.0 change
+ships atomically with the direct-process guard above: no public 1.4.0 producer
+may exist without it, because an intermediate producer could otherwise stamp a
+current marker over raw Store bytes and become indistinguishable on reopen.
 
 **Compatibility.** Stores processed by v0.1.0–v0.1.3 carry
 `cce-processor/1.0.0` markers and refuse. The committed regression constructs
@@ -2295,14 +2390,28 @@ bare `Store` database with no graph tables), retention-cleared legacy history,
 and an absent, empty or schema-free file. Projections written by a direct
 public `process_event()` before this change carry no marker and therefore
 refuse; that break is deliberate and is the defect being closed.
+Stores carrying 1.3.0 projection markers likewise refuse after the redaction
+semantics expansion. A markerless append-only store remains compatible only
+when every retained payload already satisfies the current secret rules.
 
 **Recovery.** Preserve the old database unchanged and re-ingest its retained
 authoritative sources into a distinct new database and project. There is no
 migration, write-back, export, or lossless recovery, and recovery depends on
 payloads the retention policy has not cleared.
 
+When a duplicate delivery finds a canonical event with no processing marker,
+the engine projects that stored event. Its returned capture report is derived
+from the capture mode committed with that event, not from the current project
+policy applied to the later duplicate delivery. Recovery performs no new
+capture, so its redaction and dropped-field counts are zero rather than a
+second application of current capture rules to already-persisted content.
+
 **Limit.** Markers are mutable structural provenance, not cryptographic proof
-of the executable that produced a projection. Two binaries sharing a version
+of exactly-once distributed delivery. The log and projection still commit
+separately. Reconciliation reports the stored capture mode, but the original
+redaction counts and dropped-field details are not retained in the event.
+Markers are also not proof of the executable that produced a projection.
+Two binaries sharing a version
 are indistinguishable, and a privileged owner can forge SQLite state. A
 pre-boundary or concurrently running older binary is not fenced from opening a
 newer database, so cross-version operator discipline is still required.
@@ -2311,17 +2420,456 @@ sidecar state, so refusal preserves the main database, the WAL and logical
 state rather than whole-filesystem byte identity. Where the `sqlite3` module
 does not expose `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` (Python 3.11, or a build
 without it), a refusal by the connection check can checkpoint a committed WAL
-into the main database; otherwise that is prevented. Without a WAL the path
-preflight opens the file immutably and does not consult a rollback journal; a
-hot rollback journal beside a non-WAL database has not been tested. The schema
+into the main database; otherwise that is prevented. Rollback-journal sidecars
+are refused before inspection or connection reads under ADR-121; neither
+immutable preflight nor an implicit recovery is a valid view of a hot journal.
+The schema
 census
 establishes only that no reachable schema object exists before initialization;
 it does not establish erased file pages, header pragmas, or WAL or
-rollback-journal state. Declaration binding covers columns, not triggers,
-indexes or collations, and whether a non-NULL `stored_payload_digest` actually
-authenticates its payload is not checked here. The coherent read snapshot does
-not fence a writer that commits after admission returns, and the `quarantined`
-marker written when processing fails is not read back. The check does not
-prove arbitrary database correctness, and it does not version
-packet-composition semantics: a future change there needs its own
-control-basis decision.
+rollback-journal state. Declaration binding covers columns and the one required
+scoped-idempotency index, not triggers, other indexes, constraints or the
+collations of columns outside the scoped-idempotency key. Replaying the stored
+table declaration in memory establishes only the SQLite build's resolved
+collations; it is not a general SQL-schema equivalence proof. An absent scoped
+index with unique data is structurally repairable; the check cannot distinguish
+an interrupted installation from an owner who removed it. Whether a non-NULL
+`stored_payload_digest` actually authenticates its payload is not checked here.
+The coherent read snapshot does not fence a writer that commits after admission
+returns. ADR-116 reads a newly written `quarantined` marker back and verifies
+zero event-attributed graph state inside its owning transaction; neither check
+fences a later privileged mutation. The check does not prove arbitrary database
+correctness, and it does not version packet-composition semantics: a future
+change there needs its own control-basis decision.
+The retained-payload check is only as complete as the current pattern-based
+redactor: an unknown credential format is not detected, and a payload cleared
+by retention has no bytes left to inspect. It does not scan graph text
+independently; instead, every older projected store refuses by processor marker
+and a current projection can only be produced from a payload that satisfies
+its recorded capture-output grammar and every additionally required current
+project semantic. This is a structural condition, not provenance that capture
+actually ran. Admission validates every retained markerless payload against
+its recorded capture mode, so open cost for append-only history scales with its
+retained bytes; marker-bearing history relies on the marker and is not
+rescanned. Each processing call scans the payload once for its recorded mode
+and, when a distinct current project mode is not a relaxation of valid
+metadata-only output, once more for that mode. Direct processing and a full
+rebuild therefore remain linear in the retained bytes they handle, with at
+most two validation passes per event. The
+metadata-only grammar binds only exact placeholder syntax to its current
+content-field key. It cannot distinguish a producer placeholder from identical
+source text supplied through the lower-level Store, or authenticate that the
+recorded length is truthful; a lower-Store caller can encode arbitrary numeric
+data in that field and falsely claim an omission. Ordinary Engine ingestion
+always recaptures sentinel-shaped source text and records its actual length, so
+that channel is closed on raw Engine ingress but remains a structural limit of
+the lower Store API. The process-time guard cannot make `Store.append_event()`
+retroactively private: raw bytes supplied to that lower-level API are already
+committed to the immutable canonical log before processing refuses them. Store
+callers remain responsible for applying capture policy before append; this
+guard prevents those bytes from also becoming a current-marker projection, not
+from having been persisted.
+
+## ADR-115 — GitHub normalization failure is a processing failure
+
+**Decision.** A stored GitHub event must normalize successfully from its
+canonical `source_type`, idempotency key and payload before the first graph
+write. Its delivery identity must be exactly `github:<delivery>`, where
+`<delivery>` is one public-identifier token, and the normalized source type and
+idempotency key must round-trip byte-for-byte to the stored pair. `_prepare_event`
+ends after canonical refetch, equality and capture validation establish the
+per-call witness from ADR-114; normalization and any comparison with a
+caller-supplied envelope happen next, inside the projection transaction.
+Normalization failures are never replaced with an empty envelope. A direct
+`process_event()` call therefore propagates the concrete normalization error
+and rolls back without a marker or graph row. For caught event-level exceptions,
+live ingest has already appended the canonical event and, after the witness,
+records a current `quarantined` marker before re-raising. Rebuild likewise
+records that quarantine in the fresh projection and continues with later
+events. In all three paths, failed normalization produces no event-attributed
+graph state.
+Durable quarantine diagnostics are the fixed phrase `event processing failed`;
+exception types and messages can contain arbitrarily large or invalid
+source-shaped text and are not persisted.
+
+The semantic correction is `cce-processor/1.5.0`. Every projection carrying a
+1.4.0 marker refuses under 1.5.0, including an event-only `ok` projection that
+the old fallback could have produced, because that invalid shape is
+structurally indistinguishable from a legitimate event whose normalized
+envelope contains no derived text. The 1.4.0 capture/redaction unit and this
+1.5.0 normalization unit are stacked changes: no release or deployment may
+occur between them.
+
+**Rationale.** The former catch-all treated malformed subscribed payloads,
+unsupported `github:` suffixes, malformed delivery identities and even
+resource failures as successful empty normalization. `process_event()` then
+wrote a canonical event node and current `ok` marker; admission trusted that
+marker, and rebuild repeated the same silent loss. Catching only known webhook
+errors would retain the same defect for `IndexError`, `MemoryError` and future
+normalizer failures. Moving normalization into the canonical/capture prefix
+would fail closed but would misclassify a processable canonical event's
+event-level failure as store incompatibility, preventing the quarantine and
+continue behavior required by ADR-036. The chosen boundary preserves the
+capture witness while refusing to certify normalization that did not happen.
+Bounding the quarantine diagnostic before `mark_processed()` is part of that
+outcome: otherwise an oversized exception message can make the recovery marker
+itself fail validation and abort replay.
+
+**Compatibility.** Valid GitHub events keep the same normalized envelope and
+projection. Non-GitHub reconstruction is unchanged. Normal connector ingress
+still normalizes before append, so a malformed raw webhook leaves no event;
+the post-append outcomes apply to lower-level Store callers and failures during
+the second, persisted-byte reconstruction. Markerless history remains
+admissible when it satisfies ADR-114's capture checks, but a malformed event is
+refused without a marker by direct processing and quarantined when rebuild
+reaches it. A synthetic marker-bearing 1.4.0 projection is pinned to refuse
+before mutation; no claim is made that a released 1.4.0 artifact produced that
+fixture.
+
+**Recovery.** Preserve the old database unchanged. Re-ingest retained
+authoritative sources into a distinct 1.5.0 database and project; malformed
+canonical events need a corrected source delivery with a distinct delivery
+identity because the append-only log is not rewritten. Rebuild can recover the
+projection around an irreparable malformed event by quarantining it and
+continuing, but it cannot recover facts that the malformed event never
+normalized into a valid envelope.
+
+**Limit.** `Store.append_event()` remains a lower-level append-only API and can
+persist a malformed GitHub event before this boundary runs. Refusal or
+quarantine prevents that event from being certified as a successful
+projection; it does not delete, repair or interpret the immutable source
+bytes. Successful normalization proves only that the stored shape is accepted
+by the deterministic normalizer, not that GitHub authored the payload or that
+its claims are true. Admission does not proactively normalize markerless
+events, so the defect is surfaced when the event is processed or replayed
+rather than merely when the database opens. The 1.5.0 version boundary cannot
+distinguish which 1.4.0 projections were affected, so it refuses all of them
+and requires re-ingestion rather than attempting a selective migration.
+The concrete exception from direct processing is intentionally propagated to
+its caller and can contain source-derived detail; only the durable quarantine
+record is content-free and bounded.
+Process-control exceptions outside `Exception`, including `KeyboardInterrupt`
+and `SystemExit`, propagate without a quarantine marker and abort rebuild
+rather than continuing; they are not classified as event-level failures.
+The generic quarantine-outcome boundary in ADR-116 is required for the live and
+rebuild quarantine outcomes above: it reads the marker back and refuses a
+suppressed, rewritten or graph-bearing result. The normalization unit and that
+boundary are stacked changes; no 1.5.0 release or deployment may occur between
+them.
+
+## ADR-116 — Quarantine is an exact transactional outcome
+
+**Decision.** A caught event-level failure may become a current
+`quarantined` outcome only after canonical refetch and capture validation have
+established the processing witness in ADR-114. The fixed content-free
+diagnostic is computed before taking a writer lock. A second Store transaction
+then uses `BEGIN IMMEDIATE` to require that the event has no marker at any
+processor version and no attributed node or edge, writes the current
+quarantine marker, reads back exactly one row with the required processor
+version, status and diagnostic, and rechecks that no attributed node or edge
+exists before commit. Suppression, rewrite, graph injection, a competing
+projection outcome, or any caught marker-infrastructure failure leaves no
+quarantine mutation and raises the fixed projection-compatibility refusal.
+
+After a verified quarantine commit, live ingest re-raises the original event
+error and rebuild continues with later events. If quarantine verification
+fails, that infrastructure refusal supersedes the event error; rebuild closes
+the fresh projection and does not return partial state. A direct
+`process_event()` call remains different by contract: its owned projection
+transaction rolls back and propagates the concrete event error without minting
+a quarantine marker.
+
+**Rationale.** `INSERT OR REPLACE` followed by no observation treated a
+successful method return as durable evidence. A trigger could ignore the
+insert, rewrite its status or diagnostic, or create attributed graph state;
+live processing then returned the original error and rebuild continued even
+though the promised quarantine outcome did not exist. Reading only the marker
+would still accept trigger-injected graph rows. Reading it after a standalone
+commit would detect a rewrite only after making the wrong row durable. Finally,
+two Engine connections could race: one committed `ok` plus graph state while a
+failing worker was between rollback and quarantine, and the latter then
+overwrote `ok` with `quarantined`. One immediate transaction around the empty
+precondition, write, exact semantic readback and graph-free postcondition makes
+those observations one serialized decision.
+
+**Compatibility.** Normal caught failures retain the 1.5.0 marker shape and
+fixed diagnostic introduced by ADR-115. Successful processing and direct-call
+rollback are unchanged. A database or trigger that suppresses, rewrites or
+adds graph state during a quarantine write now receives an immediate
+compatibility refusal instead of a false recovery outcome. This correction
+remains `cce-processor/1.5.0` only because ADR-115 and ADR-116 are stacked and
+no release or deployment is permitted between them; if the earlier 1.5.0
+producer had been published, its unverifiable quarantine outcomes would have
+required a new processor identity.
+
+**Recovery.** Preserve the source database unchanged. Remove or repair the
+marker-write interference, then retry live processing or rebuild into a new
+projection. Do not copy or hand-edit a marker: the transaction must observe
+and write the quarantine outcome itself.
+
+**Limit.** Exact readback binds processor version, status and diagnostic, not
+the nondeterministic `processed_at` timestamp. The pre- and postconditions
+cover every marker and every historical or live node and edge carrying the
+event id; they do not inspect unrelated trigger side effects. The marker table
+is indexed by event id, but graph attribution is not, so the exceptional
+quarantine path can scan linearly in retained nodes and edges. This transaction
+serializes one failure decision and prevents it from overwriting state that
+already committed; it is not a permanent fence. A later ordinary
+`process_event()` retry can coherently replace quarantine with `ok` plus graph
+state (restricted to canonical-order recovery by ADR-120), and a privileged
+writer can still mutate the database after commit.
+Marker provenance remains structural rather than cryptographic.
+Event-processing failures outside `Exception`, such as `KeyboardInterrupt` and
+`SystemExit`, remain process-control events and do not enter this quarantine
+path.
+
+## ADR-117 — Co-assertion is not supersession
+
+**Status.** Implemented in the local candidate, 2026-09-19; not published.
+
+**Context.** A trusted issue containing CSV and JSON requirements ranked them
+by graph insertion time. The latter silently superseded the former, and the
+Resume Packet omitted an asserted requirement. Reversing the sentences reversed
+the winner. Earlier exploration identified this defect; the release review
+reproduced it through public ingestion on the combined candidate.
+
+**Decision.** Requirements extracted from the same complete source block,
+at that block's authority, do not rank one another by freshness. Compute the
+complete requirement-id set before writing any item, including items that will
+be restated without a new row. Skip only that neighbor in conflict detection;
+continue considering cross-source neighbors. Claims, decisions, stronger
+retained authority, injection quarantine, and source-retraction ordering retain
+their existing behavior.
+
+**Alternatives.** Event-id equality misses restatements from an earlier event.
+Source-ref equality incorrectly exempts replacements across snapshots. A growing
+set makes the rule sentence-order dependent. A lexical compatibility classifier
+would assert semantic knowledge the token heuristic does not establish.
+
+**Compatibility.** The processor advances from 1.5.0 to 1.6.0, independently
+of package 0.1.6. Earlier local 1.5.0 projections are refused by ADR-114 rather
+than relabeled or automatically repaired. Keep them unchanged and re-ingest
+retained sources into a distinct project. Rebuild is an independent observation,
+not a write-back migration. The extractor identity remains 1.3.0 because its
+items and their stable identities are unchanged.
+
+**Verification.** Sentence permutations, restatement, retraction, cross-source
+neighbors, higher authority, untrusted claims, injection audit, packet inclusion,
+and clean rebuild are exercised in `test_regressions_round18_co_assertion.py`.
+The deciding preservation tests fail before the guard for superseded or omitted
+requirements. Compatibility tests retain real edge witnesses from distinct
+sources rather than relying on the defective within-block supersession.
+
+**Limit.** This rule preserves co-asserted requirements; it does not prove their
+compatibility or detect genuine contradictions within the block. It does not
+fix cross-kind negation detection, out-of-order source revisions, or assumption
+retraction. Those require separate disposition and must not be inferred fixed
+from a passing requirement-preservation test. No new completion rejection gate
+is introduced; the existing completion instrument tests remain unchanged.
+
+## ADR-118 — Source withdrawal closes assumption validity
+
+**Status.** Implemented in the local candidate, 2026-09-19; not published.
+
+**Context.** Editing a trusted issue from a warm-cache assumption to a cold-cache
+assumption left both active, with unbounded validity. The source-retraction path
+considered requirements and constraints but not assumptions. The normalizer also
+discarded explicitly empty bodies, hiding a complete withdrawal from that path.
+
+**Decision.** Include assumptions in source occurrence tracking. An admissible
+source edit removes only that source's occurrence; other sources sustain the
+assertion. Last-source withdrawal fires the existing dependency-drift invalidation
+and closes validity at one processing-observation boundary shared with newly
+extracted assumptions. It does not infer a semantic contradiction. Weaker edits
+and injection-quarantined blocks cannot withdraw a stronger assumption. Explicit
+empty/null fields remain source blocks; absent fields are not deletions.
+
+Withdrawal also records a separate holder when another invalidation already
+holds the assumption. A subsequent reassertion carries the invalidated status
+and closed interval, and removing it again does not widen that interval. Only
+explicit narrowed-scope resolution, with no remaining open holder, may reopen a
+withdrawn assumption. Graph's opt-in reopening requires a new start at or after
+the prior closed end. Ordinary updates still carry the end forward (ADR-003).
+Prior transaction versions are never rewritten. Replacement-evidence and
+superseding-decision resolutions retain their existing status/validity behavior.
+
+**Alternatives.** Merely filtering the packet would leave stale graph state and
+dependent tasks unchanged. Treating an edit as supersession would conflate source
+withdrawal with a semantic relationship. Automatically reviving reasserted words
+would clear an unresolved control without review. Making every `valid_to=None`
+clear validity would regress ADR-003. Rewriting old rows would erase what the
+engine believed before learning of the edit.
+
+**Compatibility.** Processor 1.6.0 advances to 1.7.0; the extractor remains 1.3.0.
+Earlier local projections are refused, not relabeled. Preserve the old database
+and re-ingest retained sources into a distinct database/project (ADR-114).
+Graph's optional `reopen_validity` keyword defaults to false. No schema, public
+CLI command, or completion rejection gate is added. Reopening is a privileged
+Graph mutation, not an authorization service for untrusted callers.
+
+**Verification.** Public-ingest tests cover edits, shared sources, reassertion,
+overlapping invalidations in both orders, repeated withdrawal, empty and missing
+bodies, weaker/quarantined edits, pending broad review, prior transaction history,
+rebuild equivalence, file-backed reopen, and real-project MCP observations. A
+known-good engine attestation reaches the existing `open_invalidation` completion
+gate after withdrawal and completes with a fresh attestation after resolution.
+Graph tests pin carry-forward and non-retroactive reopening without mutation on
+rejected input. The completion instrument's existing planted defects remain.
+
+**Limit.** This is delivery-ordered source occurrence tracking, not a source
+revision-ordering mechanism or proof that an assumption is true. Shared sources
+may assert contradictory assumptions; they are not forced into a single active
+node. Validity uses the processing observation, not a claimed source-world time.
+Rebuild preserves semantics but regenerates these observation timestamps.
+Resolution through the low-level invalidation API is an audited graph mutation,
+not a new replayable event type. Existing low-confidence confirmation policy is
+unchanged; a broad blast radius alone does not require confirmation. This repair
+does not certify the pre-existing requirement-retraction authority policy.
+
+## ADR-119 — Explicit cross-kind opposites remain contested
+
+**Status.** Implemented in the local candidate, 2026-09-19; not published.
+
+**Context.** A positive requirement and its otherwise identical prohibition
+received different entity types. Conflict detection ignored constraints, so
+both remained active and the continuity check could miss the disagreement.
+
+**Decision.** Admit a constraint to the existing conflict path only when its
+requirement counterpart is identical after removing one explicit `not` or
+`never` following `must` or `shall`. Compare case-folded, whitespace-collapsed
+statement text, retaining prepositions and scope words. Co-asserted or
+cross-source equal-authority opposites remain uncertain on both sides with
+resolution flags. No freshness winner or supersession is manufactured. A
+stronger authority retains the existing ranking; a replacement snapshot is
+not co-assertion. The existing continuity conflict predicate observes the flags.
+Exact pairs bypass the generic token-similarity threshold: short subjects or
+an additional literal `not` elsewhere must not make detection order-dependent.
+
+**Alternatives.** Applying the generic token heuristic to every constraint
+would classify distinct prohibitions as opposites. Using identity normalization
+would erase scope prepositions. Treating every co-asserted pair as compatible
+would conceal a literal disagreement. A semantic classifier is outside scope.
+
+**Compatibility.** This correction and ADR-120 advance the unpublished local
+processor from 1.7.0 to 1.8.0 together; neither intermediate producer is
+published. Extractor 1.3.0 and stable identities are unchanged. ADR-114 refuses
+older processor markers rather than blessing their projections.
+
+**Verification.** Public ingestion covers all four modal/negator combinations
+in both sentence orders, restatement, independent sources, replacement edits,
+stronger authority, untrusted demotion, injection quarantine, continuity and
+independent rebuild. Deciding tests fail against the preserved stage4 engine.
+No new completion rejection gate is introduced.
+
+**Limit.** This is a closed lexical control, not semantic contradiction
+detection or a proof of compatibility. Different wording, scopes, and other
+negation forms remain outside it. Human resolution is still required; the
+control does not select the correct statement. Contested assertions may persist
+until explicitly resolved even after later source edits.
+
+## ADR-120 — Source revisions and canonical processing have separate orders
+
+**Status.** Implemented in the local candidate, 2026-09-19; not published.
+
+**Context.** A late delivery of an older GitHub revision could replace newer
+requirements or withdraw a newer assumption. A first correction preserved
+active state but allowed a markerless earlier event to heal after later
+processing, producing history different from canonical-order replay.
+
+**Decision.** Use explicit, validated GitHub issue, pull-request and comment
+`updated_at` timestamps to compare revisions within one tenant/project/source
+and field. A successfully projected newer field at equal or greater authority
+fences a strictly older field. The older event still receives its canonical
+event node and checked success marker; its report discloses skipped fields.
+The canonical node records the explicit clock and only admitted field refs,
+so missing or quarantined fields do not establish a fence. Metadata survives
+normal payload retention. Equal or absent clocks retain arrival fallback;
+creation/receipt time is not substituted for an absent revision clock.
+
+Separately, projection follows canonical sequence within a project. Before any
+projection write, refuse an event with an earlier retained unprocessed event,
+or a retained non-successful event with later terminal processing. Redeliver
+retained gaps first, then retry the later delivery. Older quarantine retries
+after later processing require re-ingestion into a distinct project/store.
+Successful direct retries are no-ops only after canonical input and capture
+validation. The check runs in the owning immediate transaction. Redacted
+predecessors remain unavailable rather than blocking future processing; their
+later placeholder projection does not recover discarded semantics.
+
+**Alternatives.** Receipt time silently reverses source edits. Sorting the
+canonical log by claimed source time changes existing history. A global clock
+lets unrelated or weaker sources suppress stronger work. A per-event clock
+fences absent/quarantined fields. Automatic scheduling, retroactive projection
+rewrites, and weakening the replay comparison add complexity or hide divergence.
+
+**Compatibility.** Processor 1.8.0 includes ADR-119 and this decision; older
+projections are refused, not migrated. No schema, dependency, public command,
+or completion gate is added. ADR-116's quarantine retry is now limited by
+canonical order. The caller must repair retained gaps in sequence or start
+an explicitly separate projection from retained inputs. This operational cost
+is accepted instead of returning an apparently repaired but divergent history.
+
+**Verification.** Tests drive all three GitHub producers, empty-body withdrawal,
+equal/missing clocks, offsets and subsecond times, authority, independent
+sources/projects, partial/quarantined fields, retention and reopen, ordered gap
+recovery, quarantine retry refusal, successful retry idempotence and independent
+rebuild. The source frontier performs one metadata query per event, not one
+payload scan per sentence. Supported redacted-legacy lifecycle tests remain
+unchanged and pass.
+
+**Limit.** Source timestamps are producer-supplied observations, not signed
+chronology or protection against a privileged database writer. Arrival fallback
+cannot establish which equal/undated snapshot is newer. The frontier query can
+scan linearly in retained source metadata, and canonical gap checks can scan
+project history; no constant-time claim is made. Quarantine replay can differ
+when an external failure disappears; retry refusal does not make transient
+failures deterministic. No redacted history becomes replayable by this change.
+Events skipped by revision still exist in the log; success denotes structural
+processing, not acceptance of every source field or truth of its assertions.
+
+## ADR-121 — Refusal must not implicitly recover a rollback journal
+
+**Status.** Implemented in the local candidate, 2026-09-19; not published.
+
+**Context.** A killed writer left genuine spilled pages and a hot rollback
+journal. Both immutable preflights saw current markers in uncommitted pages;
+the normal connection then restored older committed markers and refused, but
+only after changing the database and removing its journal. The projection was
+not admitted incorrectly, yet preservation on refusal did not hold.
+
+**Decision.** Refuse any rollback-journal sidecar before either path preflight,
+including absent/empty main databases, and recheck before the exact Store
+connection's first compatibility read. Use filesystem lstat, not a journal
+header heuristic: empty files, directories and dangling links also refuse.
+An uninspectable sidecar path refuses. Literal in-memory databases are exempt.
+The fixed diagnostic asks the operator to close writers, preserve the database
+and sidecars together, and recover explicitly on a separate copy.
+
+**Alternatives.** Ignoring the journal inspects uncommitted pages. Letting
+SQLite recover implicitly changes the preserved input before refusal. A header
+test alone does not establish hotness or exclude a concurrent writer. Deleting
+a supposedly stale journal can discard the only recovery evidence. No automatic
+recovery command or new schema is introduced.
+
+**Consequences.** Cold PERSIST journals now require an explicit copy-recovery
+step too. SQLite's backup API, used against the copied pair after stopping its
+writers, can produce a distinct clean database; integrity and application
+compatibility must still be checked. Recovery does not convert old processor
+markers into current ones. Processor 1.8.0 is unchanged because successful
+projection semantics do not change; this is an admission/preservation fix.
+
+**Verification.** Crash-produced hot journals have the real journal magic,
+spilled main pages, and a dead writer. A separate ordinary SQLite read restores
+the exact committed bytes and removes the journal, proving the oracle. Candidate
+refusal preserves both files, for compatible and incompatible committed states,
+including deterministic interposition between path and connection checks.
+Cold-journal, absent-main, sidecar-shape, real-project CLI and in-memory controls
+are pinned. A distinct backup from a cold pair opens successfully. The genuine
+PyPI 0.1.3 producer fixture remains separately bound to its wheel digest.
+
+**Limit.** This checks sidecar presence at defined boundaries, not filesystem
+atomicity against arbitrary concurrent changes. Operators must close competing
+writers. Direct low-level Store/SQLite access is not this Engine boundary.
+WAL and shared-memory behavior retain ADR-114's distinct limits. SQLite recovery
+restores committed pages, not erased payloads, runtime migration or semantic
+compatibility. No new completion rejection gate is introduced.

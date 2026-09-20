@@ -107,7 +107,7 @@ def test_the_processor_and_extractor_versions_are_pinned():
     from causal_continuity_engine import extraction as extraction_module
     from causal_continuity_engine.engine import PROCESSOR_VERSION
 
-    assert PROCESSOR_VERSION == "cce-processor/1.3.0"
+    assert PROCESSOR_VERSION == "cce-processor/1.8.0"
     assert extraction_module.EXTRACTOR_VERSION == "1.3.0"
 
 

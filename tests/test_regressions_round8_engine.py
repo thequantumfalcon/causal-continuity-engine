@@ -349,6 +349,76 @@ class TestVerifierFrontier:
 
 
 class TestPacketControlFreshness:
+    def test_unprojected_event_blocks_the_signed_continuity_frontier(
+            self, tmp_path, request):
+        """A current receipt cannot authenticate a partial projection.
+
+        The event append and projection commit are deliberately separate.  A
+        process interruption between them leaves a chain-valid canonical event
+        with neither a processing marker nor projection evidence.  Composing a
+        packet after that interruption must not turn the partial projection
+        into signed success.
+        """
+        engine = Engine(
+            tmp_path / "receipt-completeness.db", tenant_id=TENANT,
+            signer=Signer.generate("receipt-completeness"), workdir=tmp_path)
+        request.addfinalizer(engine.close)
+        engine.create_project(
+            "receipt completeness", project_id=PROJECT,
+            config={
+                "require_proof_for": [], "required_verifiers": [],
+                "min_evidence_grade": None,
+            })
+        engine.resume_packet(PROJECT)
+        assert engine.continuity_check(PROJECT)["conclusion"] == "success"
+
+        original = engine._process_prepared_event
+
+        def interrupted(*args, **kwargs):
+            raise KeyboardInterrupt("interrupted after the canonical append")
+
+        engine._process_prepared_event = interrupted
+        try:
+            with pytest.raises(KeyboardInterrupt):
+                engine.ingest_human_decision(
+                    PROJECT, actor="owner", decision="Ship the release")
+        finally:
+            engine._process_prepared_event = original
+
+        assert len(engine.store.unprocessed_event_ids(
+            PROJECT, tenant_id=TENANT)) == 1
+        engine.resume_packet(PROJECT)
+
+        # Recreate the exact pre-fix receipt: packet currency looked only at
+        # the watermark, so this markerless event was signed as success.  A
+        # fixed verifier must compare it with the complete live frontier and
+        # refuse to call it current even though its signature is authentic.
+        packet_is_stale = engine.packet_is_stale
+        engine.packet_is_stale = lambda project_id: False
+        vulnerable_receipt = engine.continuity_check(
+            PROJECT)["continuity_receipt"]
+        engine.packet_is_stale = packet_is_stale
+        assert vulnerable_receipt["decision"] == "success"
+
+        report = engine.continuity_check(PROJECT)
+        receipt = report["continuity_receipt"]
+        verification = engine.verify_continuity_receipt(PROJECT, receipt)
+        vulnerable_verification = engine.verify_continuity_receipt(
+            PROJECT, vulnerable_receipt)
+
+        assert (
+            report["conclusion"],
+            receipt["decision"],
+            receipt["decision_state"]["packet"]["current"],
+            verification["verdict"],
+            vulnerable_verification["verdict"],
+        ) == (
+            "neutral", "neutral", False, "CURRENT",
+            "AUTHENTIC_HISTORICAL")
+        assert {"decision", "decision_state_digest"} <= set(
+            vulnerable_verification["changed"])
+        engine.close()
+
     def test_policy_and_runtime_graph_changes_stale_a_signed_packet(self, tmp_path):
         config = {
             "require_proof_for": [], "required_verifiers": [],

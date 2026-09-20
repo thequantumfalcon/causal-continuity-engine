@@ -9,6 +9,21 @@ Extracted nodes use deterministic content-derived ids (stable_key) so a
 clean-database replay of the event log rebuilds an equivalent projection
 (CCG-006); runtime nodes (sessions, checkpoints) keep random ids and are
 compared by type/status counts.
+
+Requirements co-asserted in one complete source block are preserved without
+ranking their write order as freshness (ADR-117). An otherwise identical
+requirement/constraint pair with explicit must/shall not/never remains contested
+at equal authority; this is not general contradiction detection (ADR-119).
+
+Last-source assumption withdrawal closes validity and invalidates dependents;
+restating it cannot silently resolve the invalidation (ADR-118).
+
+Explicit source revision times fence older projected fields, not independent
+sources or stronger authority. Retained processing gaps must be repaired in
+canonical order; unavailable payload history remains unavailable (ADR-120).
+
+Rollback-journal sidecars require explicit recovery on a preserved copy;
+compatibility checks must not implicitly recover the source file (ADR-121).
 """
 
 from __future__ import annotations
@@ -29,6 +44,7 @@ from .core import (
     is_canonical_utc_timestamp,
     is_rfc3339_datetime,
     new_id,
+    parse_ts,
     sha256_hex,
     strict_json_loads,
     utcnow,
@@ -70,16 +86,21 @@ from .proof import (
     validate_envelope_shape,
     verify_envelope,
 )
-from .redaction import CAPTURE_MODES, apply_capture_mode
+from .redaction import (
+    CAPTURE_MODES,
+    _capture_payload_is_current,
+    apply_capture_mode,
+)
 from .resume import ResumeComposer
 from .store import (
     DuplicateEventError,
+    EventPayloadIntegrityError,
     Store,
     serialized_access,
 )
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
-PROCESSOR_VERSION = "cce-processor/1.3.0"
+PROCESSOR_VERSION = "cce-processor/1.8.0"
 # Version of the statement normalization contract that feeds stable_node_id.
 # It is deliberately separate from the extractor version: pattern behavior can
 # change without changing identity, while an identity change survives forever
@@ -976,6 +997,7 @@ def _assert_statement_identity_compatible(connection: sqlite3.Connection) -> Non
 
 def _assert_statement_identity_compatible_path(path: str | Path) -> None:
     """Run the compatibility check through a read-only SQLite connection."""
+    _assert_no_rollback_journal(path)
     raw_path = str(path)
     if raw_path == ":memory:":
         return
@@ -1037,7 +1059,22 @@ _PROJECTION_REFUSAL = (
     "database unchanged and re-ingest its retained authoritative sources "
     "into a new database and project"
 )
-_COMPAT_ERRORS = (OSError, ValueError, sqlite3.Error)
+_COMPAT_ERRORS = (OSError, ValueError, RecursionError, sqlite3.Error)
+
+
+def _assert_no_rollback_journal(path) -> None:
+    """Presence is enough to refuse; a partial hotness oracle is unsafe (ADR-121)."""
+    if str(path) == ":memory:":
+        return
+    message = ("rollback journal requires explicit recovery on a preserved copy; "
+               "close writers and preserve the database and sidecars together")
+    try:
+        Path(str(Path(path).resolve()) + "-journal").lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise ProcessorProjectionCompatibilityError(message) from None
+    raise ProcessorProjectionCompatibilityError(message)
 
 
 # Complete producer-consumed declarations, read off the installed schema:
@@ -1092,6 +1129,14 @@ _EVENTS_RAW_LEGACY = tuple(
     if column[0] != "stored_payload_digest")
 _EVENTS_MIGRATED = (_EVENTS_REBUILT, _EVENTS_ADDCOL)
 _EVENTS_SUPPORTED = (_EVENTS_FRESH_CURRENT,) + _EVENTS_MIGRATED
+_SCOPED_INDEX_NAME = "idx_events_idempotency_scope"
+_SCOPED_COLLATION_PROBE = "cce_scoped_collation_probe"
+_SCOPED_INDEX_XINFO = (
+    (0, 1, "tenant_id", 0, "BINARY", 1),
+    (1, 2, "project_id", 0, "BINARY", 1),
+    (2, 5, "idempotency_key", 0, "BINARY", 1),
+    (3, -1, None, 0, "BINARY", 0),
+)
 _NODES_DECL = (
     ("row_id", "INTEGER", 0, None, 1), ("node_id", "TEXT", 1, None, 0),
     ("version", "INTEGER", 1, None, 0), ("entity_type", "TEXT", 1, None, 0),
@@ -1168,8 +1213,102 @@ def _require_canonical(seen, lowered):
     return True
 
 
+def _assert_scoped_index_compatible(connection) -> None:
+    """Bind the named scoped-idempotency index if installation reached it.
+
+    A missing index is repairable when the underlying keys are unique: Store
+    may have been interrupted between schema statements and will install it.
+    A present same-name object must be exactly the index Store creates because
+    its ``IF NOT EXISTS`` statement otherwise preserves the counterfeit.
+    """
+    candidates = [
+        row for row in connection.execute("PRAGMA index_list(events)")
+        if (row[1] or "").lower() == _SCOPED_INDEX_NAME
+    ]
+    if not candidates:
+        return
+    if (len(candidates) != 1 or candidates[0][1] != _SCOPED_INDEX_NAME
+            or tuple(candidates[0][2:5]) != (1, "c", 0)):
+        _refuse_projection()
+    declaration = tuple(
+        tuple(row) for row in connection.execute(
+            f'PRAGMA index_xinfo("{_SCOPED_INDEX_NAME}")'))
+    if declaration != _SCOPED_INDEX_XINFO:
+        _refuse_projection()
+
+
+def _assert_scoped_column_collations(connection) -> None:
+    """Bind the default collations an absent scoped index would inherit.
+
+    ``table_xinfo`` omits column collations. Re-parsing the one stored table
+    declaration in an isolated in-memory database lets SQLite resolve its own
+    syntax without writing to the database under admission. A probe index then
+    exposes the resolved collations through the same ``index_xinfo`` contract
+    used for an installed index.
+    """
+    row = connection.execute(
+        "SELECT sql FROM main.sqlite_schema"
+        " WHERE type = 'table' AND name = 'events'").fetchone()
+    if row is None or not isinstance(row[0], str):
+        _refuse_projection()
+    probe = sqlite3.connect(":memory:")
+    try:
+        probe.execute(row[0])
+        probe.execute(
+            f'CREATE INDEX "{_SCOPED_COLLATION_PROBE}" ON events('
+            "tenant_id, project_id, idempotency_key)")
+        declaration = tuple(
+            tuple(item) for item in probe.execute(
+                f'PRAGMA index_xinfo("{_SCOPED_COLLATION_PROBE}")'))
+    except sqlite3.Error:
+        _refuse_projection()
+    finally:
+        probe.close()
+    if declaration != _SCOPED_INDEX_XINFO:
+        _refuse_projection()
+
+
 def _refuse_projection() -> None:
     raise ProcessorProjectionCompatibilityError(_PROJECTION_REFUSAL)
+
+
+def _assert_payload_uses_current_capture(payload, capture_mode) -> None:
+    """Require retained bytes to satisfy current capture-output semantics."""
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        _refuse_projection()
+    try:
+        current = _capture_payload_is_current(payload, capture_mode)
+    except Exception:
+        _refuse_projection()
+    if not current:
+        _refuse_projection()
+
+
+def _assert_event_uses_current_capture(event, project_capture_mode) -> None:
+    """Bind one canonical event to its recorded and current capture policy."""
+    if not isinstance(event, dict):
+        _refuse_projection()
+    recorded_mode = event.get("capture_mode")
+    if (not isinstance(recorded_mode, str)
+            or recorded_mode not in CAPTURE_MODES
+            or not isinstance(project_capture_mode, str)
+            or project_capture_mode not in CAPTURE_MODES):
+        _refuse_projection()
+    _assert_payload_uses_current_capture(event.get("payload"), recorded_mode)
+    if recorded_mode == project_capture_mode:
+        return
+    # Metadata-only output has already omitted every content string. Its
+    # exact key-bound placeholders are safe under the less restrictive
+    # redacted/full modes, but re-feeding a password-key placeholder through
+    # their generic assignment matcher would falsely classify the placeholder
+    # itself as a secret. The inverse is not true: retained full/redacted
+    # content must still satisfy a project's current metadata-only grammar.
+    if recorded_mode == "metadata_only":
+        return
+    _assert_payload_uses_current_capture(
+        event.get("payload"), project_capture_mode)
 
 
 def _assert_processor_projection_compatible(connection) -> None:
@@ -1223,10 +1362,18 @@ def _assert_processor_projection_compatible(connection) -> None:
         events_layout = _x_declaration(connection, "events")
         if events_layout not in _EVENTS_SUPPORTED + (_EVENTS_RAW_LEGACY,):
             _refuse_projection()
+        _assert_scoped_column_collations(connection)
+        _assert_scoped_index_compatible(connection)
         duplicate_events = connection.execute(
             "SELECT COUNT(*) FROM (SELECT event_id FROM events"
             " GROUP BY event_id HAVING COUNT(*) > 1)").fetchone()[0]
         if duplicate_events:
+            _refuse_projection()
+        duplicate_deliveries = connection.execute(
+            "SELECT COUNT(*) FROM (SELECT tenant_id, project_id,"
+            " idempotency_key FROM events GROUP BY tenant_id, project_id,"
+            " idempotency_key HAVING COUNT(*) > 1)").fetchone()[0]
+        if duplicate_deliveries:
             _refuse_projection()
 
         has_markers = _require_canonical(seen, "processed_events")
@@ -1310,6 +1457,25 @@ def _assert_processor_projection_compatible(connection) -> None:
                     " FROM processed_events GROUP BY event_id",
                     (PROCESSOR_VERSION, PROCESSOR_VERSION))
             }
+
+        # Redaction changes alter both canonical event bytes and graph rows.
+        # Any marker binds an event to processor semantics: a current marker
+        # is the witness, while an old or mixed marker set refuses below.
+        # Markerless append-only history has no such witness, so only its
+        # retained payloads need rechecking before this processor may project
+        # them. Validate against each event's recorded mode: metadata-only
+        # output has a closed placeholder shape, while redacted/full output is
+        # unchanged by current secret handling.
+        payload_query = (
+            "SELECT e.payload, e.capture_mode FROM events AS e"
+            " WHERE e.payload IS NOT NULL")
+        if has_markers:
+            payload_query += (
+                " AND NOT EXISTS (SELECT 1 FROM processed_events AS p"
+                " WHERE p.event_id = e.event_id)")
+        for row in connection.execute(payload_query):
+            payload = strict_json_loads(row[0])
+            _assert_payload_uses_current_capture(payload, row[1])
 
         attributed_nodes: dict[str, int] = {}
         live_event_nodes: dict[str, int] = {}
@@ -1396,8 +1562,46 @@ def _require_persisted_marker(store, event_id, status, error) -> None:
         raise ProcessorProjectionCompatibilityError(_PROJECTION_REFUSAL)
 
 
+def _quarantine_diagnostic(_exc: Exception) -> str:
+    """Bound durable failure evidence without persisting source-shaped text."""
+    return "event processing failed"
+
+
+def _event_terminal_state(store, event_id) -> tuple[int, int, int]:
+    """Whether any marker, node or edge already records this event."""
+    row = store._conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM processed_events WHERE event_id = ?),"
+        " EXISTS(SELECT 1 FROM nodes WHERE event_id = ?),"
+        " EXISTS(SELECT 1 FROM edges WHERE event_id = ?)",
+        (event_id, event_id, event_id),
+    ).fetchone()
+    return tuple(row)
+
+
+def _mark_event_quarantined(store, event_id, exc: Exception) -> None:
+    """Write one exact graph-free quarantine outcome or refuse (ADR-116)."""
+    try:
+        # Compute the fixed diagnostic before taking SQLite's writer lock. A
+        # competing processor may finish this event in that interval, so the
+        # locked precondition below must still observe an empty terminal state.
+        error = _quarantine_diagnostic(exc)
+        with store.transaction():
+            if _event_terminal_state(store, event_id) != (0, 0, 0):
+                _refuse_projection()
+            store.mark_processed(
+                event_id, PROCESSOR_VERSION, "quarantined", error)
+            _require_persisted_marker(
+                store, event_id, "quarantined", error)
+            if _event_terminal_state(store, event_id) != (1, 0, 0):
+                _refuse_projection()
+    except Exception:
+        raise ProcessorProjectionCompatibilityError(
+            _PROJECTION_REFUSAL) from None
+
+
 def _assert_processor_projection_compatible_path(path) -> None:
     """Read-only preflight, before Store opens or installs anything."""
+    _assert_no_rollback_journal(path)
     raw_path = str(path)
     if raw_path == ":memory:":
         return
@@ -1443,6 +1647,7 @@ class Engine:
         def _pre_schema(connection):
             # Re-checked on the connection Store will actually use, so a path
             # replaced after the preflight cannot reach schema installation.
+            _assert_no_rollback_journal(path)
             _assert_statement_identity_compatible(connection)
             _assert_processor_projection_compatible(connection)
 
@@ -2002,8 +2207,48 @@ class Engine:
                 capture_mode=mode,
                 sensitivity="internal",
             )
-        except DuplicateEventError:
-            return None
+        except DuplicateEventError as exc:
+            # The log commits before the projection transaction, so a crash
+            # in between leaves a committed event with no marker and no
+            # projection rows. Re-delivering it is what an operator does
+            # next, and it used to do nothing at all. Project it now; an
+            # event that already carries any marker, including a quarantine,
+            # is still a benign duplicate.
+            event_id = exc.event_id
+            unprojected = set(self.store.unprocessed_event_ids(
+                project_id, tenant_id=self.tenant_id))
+            if event_id is None or event_id not in unprojected:
+                return None
+            with self.store.transaction():
+                # The first observation is only a fast path. Another
+                # reconciler or the original delivery can write a marker
+                # before this writer transaction begins; only the observation
+                # made while holding that transaction may authorize a
+                # projection. This also serializes two concurrent healers.
+                unprojected = set(self.store.unprocessed_event_ids(
+                    project_id, tenant_id=self.tenant_id))
+                if event_id not in unprojected:
+                    return None
+                event = self.store.get_event(
+                    event_id, tenant_id=self.tenant_id,
+                    project_id=project_id)
+                # This call projects the event already in the canonical log.
+                # Its report must describe those persisted bytes and their
+                # capture mode, not a later delivery transformed under today's
+                # policy.
+                # Healing performs no new capture, so it must not re-run today's
+                # redaction rules over already-persisted content merely to
+                # report transformations that did not happen.
+                capture_report = {
+                    "mode": event["capture_mode"],
+                    "redactions": [],
+                    "dropped_fields": 0,
+                }
+                report = self.process_event(event)
+            report["capture"] = capture_report
+            report["healed_unprojected_event"] = True
+            return report
+        capture_validated = False
         try:
             # Process the STORED event, not the incoming envelope: extraction
             # must see exactly what durably persisted. Handing it the raw
@@ -2015,12 +2260,23 @@ class Engine:
             # failure may quarantine the event, but must not leave half of
             # its nodes, edges, invalidations, or audits visible.
             with self.store.transaction():
-                # process_event() is the canonical producer of the success
-                # marker and writes it inside this same transaction.
-                report = self.process_event(event)
+                event = self._prepare_event(event)
+                # Only event-level processing failures after this exact
+                # canonical/capture witness may mint a current quarantine
+                # marker. Infrastructure or policy failures in the prefix
+                # would otherwise make admission skip bytes never validated.
+                capture_validated = True
+                report = self._process_prepared_event(event)
+        except ProcessorProjectionCompatibilityError:
+            # A current marker is the durable witness that this processor's
+            # semantics produced the event. Never convert a failure of that
+            # very precondition into a current quarantine marker: admission
+            # would then skip the retained-payload check on the next open.
+            raise
         except Exception as exc:  # quarantine and preserve replayability (ADR-036)
-            self.store.mark_processed(event["event_id"], PROCESSOR_VERSION,
-                                      "quarantined", repr(exc))
+            if not capture_validated:
+                _refuse_projection()
+            _mark_event_quarantined(self.store, event["event_id"], exc)
             raise
         report["capture"] = capture_report
         return report
@@ -2034,26 +2290,15 @@ class Engine:
         # guarantee as ingest(). When ingest already owns a transaction this
         # becomes a nested savepoint, so both entry paths remain atomic.
         with self.store.transaction():
-            report = self._process_event(event, envelope)
-            # The success marker is part of the projection commit, not a
-            # caller's responsibility. Writing it here makes "this projection
-            # was produced by this processor" canonical evidence: a direct
-            # public call can no longer leave projection rows behind with no
-            # marker, and a projection failure rolls the marker back with it
-            # (ADR-114).
-            self.store.mark_processed(
-                event["event_id"], PROCESSOR_VERSION, "ok")
-            # Writing the marker is not the same as persisting it: a trigger
-            # can suppress or rewrite the row and leave a projection with no
-            # evidence. Read it back inside the transaction that owns the
-            # projection, so a missing or altered marker rolls the projection
-            # back instead of committing unattributable state.
-            _require_persisted_marker(
-                self.store, event["event_id"], "ok", None)
-            return report
+            return self._process_event(event, envelope)
 
     def _process_event(self, event: dict, envelope: dict | None = None) -> dict:
         """Project one canonical stored event inside an owned transaction."""
+        event = self._prepare_event(event)
+        return self._process_prepared_event(event, envelope)
+
+    def _prepare_event(self, event: dict) -> dict:
+        """Resolve and validate the exact canonical input before projection."""
         if not isinstance(event, dict):
             raise TypeError("processed event must be a canonical stored event object")
         supplied_event = event
@@ -2065,14 +2310,27 @@ class Engine:
             raise PermissionError("processed event is outside this Engine tenant")
         if not isinstance(project_id, str) or not project_id:
             raise ValueError("processed event must name a non-empty project_id")
-        self._require_project(project_id)
+        try:
+            project = self._require_project(project_id)
+        except (PermissionError, ValueError):
+            raise
+        except Exception:
+            _refuse_projection()
         try:
             event = self.store.get_event(
                 event_id, tenant_id=self.tenant_id, project_id=project_id)
         except (KeyError, TypeError):
             raise PermissionError(
                 "processed event must resolve in this Engine tenant/project") from None
-        if set(supplied_event) != set(event):
+        except (EventPayloadIntegrityError, ValueError):
+            raise
+        except Exception:
+            _refuse_projection()
+        try:
+            fields_match = set(supplied_event) == set(event)
+        except Exception:
+            _refuse_projection()
+        if not fields_match:
             raise ValueError(
                 "processed event fields differ from the canonical stored event")
         try:
@@ -2080,9 +2338,24 @@ class Engine:
             stored_semantics = canonical_json(event)
         except (TypeError, ValueError, OverflowError, RecursionError):
             raise ValueError("processed event is not canonical JSON") from None
+        except Exception:
+            _refuse_projection()
         if supplied_semantics != stored_semantics:
             raise ValueError(
                 "processed event differs from the canonical stored event")
+        # Store is a lower-level append-only API and deliberately does not
+        # apply capture policy. A direct process_event() caller must not turn
+        # raw Store bytes into a current-version marker and durable graph
+        # state, claim bytes that never satisfied the event's recorded mode,
+        # or evade a stricter current project mode. Bind both policies to the
+        # exact canonical payload before any projection write.
+        _assert_event_uses_current_capture(
+            event, project["data"].get("capture_mode", "redacted"))
+        return event
+
+    def _process_prepared_event(self, event: dict,
+                                envelope: dict | None = None) -> dict:
+        """Normalize, project and mark a capture-validated event."""
         canonical_envelope = self._re_envelope(event)
         if envelope is not None:
             try:
@@ -2094,8 +2367,38 @@ class Engine:
                 raise ValueError(
                     "supplied processing envelope differs from the stored event")
         envelope = canonical_envelope
+        event_id = event["event_id"]
         report = {"event_id": event_id, "created": [], "invalidations": [],
                   "conflicts": [], "verifications": [], "commands": []}
+        # Projection order must agree with independent canonical-log replay.
+        # A retained hole is repaired first, not silently jumped (ADR-120).
+        # Redacted history cannot be recovered here and remains unavailable.
+        # An already successful
+        # event is a no-op only after canonical input/capture validation above.
+        marker = self.store._conn.execute(
+            "SELECT status FROM processed_events WHERE event_id=? AND processor_version=?",
+            (event_id, PROCESSOR_VERSION)).fetchone()
+        if marker is not None and marker["status"] == "ok":
+            _require_persisted_marker(self.store, event_id, "ok", None)
+            return report
+        disorder = self.store._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM events AS e"
+            " WHERE e.tenant_id=? AND e.project_id=? AND e.seq<? AND e.payload IS NOT NULL"
+            " AND NOT EXISTS(SELECT 1 FROM processed_events AS p WHERE p.event_id=e.event_id)),"
+            " EXISTS(SELECT 1 FROM events AS e JOIN processed_events AS p"
+            " ON p.event_id=e.event_id WHERE e.tenant_id=? AND e.project_id=? AND e.seq>?)",
+            (event["tenant_id"], event["project_id"], event["seq"],
+             event["tenant_id"], event["project_id"], event["seq"])).fetchone()
+        if disorder[0] or (event["payload"] is not None and disorder[1]):
+            raise ProcessorProjectionCompatibilityError(
+                "event projection requires canonical order: redeliver earlier retained unprocessed "
+                "events first; an older quarantine retry after later processing requires "
+                "re-ingestion into a distinct project/store")
+        flags = envelope.get("flags", {})
+        source_revision = flags.get("source_revision_at")
+        blocks = envelope.get("text_blocks", [])
+        obsolete = self._newer_source_blocks(event, source_revision, blocks)
+        source_refs = sorted({block["ref"] for block in blocks})
 
         # Events are first-class causal endpoints. Besides making provenance
         # traversable, this prevents event-to-node support edges from being
@@ -2111,13 +2414,14 @@ class Engine:
                 "payload_digest": event["payload_digest"],
                 "stored_payload_digest": event["stored_payload_digest"],
                 "observed_at": event["observed_at"],
+                **({"source_revision_at": source_revision,
+                    "source_revision_refs": source_refs} if source_revision else {}),
             },
             valid_from=event.get("valid_from"),
             valid_to=event.get("valid_to"),
             event_id=event_id,
         )
 
-        flags = envelope.get("flags", {})
         source_type = envelope.get("source_type", event["source_type"])
 
         # Verifier-authoritative events become verification nodes (EV-003).
@@ -2130,14 +2434,73 @@ class Engine:
             self._process_push(event, envelope, report)
 
         # /cce commands (GHI-005).
-        if flags.get("command"):
+        if flags.get("command") and not obsolete:
             self._process_command(event, envelope, report)
 
         # Text extraction (AD-001..AD-008).
-        for block in envelope.get("text_blocks", []):
-            self._process_text(event, block, report)
+        admitted_refs = []
+        for block in blocks:
+            ref = block["ref"]
+            if ref in obsolete:
+                report.setdefault("skipped_source_blocks", []).append({
+                    "source_ref": ref, "source_revision_at": source_revision,
+                    "newer_event_id": obsolete[ref], "reason": "older source revision"})
+                continue
+            if self._process_text(event, block, report):
+                admitted_refs.append(ref)
+        if source_revision and sorted(set(admitted_refs)) != source_refs:
+            # A missing, skipped, or quarantined block never establishes a
+            # frontier for that field. Preserve the explicit source clock in
+            # event metadata so retention need not preserve its payload.
+            self.graph.put_node(
+                entity_type="event", tenant_id=event["tenant_id"],
+                project_id=event["project_id"], node_id=event_id,
+                data={"source_revision_refs": sorted(set(admitted_refs))}, event_id=event_id)
 
+        # The success marker is part of the projection commit, not a caller's
+        # responsibility. A direct public call therefore cannot leave graph
+        # rows without the processor witness, and a projection failure rolls
+        # both back together (ADR-114).
+        self.store.mark_processed(event_id, PROCESSOR_VERSION, "ok")
+        # A trigger can suppress or rewrite an INSERT without raising. Read
+        # the exact marker back inside the owning transaction before commit.
+        _require_persisted_marker(self.store, event_id, "ok", None)
         return report
+
+    def _newer_source_blocks(self, event: dict, revision: str | None, blocks: list) -> dict:
+        """Find strictly newer, successfully projected fields of this source.
+
+        One scoped metadata query per event, not a payload/history replay per
+        sentence. Only committed successful projections establish field
+        frontiers; a quarantined block cannot fence later work (ADR-120).
+        """
+        if revision is None or not blocks:
+            return {}
+        incoming = parse_ts(revision)
+        refs = {block["ref"] for block in blocks}
+        obsolete = {}
+        rows = self.store._conn.execute(
+            "SELECT e.event_id, e.authority, n.data FROM events AS e"
+            " JOIN processed_events AS p ON p.event_id=e.event_id"
+            " JOIN nodes AS n ON n.node_id=e.event_id AND n.tenant_id=e.tenant_id"
+            " AND n.project_id=e.project_id AND n.entity_type='event' AND n.tx_to IS NULL"
+            " WHERE e.tenant_id=? AND e.project_id=? AND e.source_type=? AND e.source_id=?"
+            " AND e.event_id<>? AND p.processor_version=? AND p.status='ok'"
+            " ORDER BY e.seq DESC",
+            (event["tenant_id"], event["project_id"], event["source_type"], event["source_id"],
+             event["event_id"], PROCESSOR_VERSION))
+        for row in rows:
+            if authority_rank(row["authority"]) < authority_rank(event["authority"]):
+                continue
+            data = strict_json_loads(row["data"])
+            prior_revision = data.get("source_revision_at")
+            if prior_revision is None or parse_ts(prior_revision) <= incoming:
+                continue
+            for ref in refs.intersection(data.get("source_revision_refs", [])):
+                obsolete.setdefault(ref, row["event_id"])
+            if refs <= obsolete.keys():
+                break
+        return obsolete
 
     def _re_envelope(self, event: dict) -> dict:
         """Rebuild the normalization envelope from a stored event (replay)."""
@@ -2145,11 +2508,25 @@ class Engine:
         payload = event["payload"] or {}
         if source_type.startswith("github:"):
             name = source_type.split(":", 1)[1]
+            identity = event["idempotency_key"]
+            prefix, separator, delivery = identity.partition(":")
+            if not separator:
+                raise WebhookPayloadError(
+                    "stored GitHub event idempotency_key must contain a delimiter")
+            if prefix != "github":
+                raise WebhookPayloadError(
+                    "stored GitHub event identity is not canonical")
             try:
-                return normalize(name, event["idempotency_key"].split(":", 1)[1],
-                                 payload)
-            except Exception:
-                return {"source_type": source_type, "text_blocks": [], "flags": {}}
+                validate_public_identifier(delivery, field="delivery_id")
+            except ValueError:
+                raise WebhookPayloadError(
+                    "stored GitHub event identity is not canonical") from None
+            canonical = normalize(name, delivery, payload)
+            if (canonical.get("source_type") != source_type
+                    or canonical.get("idempotency_key") != identity):
+                raise WebhookPayloadError(
+                    "stored GitHub event identity does not round-trip")
+            return canonical
         if source_type == "human_decision":
             return {
                 "source_type": source_type, "flags": {},
@@ -2188,13 +2565,25 @@ class Engine:
         # one source may only retract that source's claim on the node.
         prior_from_ref = {
             n["node_id"]: n
-            for kind in ("requirement", "constraint")
+            for kind in ("requirement", "constraint", "assumption")
             for n in self.graph.current(
                 project_id, kind, tenant_id=self.tenant_id)
             if (ref in _source_refs(n)
-                and n["status"] not in ("superseded", "invalidated"))
+                and n["status"] != "superseded"
+                and (n["entity_type"] == "assumption" or n["status"] != "invalidated"))
         }
         seen_ids: set[str] = set()
+        # One observation boundary avoids overlapping old/new assumption
+        # intervals merely because extraction writes the successor first.
+        observed_at = utcnow()
+        quarantined_block = any(item.suspected_injection for item in result.items)
+        # Restated items do not get rewritten below, but still belong to the
+        # complete snapshot. Their older event id cannot identify co-assertion.
+        block_assertion_ids = {
+            stable_node_id(project_id, item.kind, item.statement)
+            for item in result.items
+            if item.kind in ("requirement", "constraint") and not item.suspected_injection
+        }
 
         for item in result.items:
             if item.suspected_injection:
@@ -2248,6 +2637,8 @@ class Engine:
                 criticality=item.criticality, authority=authority,
                 confidence=item.confidence,
                 scope=item.scope,
+                valid_from=(observed_at if entity_type == "assumption"
+                            and existing is None else None),
                 data={"statement": item.statement, "span": item.span,
                       "source_ref": ref, "stable_key": node_id,
                       "source_refs": sorted(_source_refs(existing) | {ref}),
@@ -2258,14 +2649,19 @@ class Engine:
             )
             report["created"].append({"node_id": node.id, "kind": entity_type,
                                       "status": status, "new": existing is None})
-            self._detect_near_duplicate_conflict(node, report, event_id)
+            self._detect_near_duplicate_conflict(
+                node, report, event_id, block_assertion_ids, authority)
 
-        # Changed requirement detection (CI-001): a requirement this source
+        # Source withdrawal (CI-001 / ADR-118): an assertion this source
         # used to state and no longer does was edited away. It is invalidated
         # only when NO other source still states it — otherwise the edit just
-        # drops this source's claim and the requirement stands on the others.
+        # drops this source's claim and the assertion stands on the others.
         for old_id, old in prior_from_ref.items():
             if old_id in seen_ids:
+                continue
+            assumption = old["entity_type"] == "assumption"
+            if assumption and (quarantined_block or authority_rank(authority) < authority_rank(
+                    old.get("authority") or "untrusted_content")):
                 continue
             remaining = _source_refs(old) - {ref}
             self.graph.put_node(
@@ -2276,19 +2672,29 @@ class Engine:
             if remaining:
                 report["conflicts"].append({
                     "a": old_id, "b": None, "winner": old_id,
-                    "explanation": f"{ref} no longer states this requirement, but"
+                    "explanation": f"{ref} no longer states this {old['entity_type']}, but"
                                    f" {sorted(remaining)} still do; not invalidated",
                 })
                 continue
+            if assumption and old["data"].get("source_withdrawn") is True:
+                continue
             inv = self.invalidation.fire(
                 tenant_id=self.tenant_id, project_id=project_id,
-                target_node_id=old_id, trigger_type="changed_requirement",
+                target_node_id=old_id,
+                trigger_type="dependency_drift" if assumption else "changed_requirement",
                 trigger_confidence=0.9,
                 reason=f"source {ref} was edited and no longer states this"
-                       f" requirement; no other source states it",
+                       f" {old['entity_type']}; no other source states it",
                 event_id=event_id,
             )
+            if assumption and self.graph.get(old_id)["status"] == "invalidated":
+                self.graph.put_node(
+                    entity_type="assumption", tenant_id=self.tenant_id,
+                    project_id=project_id, node_id=old_id,
+                    valid_to=old["valid_to"] or observed_at,
+                    data={"source_withdrawn": True}, event_id=event_id)
             report["invalidations"].append(inv["node_id"])
+        return not quarantined_block
 
     @staticmethod
     def _initial_status(entity_type: str, item, existing) -> str | None:
@@ -2304,7 +2710,9 @@ class Engine:
             return "done" if item.meta.get("done") else "open"
         return "recorded"
 
-    def _detect_near_duplicate_conflict(self, node, report: dict, event_id: str):
+    def _detect_near_duplicate_conflict(
+            self, node, report: dict, event_id: str,
+            block_assertion_ids: set[str], block_authority: str):
         """Two near-identical statements with a small token difference are a
         potential contradiction (stale doc vs newer decision). Resolve by
         authority + freshness (CCG-005); always preserve and expose the conflict.
@@ -2315,29 +2723,54 @@ class Engine:
         hand the win back to the superseded loser and retire the survivor —
         a no-op redelivery would silently empty the active requirement set.
         """
-        if node["entity_type"] not in ("claim", "decision", "requirement"):
+        if node["entity_type"] not in ("claim", "decision", "requirement", "constraint"):
             return
         if node.get("status") in ("superseded", "invalidated", "quarantined"):
             return
         project_id = node["project_id"]
         my_tokens = set(normalize_statement(node["data"]["statement"]).split())
-        if len(my_tokens) < 3:
-            return
         for other in self.graph.current(
                 project_id, tenant_id=self.tenant_id):
             if other["node_id"] == node["node_id"]:
                 continue
-            if other["entity_type"] not in ("claim", "decision", "requirement"):
+            if other["entity_type"] not in ("claim", "decision", "requirement", "constraint"):
                 continue
             if other["status"] in ("superseded", "invalidated", "quarantined"):
                 continue
+            literal_negation = False
+            if "constraint" in (node["entity_type"], other["entity_type"]):
+                # Admit constraints only for a closed, explicit opposite pair.
+                # Identity normalization drops prepositions, so using it here
+                # would merge different scopes such as 'for tests'/'in tests'.
+                if {node["entity_type"], other["entity_type"]} != {"requirement", "constraint"}:
+                    continue
+                texts = {n["entity_type"]: re.sub(
+                    r"\s+", " ", n["data"]["statement"].strip()).casefold()
+                    for n in (node, other)}
+                positive, count = re.subn(
+                    r"\b(must|shall) (not|never) ", r"\1 ", texts["constraint"], count=1)
+                literal_negation = count == 1 and positive == texts["requirement"]
+                if not literal_negation:
+                    continue
             other_tokens = set(
                 normalize_statement(other["data"].get("statement") or "").split())
-            if not other_tokens or other_tokens == my_tokens:
+            if not literal_negation and (
+                    len(my_tokens) < 3 or not other_tokens or other_tokens == my_tokens):
                 continue
             sym_diff = my_tokens ^ other_tokens
-            if 0 < len(sym_diff) <= max(2, len(my_tokens) // 4) and \
-                    len(my_tokens & other_tokens) >= 2:
+            # An exact opposite does not depend on token-set cardinality:
+            # a short subject or 'not' elsewhere can collapse that difference.
+            if literal_negation or (0 < len(sym_diff) <= max(2, len(my_tokens) // 4)
+                                    and len(my_tokens & other_tokens) >= 2):
+                # Relative insertion order within one snapshot is not source
+                # freshness. Do not extend this exemption to a stronger node
+                # retained from another source, or to untrusted claims.
+                if (node["entity_type"] == other["entity_type"] == "requirement"
+                        and node["node_id"] in block_assertion_ids
+                        and other["node_id"] in block_assertion_ids
+                        and (node.get("authority") or "") == block_authority
+                        and (other.get("authority") or "") == block_authority):
+                    continue
                 winner, loser, explanation = self._rank_conflict(node, other)
                 # A loser that another live source still states is a genuine
                 # open disagreement, not a supersession: one issue being
@@ -2346,12 +2779,15 @@ class Engine:
                 # a winner silently (ADR-008).
                 contested = bool(
                     loser is not None
-                    and _source_refs(loser) - _source_refs(node)
+                    and (_source_refs(loser) - _source_refs(node)
+                         or (literal_negation
+                             and node["node_id"] in block_assertion_ids
+                             and other["node_id"] in block_assertion_ids))
                     and authority_rank(loser.get("authority") or "")
                     == authority_rank(winner.get("authority") or ""))
                 if contested:
-                    explanation += ("; both statements are still asserted by"
-                                    " different sources — human resolution required")
+                    explanation = ("both statements remain asserted at equal authority"
+                                   " — human resolution required")
                 self.graph.put_edge(
                     edge_type="contradicts", src_id=node["node_id"],
                     dst_id=other["node_id"], tenant_id=self.tenant_id,
@@ -2367,6 +2803,12 @@ class Engine:
                             contested or loser["entity_type"] == "assumption")
                         else "superseded",
                         event_id=event_id)
+                    if literal_negation and contested:
+                        self.graph.put_node(
+                            entity_type=winner["entity_type"], tenant_id=self.tenant_id,
+                            project_id=project_id, node_id=winner["node_id"],
+                            data={"conflict_requires_resolution": True}, status="uncertain",
+                            event_id=event_id)
                     if not contested:
                         self.graph.put_edge(
                             edge_type="supersedes", src_id=winner["node_id"],
@@ -2785,9 +3227,15 @@ class Engine:
         """True when no packet reflects the current event watermark (CI-006).
 
         Never composed a packet counts as stale: the check must not claim a
-        packet is current for a commit when none exists.
+        packet is current for a commit when none exists. A canonical event
+        without a terminal processing marker also counts as stale: composing
+        from a projection that never received that event cannot make the
+        partial state current (ADR-070).
         """
         self._require_project(project_id)
+        if self.store.unprocessed_event_ids(
+                project_id, tenant_id=self.tenant_id):
+            return True
         row = self.store._conn.execute(
             "SELECT * FROM packet_watermark WHERE project_id = ?",
             (project_id,)).fetchone()
@@ -4767,14 +5215,25 @@ class Engine:
             total += 1
             if row["payload"] is None and row["payload_digest"] != empty:
                 redacted += 1
+        unprojected = self.store.unprocessed_event_ids(
+            project_id, tenant_id=self.tenant_id)
+        notes = []
+        if redacted:
+            notes.append(
+                f"{redacted} of {total} event payloads were cleared by the"
+                f" retention policy; the projection cannot be rebuilt from"
+                f" the log alone, and this is permanent by design")
+        if unprojected:
+            notes.append(
+                f"{len(unprojected)} of {total} events carry no processing"
+                f" marker, so the projection never received them; re-deliver"
+                f" each one to project it, or rebuild the projection")
         return {
             "events": total,
             "redacted_payloads": redacted,
             "replayable": redacted == 0,
-            "note": None if redacted == 0 else
-                    f"{redacted} of {total} event payloads were cleared by the"
-                    f" retention policy; the projection cannot be rebuilt from"
-                    f" the log alone, and this is permanent by design",
+            "unprojected_events": len(unprojected),
+            "note": None if not notes else "; ".join(notes),
         }
 
     @serialized_access
@@ -4886,39 +5345,62 @@ class Engine:
             project_id=project_id)
         for event in self.store.events(
                 project_id, tenant_id=self.tenant_id):
-            with fresh.store.write_scope():
-                fresh.store._conn.execute(
-                    "INSERT OR IGNORE INTO events (event_id, tenant_id, project_id,"
-                    " source_type, source_id, idempotency_key, observed_at,"
-                    " recorded_at, valid_from, valid_to, actor_type, actor_id,"
-                    " authority, sensitivity, capture_mode, payload_digest,"
-                    " stored_payload_digest, payload, schema_version, seq)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (event["event_id"], event["tenant_id"], event["project_id"],
-                     event["source_type"], event["source_id"],
-                     event["idempotency_key"], event["observed_at"],
-                     event["recorded_at"], event["valid_from"], event["valid_to"],
-                     event["actor_type"], event["actor_id"], event["authority"],
-                      event["sensitivity"], event["capture_mode"],
-                      event["payload_digest"], event["stored_payload_digest"],
-                      canonical_json(event["payload"])
-                      if event["payload"] is not None else None,
-                     event["schema_version"], event["seq"]))
             # Replay must be at least as tolerant as live ingestion. Live
             # processing quarantines an event whose extraction raises and
             # carries on (ADR-036); if replay instead aborted, a single
             # quarantined event would make the projection permanently
             # unrebuildable and CCG-006 unverifiable from then on.
+            capture_validated = False
             try:
+                with fresh.store.write_scope():
+                    fresh.store._conn.execute(
+                        "INSERT OR IGNORE INTO events (event_id, tenant_id, project_id,"
+                        " source_type, source_id, idempotency_key, observed_at,"
+                        " recorded_at, valid_from, valid_to, actor_type, actor_id,"
+                        " authority, sensitivity, capture_mode, payload_digest,"
+                        " stored_payload_digest, payload, schema_version, seq)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (event["event_id"], event["tenant_id"], event["project_id"],
+                         event["source_type"], event["source_id"],
+                         event["idempotency_key"], event["observed_at"],
+                         event["recorded_at"], event["valid_from"], event["valid_to"],
+                         event["actor_type"], event["actor_id"], event["authority"],
+                         event["sensitivity"], event["capture_mode"],
+                         event["payload_digest"], event["stored_payload_digest"],
+                         canonical_json(event["payload"])
+                         if event["payload"] is not None else None,
+                         event["schema_version"], event["seq"]))
                 with fresh.store.transaction():
                     # The replay store has its own chain metadata. Process
                     # the exact row canonical to that store rather than the
                     # source store's otherwise-identical row.
-                    fresh.process_event(fresh.store.get_event(
+                    fresh_event = fresh.store.get_event(
                         event["event_id"], tenant_id=self.tenant_id,
-                        project_id=project_id))
+                        project_id=project_id)
+                    fresh_event = fresh._prepare_event(fresh_event)
+                    capture_validated = True
+                    fresh._process_prepared_event(fresh_event)
+            except ProcessorProjectionCompatibilityError:
+                # This is not an event-level extraction failure. Stamping the
+                # fresh copy quarantined would certify incompatible canonical
+                # bytes and make its next open trust the marker instead of
+                # rechecking the payload.
+                fresh.close()
+                raise
             except Exception as exc:
-                fresh.store.mark_processed(
-                    event["event_id"], PROCESSOR_VERSION,
-                    "quarantined", repr(exc))
+                if not capture_validated:
+                    fresh.close()
+                    _refuse_projection()
+                try:
+                    _mark_event_quarantined(
+                        fresh.store, event["event_id"], exc)
+                except BaseException as quarantine_error:
+                    # Cleanup only: process-control exceptions keep their
+                    # identity and never become an event-level quarantine.
+                    try:
+                        fresh.close()
+                    except BaseException:
+                        quarantine_error.add_note(
+                            "additionally failed to close rebuilt projection")
+                    raise
         return fresh

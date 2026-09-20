@@ -899,11 +899,19 @@ def cmd_check(args):
              f" (open invalidations: {len(check['open_invalidations'])})")
     if exported is not None:
         human += f"\nreceipt: {exported}"
+    # Name the markerless event count beside the fail-closed signed frontier.
+    # Packet currency carries the v1 verdict without changing its fixed shape;
+    # this independent exit guard keeps the CLI closed if those paths diverge.
+    completeness = engine.replay_completeness(meta["project_id"])
+    unprojected = completeness.get("unprojected_events", 0)
+    if unprojected:
+        human += (f"\nunprojected events: {unprojected} (re-deliver each one,"
+                  f" or rebuild the projection)")
     _emit(args, check, human)
     engine.close()
     # A CI gate must fail closed: cancelled/neutral are absence of success,
     # not successful continuity.
-    if check["conclusion"] != "success":
+    if check["conclusion"] != "success" or unprojected:
         raise SystemExit(_CHECK_NOT_SUCCESS)
 
 
