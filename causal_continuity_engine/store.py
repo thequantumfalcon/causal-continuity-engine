@@ -14,8 +14,10 @@ never silently merged.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+import stat
 import threading
 from contextlib import contextmanager
 from functools import wraps
@@ -233,8 +235,6 @@ CREATE TABLE IF NOT EXISTS chain_lock (
     table_name TEXT PRIMARY KEY,
     n          INTEGER NOT NULL DEFAULT 0
 );
-INSERT OR IGNORE INTO chain_lock (table_name, n) VALUES ('audit_log', 0);
-INSERT OR IGNORE INTO chain_lock (table_name, n) VALUES ('events', 0);
 
 CREATE TABLE IF NOT EXISTS payload_mismatches (
     idempotency_key TEXT NOT NULL,
@@ -356,23 +356,51 @@ class EventPayloadIntegrityError(Exception):
 
 
 class Store:
-    def __init__(self, path: str | Path = ":memory:", *, _pre_schema_check=None):
+    def __init__(self, path: str | Path = ":memory:", *, _pre_schema_check=None,
+                 _read_only: bool = False):
         self.path = str(path)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._read_only = _read_only
+        if _read_only:
+            if self.path == ":memory:":
+                raise ValueError("a read-only Store requires an existing database")
+            resolved = Path(self.path).resolve(strict=True)
+            self._read_only_database = resolved
+            self._read_only_sidecars = tuple(
+                Path(f"{resolved}{suffix}")
+                for suffix in ("-wal", "-shm", "-journal"))
+            if any(os.path.lexists(sidecar) for sidecar in self._read_only_sidecars):
+                raise RuntimeError(
+                    "read-only storage is unavailable while SQLite sidecars exist")
+            before = resolved.lstat()
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("a read-only Store requires a regular database file")
+            self._read_only_source = self._source_identity(before)
+            self._conn = sqlite3.connect(
+                resolved.as_uri() + "?mode=ro&immutable=1", uri=True,
+                check_same_thread=False)
+        else:
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
         try:
             self._conn.row_factory = sqlite3.Row
+            if _read_only:
+                # This connection is for observational surfaces such as MCP.
+                # URI mode=ro is the filesystem boundary; query_only is a
+                # second guard against an accidental write through SQLite.
+                self._conn.execute("PRAGMA query_only=ON")
             # Compatibility refusal must see the connection Store will use,
             # but must run before WAL selection or any schema installation can
             # change an existing database (ADR-106).
             if _pre_schema_check is not None:
                 _pre_schema_check(self._conn)
-            if self.path != ":memory:":
+            if not _read_only and self.path != ":memory:":
                 self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             # A second writer waits rather than failing outright; chain appends
             # are short, so contention resolves quickly (ADR-046).
             self._conn.execute("PRAGMA busy_timeout=10000")
             self._lock = threading.RLock()
+            if _read_only:
+                self._assert_read_only_source_unchanged()
         except BaseException as initialization_error:
             # A refused or failed open must not change the database. SQLite
             # checkpoints a WAL into the main file when its last connection
@@ -408,7 +436,20 @@ class Store:
                 self._conn.executescript(_SCHEMA)
                 # Serialize schema inspection and replacement across processes;
                 # the losing opener re-inspects only after the winner commits.
-                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "BEGIN" if self._read_only else "BEGIN IMMEDIATE")
+                if self._read_only:
+                    lock_rows = {
+                        row["table_name"] for row in self._conn.execute(
+                            "SELECT table_name FROM chain_lock WHERE table_name IN "
+                            "('audit_log', 'events')")}
+                    if lock_rows != {"audit_log", "events"}:
+                        raise sqlite3.OperationalError(
+                            "read-only storage requires chain-lock initialization")
+                else:
+                    self._conn.executemany(
+                        "INSERT OR IGNORE INTO chain_lock (table_name, n) "
+                        "VALUES (?, 0)", (("audit_log",), ("events",)))
                 event_columns = {
                     row["name"] for row in self._conn.execute(
                         "PRAGMA table_info(events)")}
@@ -495,6 +536,25 @@ class Store:
                         f"{cleanup_error!r}")
                 raise
 
+    @staticmethod
+    def _source_identity(info) -> tuple:
+        return (
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def _assert_read_only_source_unchanged(self) -> None:
+        """Refuse a stale immutable view instead of touching SQLite sidecars."""
+        if not self._read_only:
+            return
+        try:
+            current = self._source_identity(self._read_only_database.lstat())
+        except OSError:
+            raise RuntimeError("read-only storage changed while it was open") from None
+        if (current != self._read_only_source
+                or any(os.path.lexists(sidecar)
+                       for sidecar in self._read_only_sidecars)):
+            raise RuntimeError("read-only storage changed while it was open")
+
     def _migrate_global_event_idempotency(self) -> bool:
         """Replace the legacy globally-unique delivery key in place.
 
@@ -574,7 +634,8 @@ class Store:
                 if self._conn.in_transaction:
                     raise RuntimeError(
                         "cannot start Store.transaction() inside an unmanaged transaction")
-                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute(
+                    "BEGIN" if self._read_only else "BEGIN IMMEDIATE")
             self._transaction_depth += 1
             try:
                 yield self

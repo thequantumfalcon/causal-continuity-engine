@@ -1423,7 +1423,7 @@ def _assert_processor_projection_compatible_path(path) -> None:
 class Engine:
     def __init__(self, path=":memory:", *, tenant_id: str = "ten_local",
                  signer: Signer | None = None, tenant_max_level: int = 3,
-                 workdir: str = "."):
+                 workdir: str = ".", _read_only: bool = False):
         self.tenant_id = validate_public_identifier(
             tenant_id, field="tenant_id")
         if signer is None:
@@ -1436,8 +1436,9 @@ class Engine:
         # opening storage.  Pluggable signer objects may intentionally be
         # falsey; truthiness is not an interface or an authorization signal.
         self.signer = signer
-        _assert_statement_identity_compatible_path(path)
-        _assert_processor_projection_compatible_path(path)
+        if not _read_only:
+            _assert_statement_identity_compatible_path(path)
+            _assert_processor_projection_compatible_path(path)
 
         def _pre_schema(connection):
             # Re-checked on the connection Store will actually use, so a path
@@ -1445,7 +1446,8 @@ class Engine:
             _assert_statement_identity_compatible(connection)
             _assert_processor_projection_compatible(connection)
 
-        self.store = Store(path, _pre_schema_check=_pre_schema)
+        self.store = Store(
+            path, _pre_schema_check=_pre_schema, _read_only=_read_only)
         try:
             self._initialize_components_and_schema(
                 tenant_max_level=tenant_max_level, workdir=workdir)
@@ -1492,7 +1494,8 @@ class Engine:
             conn.executescript(_ENGINE_SCHEMA)
             # Cross-process startup must serialize inspection with ALTER;
             # a process-local RLock cannot stop another Engine connection.
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "BEGIN" if self.store._read_only else "BEGIN IMMEDIATE")
             try:
                 # SQLite's CREATE TABLE IF NOT EXISTS does not add columns to
                 # an existing installation. These nullable additions preserve
@@ -1534,7 +1537,8 @@ class Engine:
             if conn.in_transaction:
                 raise RuntimeError(
                     "spent_proofs migration requires transaction ownership")
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "BEGIN" if self.store._read_only else "BEGIN IMMEDIATE")
             try:
                 columns = conn.execute(
                     "PRAGMA table_info(spent_proofs)").fetchall()
@@ -1636,6 +1640,12 @@ class Engine:
                 if identity in seen:
                     continue
                 seen.add(identity)
+                existing = self.store._conn.execute(
+                    "SELECT 1 FROM spent_proofs WHERE tenant_id = ? "
+                    "AND project_id = ? AND proof_id = ?",
+                    identity).fetchone()
+                if existing is not None:
+                    continue
                 cur = self.store._conn.execute(
                     "INSERT OR IGNORE INTO spent_proofs (tenant_id, project_id,"
                     " proof_id, task_id, spent_at) VALUES (?,?,?,?,?)",
@@ -3892,10 +3902,11 @@ class Engine:
 
         The returned counterfactual witness records both why the verdict holds
         and the exact conjunction that must change to reach success. Reads and
-        signing occur under one Store transaction, so policy, graph, packet,
-        and log anchors describe a state that actually coexisted.
+        signing occur under one Store read snapshot, so policy, graph, packet,
+        and log anchors describe a state that actually coexisted without
+        reserving SQLite's single writer.
         """
-        with self.store.transaction():
+        with self.store.read_snapshot():
             project = self.graph.get(
                 project_id, tenant_id=self.tenant_id,
                 project_id=project_id, entity_type="project")

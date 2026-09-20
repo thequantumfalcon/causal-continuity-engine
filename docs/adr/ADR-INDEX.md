@@ -1043,6 +1043,12 @@ ceteris-paribus, one-step witness over transaction-current state. It does not
 claim a globally minimal intervention, a bitemporal reconstruction, public
 non-repudiation when HMAC is used, or external transparency-log inclusion.
 
+**Concurrency limit.** Receipt generation holds one deferred SQLite read
+snapshot rather than reserving the database's single writer. In WAL mode a
+peer writer may therefore commit while the receipt is being composed; the
+receipt remains bound to the earlier coherent frontier and does not include or
+fence that later commit.
+
 ## ADR-072 — Automation is trusted by immutable identity and current policy
 
 **Decision.** GitHub App checks are accepted only when the webhook is
@@ -1955,9 +1961,17 @@ complete state-basis object.
 
 ## ADR-108 — MCP reads do not create project state
 
-**Decision.** The MCP `resume_packet` tool composes and signs inside a coherent
-read snapshot without writing a packet watermark or quarantine-collision audit
-entry. Collision disclosure remains in the returned packet. The stdio session
+**Decision.** MCP opens only current metadata and an existing, sidecar-free
+database through an immutable SQLite URI with `query_only` enabled. Schema
+initialization and migration logic runs against that connection as a readiness
+probe: an already-current operation is a no-op, while the first required write
+is refused before tool dispatch. Secret migration and provisioning do not run.
+The source file identity and absence of WAL, shared-memory and rollback-journal
+sidecars are checked at open and around every tool call; a detected change
+refuses the observation.
+The `resume_packet` tool composes and signs inside a coherent read snapshot
+without writing a packet watermark or quarantine-collision audit entry.
+Collision disclosure remains in the returned packet. The stdio session
 implements the MCP initialization lifecycle, permits ping during initialization,
 never executes a notification, and validates request identifiers, parameter
 objects, and tool arguments before opening project state.
@@ -1966,14 +1980,24 @@ objects, and tool arguments before opening project state.
 watermark every time a client viewed a packet; the rare quarantine-collision
 path also appended audit state. That makes observation an authority-bearing
 write and lets notification-shaped input trigger work without a response.
-Read-only means the database is unchanged by a successful read, not merely
-that no mutating tool name is advertised.
+Read-only means the tracked `.cce` entry inventory, types, ownership, modes,
+link counts, identities, sizes, modification/change times, file bytes and
+selected SQLite header fields are unchanged by a successful read, not merely
+that no mutating tool name is advertised. Access times and extended attributes
+are not part of this portable oracle. SQLite's ordinary `mode=ro` can create or
+update WAL shared-memory state, so it is not this boundary.
 
 **Limit.** An MCP packet is a signed observation but is not registered as the
 project's current resume watermark. Use the CLI/API composition path when the
-operator intends packet generation to establish freshness. Opening a legacy
-store may still perform the engine's normal schema compatibility checks before
-the session can answer.
+operator intends packet generation to establish freshness. MCP refuses legacy
+metadata and any database with SQLite sidecars instead of migrating or
+recovering it; use an owner-controlled CLI open for those state transitions.
+The immutable connection is a point-in-time view. A concurrent writer makes
+the session refuse rather than refresh silently, and file identity checks do
+not protect against a hostile process able to rewrite the same inode while
+forging its size and timestamps. This boundary establishes local non-mutation,
+not schema correctness or protection from a hostile process with the same OS
+authority.
 
 ## ADR-109 — Prose authority is evaluated at extraction and projection
 

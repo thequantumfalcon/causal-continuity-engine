@@ -259,6 +259,83 @@ def test_resume_external_pass_obeys_ref_epoch_and_uncertain_frontier():
         engine.close()
 
 
+def test_continuity_check_snapshot_does_not_reserve_the_writer(
+        tmp_path, monkeypatch):
+    database = tmp_path / "continuity-snapshot.sqlite3"
+    reader = Engine(database, tenant_id=TENANT)
+    reader.create_project("continuity snapshot", project_id=PROJECT)
+    writer = Engine(database, tenant_id=TENANT)
+    snapshot_held = threading.Event()
+    release_snapshot = threading.Event()
+    check_finished = threading.Event()
+    writer_committed = threading.Event()
+    results = []
+    failures = []
+    original_frontier = reader.policy.tracked_ref_frontier
+
+    audit_count_before = len(reader.store.audit_entries())
+    audit_tip_before = reader.store._chain_tip("audit_log")
+
+    def hold_after_first_snapshot_read(project_id, project_data):
+        frontier = original_frontier(project_id, project_data)
+        snapshot_held.set()
+        if not release_snapshot.wait(timeout=10):
+            raise AssertionError("continuity snapshot was not released")
+        return frontier
+
+    def run_check():
+        try:
+            results.append(reader.continuity_check(PROJECT))
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            check_finished.set()
+
+    def run_writer():
+        try:
+            writer.store.audit(
+                actor="peer", action="continuity.concurrent-write",
+                object_id=PROJECT)
+            writer_committed.set()
+        except BaseException as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(
+        reader.policy, "tracked_ref_frontier", hold_after_first_snapshot_read)
+    check_thread = threading.Thread(target=run_check)
+    writer_thread = threading.Thread(target=run_writer)
+    try:
+        check_thread.start()
+        assert snapshot_held.wait(timeout=5)
+        writer_thread.start()
+        committed_while_snapshot_held = writer_committed.wait(timeout=2)
+        assert not check_finished.is_set()
+        release_snapshot.set()
+        check_thread.join(timeout=10)
+        writer_thread.join(timeout=10)
+        assert committed_while_snapshot_held, (
+            "continuity_check reserved SQLite's writer lock")
+        assert not check_thread.is_alive()
+        assert not writer_thread.is_alive()
+        assert not failures
+        receipt = results[0]["continuity_receipt"]
+        assert reader.signer.verify(receipt)
+        assert receipt["basis"]["audit_log"] == {
+            "count": audit_count_before,
+            "tip": audit_tip_before,
+            "intact": True,
+        }
+        assert len(reader.store.audit_entries()) == audit_count_before + 1
+        assert reader.store._chain_tip("audit_log") != audit_tip_before
+    finally:
+        release_snapshot.set()
+        check_thread.join(timeout=10)
+        if writer_thread.ident is not None:
+            writer_thread.join(timeout=10)
+        writer.close()
+        reader.close()
+
+
 def test_retention_comparator_flags_live_only_replayable_nodes_and_edges(
         tmp_path):
     engine = Engine(tmp_path / "replay.sqlite3", tenant_id=TENANT)

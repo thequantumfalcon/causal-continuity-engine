@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -586,33 +587,41 @@ def _ensure_runtime_secrets(cce_dir: Path, meta_path: Path, meta: dict) -> dict:
     return updated
 
 
-def _engine(args) -> tuple[Engine, dict]:
+def _engine(args, *, _read_only: bool = False) -> tuple[Engine, dict]:
     directory = getattr(args, "dir", ".")
     root = Path("." if directory is None else directory)
     cce_dir = root / ".cce"
     root, cce_dir = _physical_cce_directory(root, cce_dir)
     meta_path = _secret_path(cce_dir, "meta.json")
     if not meta_path.exists():
+        if _read_only:
+            raise ValueError("current CCE metadata is required for read-only access")
         _print_error("error: not a CCE project (run `cce-engine init` first)")
         raise SystemExit(2)
     try:
         meta = strict_json_loads(_read_bounded_file(
             meta_path, _MAX_METADATA_BYTES, label="CCE metadata"))
-        meta = _validate_metadata(meta, allow_legacy=True)
+        meta = _validate_metadata(meta, allow_legacy=not _read_only)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        if _read_only:
+            raise ValueError(
+                "current CCE metadata is required for read-only access") from None
         _print_error(f"error: invalid CCE metadata: {exc}")
         raise SystemExit(2) from None
     database_path = _secret_path(cce_dir, "cce.db")
     # A legacy-identity project is refused before compatibility handling can
     # rewrite metadata or provision runtime secrets (ADR-106).
-    _assert_statement_identity_compatible_path(database_path)
+    if not _read_only:
+        _assert_statement_identity_compatible_path(database_path)
     # Refused before legacy signing-key migration, runtime-secret
     # provisioning, or metadata replacement can touch the project. The refusal
     # is a ValueError: `main` reports it as exit status 2, and the MCP server,
     # which shares this opener, reports it as a tool error and keeps serving.
-    _assert_processor_projection_compatible_path(database_path)
-    meta = _migrate_legacy_signing_key(cce_dir, meta_path, meta)
-    meta = _validate_metadata(meta, allow_legacy=True)
+    if not _read_only:
+        _assert_processor_projection_compatible_path(database_path)
+    if not _read_only:
+        meta = _migrate_legacy_signing_key(cce_dir, meta_path, meta)
+        meta = _validate_metadata(meta, allow_legacy=True)
     key_path = _secret_path(cce_dir, meta["signing_key_file"])
     key = _read_private(key_path)
     if len(key) != 32:
@@ -620,10 +629,18 @@ def _engine(args) -> tuple[Engine, dict]:
     # Runtime credentials are recoverable additions, but the signing key is
     # the trust root. Never mutate metadata or create new secrets until that
     # existing trust root has been validated.
-    meta = _ensure_runtime_secrets(cce_dir, meta_path, meta)
+    if not _read_only:
+        meta = _ensure_runtime_secrets(cce_dir, meta_path, meta)
     meta = _validate_metadata(meta, allow_legacy=False)
-    engine = Engine(database_path, tenant_id=meta["tenant_id"],
-                    signer=Signer(meta["key_id"], key), workdir=root)
+    try:
+        engine = Engine(database_path, tenant_id=meta["tenant_id"],
+                        signer=Signer(meta["key_id"], key), workdir=root,
+                        _read_only=_read_only)
+    except sqlite3.Error:
+        if _read_only:
+            raise ValueError(
+                "current CCE schema is required for read-only access") from None
+        raise
     opened = getattr(args, "_opened_engines", None)
     if isinstance(opened, list):
         opened.append(engine)

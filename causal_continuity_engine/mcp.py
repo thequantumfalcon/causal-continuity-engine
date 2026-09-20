@@ -137,7 +137,7 @@ class _Session:
             from .cli import _engine as open_engine
 
             self._engine, self._meta = open_engine(
-                SimpleNamespace(dir=self._directory))
+                SimpleNamespace(dir=self._directory), _read_only=True)
         return self._engine, self._meta
 
     def project(self, arguments: dict) -> str:
@@ -154,6 +154,7 @@ class _Session:
 
     def call(self, name: str, arguments: dict) -> str:
         engine, _ = self._open()
+        engine.store._assert_read_only_source_unchanged()
         project_id = self.project(arguments)
         if name == "resume_packet":
             budget = arguments.get("token_budget", 4000)
@@ -161,36 +162,42 @@ class _Session:
             packet = engine._resume_packet(
                 project_id, token_budget=budget, fmt=fmt, record_state=False)
             if fmt == "json":
-                return canonical_json(packet)
-            return packet
-        if name == "list_assumptions":
+                result = canonical_json(packet)
+            else:
+                result = packet
+        elif name == "list_assumptions":
             nodes = engine.graph.current(
                 project_id, "assumption", status=["active", "supported"],
                 tenant_id=engine.tenant_id)
             if not nodes:
-                return "No active assumptions."
-            return "\n".join(
-                f"- [{node.get('status')}] "
-                f"{node.get('data', {}).get('statement', '')}"
-                for node in nodes)
-        if name == "list_invalidations":
+                result = "No active assumptions."
+            else:
+                result = "\n".join(
+                    f"- [{node.get('status')}] "
+                    f"{node.get('data', {}).get('statement', '')}"
+                    for node in nodes)
+        elif name == "list_invalidations":
             open_items = engine.invalidation.open_invalidations(project_id)
             if not open_items:
-                return "No open invalidations."
-            return "\n".join(
-                f"- {item.get('data', {}).get('severity', '?')}: "
-                f"{item.get('data', {}).get('reason', '')}"
-                for item in open_items)
-        if name == "continuity_check":
-            report = engine.continuity_check(project_id)
+                result = "No open invalidations."
+            else:
+                result = "\n".join(
+                    f"- {item.get('data', {}).get('severity', '?')}: "
+                    f"{item.get('data', {}).get('reason', '')}"
+                    for item in open_items)
+        elif name == "continuity_check":
+            report = engine.continuity_check(project_id, _sign_receipt=False)
             # The signed receipt is four fifths of this report and is
             # cryptographic material for export, not something a client
             # asking "is this project continuous?" can act on. It stays
             # available through `cce-engine check --export-receipt`.
             summary = {key: value for key, value in report.items()
                        if key != "continuity_receipt"}
-            return json.dumps(summary, indent=2, sort_keys=True)
-        raise KeyError(name)
+            result = json.dumps(summary, indent=2, sort_keys=True)
+        else:
+            raise KeyError(name)
+        engine.store._assert_read_only_source_unchanged()
+        return result
 
     def close(self) -> None:
         if self._engine is not None:
