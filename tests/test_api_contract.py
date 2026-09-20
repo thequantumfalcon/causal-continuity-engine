@@ -29,6 +29,10 @@ from causal_continuity_engine.core import Signer
 from causal_continuity_engine.engine import Engine
 from causal_continuity_engine.github import SUBSCRIBED_EVENTS, normalize
 
+# The repository root, so this module reports a real defect rather than the
+# caller's working directory.
+ROOT = Path(__file__).resolve().parent.parent
+
 TENANT = "ten_api_contract"
 PROJECT = "prj_api_contract"
 REPOSITORY_ID = 424242
@@ -140,7 +144,8 @@ def test_route_registry_is_complete_unique_and_documentation_is_current():
     assert len(API_ROUTES) == 14
     assert len(identities) == len(set(identities))
     expected = render_api_document()
-    assert Path("docs/API.md").read_text(encoding="utf-8") == expected
+    assert (ROOT / "docs" / "API.md").read_text(
+        encoding="utf-8") == expected
     for route in API_ROUTES:
         assert f"| {route.method} | `{route.template}` |" in expected
 
