@@ -201,6 +201,37 @@ def test_a_tool_failure_is_a_result_not_a_protocol_error(tmp_path):
     assert response["result"]["content"][0]["text"]
 
 
+def test_a_tool_local_cli_exit_does_not_terminate_the_stdio_session(monkeypatch):
+    def exit_tool(*_args, **_kwargs):
+        raise SystemExit(2)
+
+    monkeypatch.setattr(mcp._Session, "call", exit_tool)
+    responses = _drive_ready([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+         "params": {"name": "list_assumptions", "arguments": {}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+    ])
+
+    assert [response["id"] for response in responses] == [1, 2, 3]
+    assert responses[0]["result"]["isError"] is True
+    assert responses[0]["result"]["content"][0]["text"] == "SystemExit: 2"
+    assert "tools" in responses[1]["result"]
+    assert responses[2]["result"] == {}
+
+
+def test_an_operator_interrupt_is_not_reclassified_as_a_tool_error():
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    session = SimpleNamespace(state="ready", call=interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        mcp._handle({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "list_assumptions", "arguments": {}},
+        }, session)
+
+
 def test_tools_answer_from_a_real_project(tmp_path):
     from causal_continuity_engine.cli import main
 
