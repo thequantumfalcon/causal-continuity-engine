@@ -1976,7 +1976,12 @@ implements the MCP initialization lifecycle, permits ping during initialization,
 never executes a notification, and validates request identifiers, parameter
 objects, and tool arguments before opening project state. A tool-local CLI
 `SystemExit` is returned as that call's `isError` result; it cannot terminate
-the stdio loop or prevent later requests from receiving responses.
+the stdio loop or prevent later requests from receiving responses. A failed
+tool returns a fixed error result, and an unexpected request failure returns a
+fixed protocol error; local diagnostics identify only the exception class.
+Exception values and tracebacks from those handled failures are not exposed
+through either channel because they may contain project paths, secrets, or
+caller-controlled text.
 
 **Rationale.** A transport described as read-only advanced the freshness
 watermark every time a client viewed a packet; the rare quarantine-collision
@@ -2000,7 +2005,10 @@ not protect against a hostile process able to rewrite the same inode while
 forging its size and timestamps. This boundary establishes local non-mutation,
 not schema correctness or protection from a hostile process with the same OS
 authority. Explicit process interrupts such as `KeyboardInterrupt` and
-`GeneratorExit` are not tool failures and remain able to stop the server.
+`GeneratorExit` are not tool failures and remain able to stop the server. Fixed
+errors deliberately trade detailed remote failure diagnostics for disclosure
+safety; stderr retains only the exception class, not the failing value or
+traceback.
 
 ## ADR-109 — Prose authority is evaluated at extraction and projection
 
