@@ -67,17 +67,31 @@ can read a project's control state directly. Four read-only tools:
 
 The subcommand first ships in 0.1.6. The published 0.1.0, 0.1.2 and 0.1.3
 packages do not include it; 0.1.4 was prepared but never published, and 0.1.5
-was tagged but never published. The candidate lifecycle has been exercised with
+was tagged but never published. The released 0.1.6 lifecycle has been exercised with
 the reference MCP SDK; other clients are expected to work over the same
 transport but have not been exercised here.
+
+Initialize a fresh project with the quickstart below before connecting a client.
+Use the absolute path to the installed `cce-engine` executable and the initialized
+project directory in the client configuration; an editor may not inherit your
+terminal's virtual environment or working directory. For example, on macOS/Linux:
 
 ```json
 {
   "mcpServers": {
-    "cce": {"command": "cce-engine", "args": ["--dir", ".", "mcp"]}
+    "cce": {
+      "command": "/absolute/path/to/.venv/bin/cce-engine",
+      "args": ["--dir", "/absolute/path/to/cce-demo", "mcp"]
+    }
   }
 }
 ```
+
+On Windows, use the virtual environment's `Scripts/cce-engine.exe`; forward
+slashes avoid JSON backslash escaping. Replace both example paths with real paths.
+MCP observes a closed store: stop writers cleanly before connecting. Any SQLite
+WAL, SHM, or rollback-journal sidecar causes refusal rather than a partial view.
+Never delete a sidecar to force admission; it may contain recovery data.
 
 The server is read-only by design. An MCP client is an untrusted caller in this
 project's authority model, so nothing exposed here mutates state, mints a proof,
@@ -87,14 +101,38 @@ than the official SDK, which would pull in more than twenty packages.
 
 ## Quickstart
 
-Under five minutes, no dependencies beyond the package itself.
+Python 3.11 or newer is required; the engine has no third-party runtime
+dependencies. Choose the block for your platform and run it in a new working
+directory.
+
+macOS/Linux:
 
 ```bash
-python -m venv .venv
-# Activate with: source .venv/bin/activate          (macOS/Linux)
-#            or: .venv\Scripts\Activate.ps1         (Windows PowerShell)
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install causal-continuity-engine
 ```
+
+Windows PowerShell:
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install causal-continuity-engine
+```
+
+If PowerShell blocks activation, do not weaken its execution policy: install
+with `.\.venv\Scripts\python.exe -m pip install causal-continuity-engine`
+and invoke the environment's `cce-engine.exe` by its absolute path in the
+commands below. After activation, `cce-engine --help` checks the installation.
+
+**Upgrading an existing project:** 0.1.6 refuses projections written by older
+processor versions; there is no in-place projection upgrade. Stop writers,
+preserve the complete old project state (including its database and any SQLite
+sidecars), and re-ingest retained sources into a separate new project/store.
+Do not remove markers or sidecars to bypass refusal. Payloads already removed
+by retention cannot be reconstructed from their digests. New users can simply
+start a fresh project. See [the 0.1.6 upgrade notes](CHANGELOG.md#016--2026-09-20).
 
 To work on the engine instead of using it, install the checkout editable — see
 [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the full toolchain:
@@ -102,9 +140,13 @@ To work on the engine instead of using it, install the checkout editable — see
 ```bash
 git clone https://github.com/thequantumfalcon/causal-continuity-engine
 cd causal-continuity-engine
-python -m venv .venv
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -e .
 ```
+
+On Windows, use the PowerShell environment-creation and activation commands
+above, then `python -m pip install -e .` from the checkout.
 
 Global flags come **before** the subcommand: `cce-engine --dir <path> <subcommand>`.
 
@@ -184,6 +226,13 @@ cce-engine --dir . assumptions --status active
 
 A Resume Packet is what an agent picking up the work receives instead of a
 summary — token-budgeted, with omissions stated rather than silent:
+
+The budget is a trimming target, not a hard ceiling. Essential authority and
+other non-trimmable state are preserved even when they exceed it. Integrations
+should compare the JSON packet's `token_estimate` with their context limit;
+it is an estimate, not a model-specific tokenizer count. Do not silently
+truncate authority to fit a client window. Budget-trimmed material is recorded
+in `omissions`; an oversized packet is not itself an omission.
 
 ```bash
 cce-engine --dir . resume --token-budget 1500
