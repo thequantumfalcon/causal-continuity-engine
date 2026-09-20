@@ -691,6 +691,15 @@ def cmd_init(args):
             (_strict_json_text(meta, indent=2) + "\n").encode("utf-8"))
         engine.close()
         engine = None
+        # Every other file in the trust root is written 0600; the database is
+        # created with the process umask, so under a permissive one it is the
+        # only world-readable file holding ingested issue text. The 0700
+        # directory is then all that protects it, and that protection is lost
+        # the moment the file is copied or archived out of there.
+        for suffix in ("", "-wal", "-shm"):
+            sidecar = Path(f"{database_path}{suffix}")
+            if sidecar.exists():
+                sidecar.chmod(0o600)
         _sync_directory(stage / "secrets")
         _sync_directory(stage)
 
