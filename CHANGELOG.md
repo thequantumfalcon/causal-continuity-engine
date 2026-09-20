@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 No unreleased changes.
 
-## 0.1.6 — not yet released
+## 0.1.6 — 2026-09-20
 
 Carries the unpublished 0.1.5 line forward with processor compatibility,
 capture, continuity, read-only observation, and release-control corrections.
@@ -44,6 +44,13 @@ capture, continuity, read-only observation, and release-control corrections.
 
 ### Fixed
 
+- **Native Windows long paths could prevent verifier children from starting.**
+  Existing filesystem aliases are identity-checked before use; a missing or
+  wrong alias remains inconclusive. No system path setting is changed.
+  Isolated Git and filesystem fixtures now exercise the same platform limits.
+- **Release provenance retained affected dependency versions.** The signing
+  action now uses an immutable maintained snapshot with reviewed dependency
+  updates, reproducible bundle checks and hosted signing validation (ADR-122).
 - **Compatibility refusal could implicitly recover a rollback journal.** A hot
   journal's spilled main pages could pass immutable preflight before SQLite
   restored the committed database and refused it. Rollback-journal sidecars
