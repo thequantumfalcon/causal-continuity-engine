@@ -587,15 +587,19 @@ def test_direct_benchmark_loader_rejects_nonphysical_stat_views(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "__file__", str(tmp_path / "run.py"))
-    views = iter([
-        SimpleNamespace(
+    views = {
+        tmp_path: SimpleNamespace(
             st_mode=directory_mode,
-            st_file_attributes=directory_attributes),
-        SimpleNamespace(
+            st_file_attributes=directory_attributes,
+            st_reparse_tag=0),
+        tmp_path / "scenarios.py": SimpleNamespace(
             st_mode=scenario_mode,
-            st_file_attributes=scenario_attributes),
-    ])
-    monkeypatch.setattr(module.os, "lstat", lambda _path: next(views))
+            st_file_attributes=scenario_attributes,
+            st_reparse_tag=0),
+    }
+    # Path.is_junction may repeat lstat on Windows; the view belongs to the
+    # physical path, not to a version-dependent number of observations.
+    monkeypatch.setattr(module.os, "lstat", lambda path: views[Path(path)])
 
     with pytest.raises(ImportError, match=message):
         module._direct_scenarios_path()
