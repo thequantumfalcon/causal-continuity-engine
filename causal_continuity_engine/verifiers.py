@@ -32,6 +32,7 @@ asked for so proofs distinguish enforced from advisory.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -405,17 +406,39 @@ def _terminate_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+def _windows_launch_directory(cwd: Path) -> str:
+    """Use an existing same-directory alias when CreateProcess rejects a long cwd.
+
+    Windows long-path file access does not remove the process cwd limit.
+    Volumes without short names still require a shorter configured temp root;
+    never move execution elsewhere or turn that failure into a pass.
+    """
+    path = str(cwd)
+    if len(path.encode("utf-16-le", "surrogatepass")) // 2 <= 258:
+        return path
+    short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+    short_path.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+    short_path.restype = ctypes.c_uint
+    buffer = ctypes.create_unicode_buffer(260)
+    length = short_path(path, buffer, len(buffer))
+    if not 0 < length <= 258 or not Path(buffer.value).samefile(cwd):
+        raise OSError("Windows verifier workdir needs a shorter temporary directory")
+    return buffer.value
+
+
 def _run_bounded_process(argv: list[str], *, cwd: Path, env: dict,
                          timeout: int) -> _BoundedProcessResult:
     """Run with deterministic per-stream prefixes and a hard capture bound."""
     popen_options = {}
+    launch_directory = cwd
     if os.name == "nt":
+        launch_directory = _windows_launch_directory(cwd)
         popen_options["creationflags"] = getattr(
             subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         popen_options["start_new_session"] = True
     proc = subprocess.Popen(
-        argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        argv, cwd=launch_directory, env=env, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_options)
     assert proc.stdout is not None and proc.stderr is not None
 
