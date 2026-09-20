@@ -186,7 +186,15 @@ def test_cli_journal_refusal_leaves_real_project_state_unchanged(tmp_path, capsy
 
 def test_memory_database_is_not_a_filesystem_journal_target(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    Path(":memory:-journal").touch()
-    for path in (":memory:", Path(":memory:")):
-        instance = Engine(path)
-        instance.close()
+    # Windows cannot create this filename; keep its journal boundary probe active.
+    if os.name != "nt":
+        Path(":memory:-journal").touch()
+
+    def filesystem_probe(*_args, **_kwargs):
+        pytest.fail("in-memory journal check inspected the filesystem")
+
+    with monkeypatch.context() as memory_guard:
+        memory_guard.setattr(Path, "lstat", filesystem_probe)
+        for path in (":memory:", Path(":memory:")):
+            instance = Engine(path)
+            instance.close()
