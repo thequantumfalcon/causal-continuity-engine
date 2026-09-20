@@ -573,13 +573,18 @@ def test_raw_c2pa_sidecar_is_structural(scanner):
 
 
 def _git(cwd, *arguments):
-    return subprocess.run(
-        ["git", *arguments],
+    result = subprocess.run(
+        ["git", "-c", "core.longpaths=true", *arguments],
         cwd=cwd,
         check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if arguments[0] == "init":
+        # Scanner and direct plumbing children need the same fixture-local
+        # path setting, not just the helper's command-scoped override.
+        _git(cwd, "config", "core.longpaths", "true")
+    return result
 
 
 def _run_scanner(cwd, *arguments, input_data=None):
