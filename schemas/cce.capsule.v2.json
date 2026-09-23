@@ -228,5 +228,5 @@
       }
     ]
   },
-  "$comment": "Unpublished intermediate contract. Capsules are project-only. Runtime validation also compares embedded packet tenant/project identity with the expected outer identity; schema validation alone cannot compare those values."
+  "$comment": "v0.2.0 contract. Capsules are project-only. Runtime validation also compares embedded packet tenant/project identity with the expected outer identity; schema validation alone cannot compare those values."
 }

@@ -11,11 +11,11 @@ conformance corpus
 generated from the reference implementation, so the two cannot silently
 drift apart.
 
-This is the local candidate contract for v0.2.0, not a publication claim.
-The v2 proof and predicate schema URLs name candidate artifacts. Published v1
-schema bytes remain unchanged; v1 proofs are historical artifacts, not current
-completion evidence. A v1 consumer MUST reject v2 rather than interpret its
-new obligation commitments using v1 semantics.
+This is the v0.2.0 contract. The v2 proof and predicate schema URLs are bound
+to the `v0.2.0` release tag. Published v1 schema bytes remain unchanged; v1
+proofs are historical artifacts, not current completion evidence. A v1 consumer
+MUST reject v2 rather than interpret its new obligation commitments using v1
+semantics.
 
 > **What a second implementation buys, and what it does not.** Two
 > implementations agreeing proves the *specification* is unambiguous enough

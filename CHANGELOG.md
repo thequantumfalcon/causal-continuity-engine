@@ -7,12 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-The local 0.2.0 candidate is described below. It is not yet released.
+No unreleased changes.
 
-## 0.2.0 — not yet released
-
-Local next-version preparation; no release date, published artifact or completed
-platform-validation claim is implied by this entry.
+## 0.2.0 — 2026-09-23
 
 ### Changed
 
