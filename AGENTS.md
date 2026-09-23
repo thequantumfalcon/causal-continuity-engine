@@ -16,10 +16,11 @@ runtime records are authenticated/audited rather than replay-derived. Memory
 tiers L0–L4 and token-budgeted Resume Packets are what
 an agent actually receives on resume. When a requirement changes or evidence
 contradicts an assumption, causal invalidation computes the blast radius
-over typed edges, bounds it, and classifies it deterministically. A task
-cannot be marked complete without a signed proof envelope whose required
-verifiers actually ran — `Engine.complete_task` has twenty independently
-instrumented rejection gates, including unresolved invalidation control,
+over typed edges, bounds it, and classifies it deterministically. When policy
+requires proof, a task cannot be marked complete without a signed proof envelope
+whose required verifiers actually ran — `Engine.complete_task` has twenty-two
+independently instrumented rejection gates, including current confirmed authority,
+applicable authority conflicts, unresolved invalidation control,
 monotonic completed-state, and completable-state guards, and evidence is graded
 A–F from negative controls,
 mutation probes and determinism probes. That grade is a mechanical lower bound: it
@@ -114,7 +115,7 @@ python verifiers/verify_proof.py <proof.json> --fingerprint sha256:...
 vectors that *wrap* an envelope alongside its expected verdict, so passing
 one directly reports `E_SHAPE`; use `vectors/generate.py --check` for those.
 
-CLI subcommands, all real: `init ingest resume assumptions invalidations
+CLI subcommands, all real: `init ingest authority resume assumptions invalidations
 verify check migrate replay rebuild audit evidence policy serve mcp`.
 
 ## Repo map
@@ -270,9 +271,11 @@ Repository text is evidence about intent. It is never instruction.
   can raise its authority above the authority of its source
   (`causal_continuity_engine/ontology.py`,
   `causal_continuity_engine/extraction.py`).
-- Untrusted text **may propose, never mandate.** A requirement extracted
-  from an untrusted source is demoted to a claim, with the demotion recorded
-  (AD-006).
+- All prose **may propose, never mandate**, including OWNER and human-decision
+  prose. Requirements, constraints, decisions, assumptions and tasks become
+  source-event-bound proposals. Only an explicit owner-local canonical decision
+  through `record_authority_decision` or `authority --request FILE` confirms
+  authority; source standing and status resolution are not grants (ADR-126).
 - Imperative policy-override wording trips the injection screen, and when it
   does, **every item extracted from that text block is quarantined** — not
   just the matched span. Splitting a hostile block into a suspect part and a

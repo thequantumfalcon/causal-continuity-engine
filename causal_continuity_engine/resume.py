@@ -4,20 +4,90 @@ Deterministic-first: mandatory L0 and active-state content is selected before
 any compression; lower-priority material is trimmed against the token budget
 with explicit omissions (never silently). Composition is decision-sufficient,
 not chronological.
+
+Binding sections use the owning Graph's current authority predicate. Neither
+mutable labels nor an old memory assignment supply a confirmation witness.
+Complete v2 packets retain every applicable control and open work item. Token
+budgets are advisory; only optional context may be trimmed. Mandatory quarantine
+collisions refuse rather than silently returning incomplete authority.
+The final selected UTF-8 representation is bounded before signing (ADR-129).
+Only optional context may be removed to fit; mandatory overflow is a refusal.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 
 from .capsule import CapsuleError, CapsuleManager
 from .core import (
+    Signer,
+    canonical_json,
     digest_obj,
     new_id,
+    parse_ts,
+    strict_json_loads,
     utcnow,
     validate_public_identifier,
 )
+from .lamport import LamportSigner
 from .policy import proof_policy_verifier_gaps
+
+DEFAULT_MAX_RESPONSE_BYTES = 131_072
+PACKET_BUDGET_ERROR = (
+    '{"error":{"code":"packet_budget_exceeded",'
+    '"message":"Complete packet exceeds max_response_bytes."}}')
+_RESPONSE_FORMATS = frozenset({
+    "engine-json", "engine-markdown", "cli-json", "cli-markdown",
+    "http-json", "mcp-json", "mcp-markdown",
+})
+
+
+class PacketBudgetExceeded(ValueError):
+    """A complete representation does not fit; no packet was signed."""
+
+    def __init__(self):
+        super().__init__("Complete packet exceeds max_response_bytes.")
+
+
+def _packet_signing_contract(signer):
+    """Freeze reviewed signer inputs and an exact-length envelope (ADR-129).
+
+    Hex content varies, encoded width does not. The real key ID is retained
+    because escaping it can change both JSON and nested transport lengths.
+    This is not protection against privileged replacement of class code.
+    """
+    if signer is None:
+        return None, None
+    if type(signer) not in (Signer, LamportSigner) or "sign" in vars(signer):
+        raise ValueError("unsupported packet signing contract")
+    algorithm = "hmac-sha256" if type(signer) is Signer else "lamport-sha256/1"
+    if signer.algorithm != algorithm or type(signer.key_id) is not str:
+        raise ValueError("unsupported packet signing contract")
+    if type(signer) is Signer:
+        if type(signer._key) not in (bytes, bytearray):
+            raise ValueError("unsupported packet signing contract")
+        frozen = Signer(signer.key_id, bytes(signer._key))
+        envelope = {"value": "0" * 64}
+    else:
+        if (type(signer.issued_fingerprints) is not list
+                or type(signer.registered_fingerprints) is not set):
+            raise ValueError("unsupported packet signing contract")
+        try:
+            frozen = LamportSigner(signer.key_id)
+        except ValueError:
+            raise ValueError("unsupported packet signing contract") from None
+        envelope = {"fingerprint": "sha256:" + "0" * 64,
+                    "public_key": [["0" * 64, "0" * 64] for _ in range(256)],
+                    "value": ["0" * 64 for _ in range(256)]}
+    frozen.algorithm = algorithm
+    envelope.update(key_id=frozen.key_id, algorithm=algorithm)
+    try:
+        CapsuleManager._validate_signature_shape(envelope, label="resume packet")
+        canonical_json(envelope)
+    except (CapsuleError, ValueError):
+        raise ValueError("unsupported packet signing contract") from None
+    return frozen, envelope
 
 
 # Rough token estimate: 4 chars/token keeps the budget model-neutral.
@@ -64,20 +134,58 @@ class ResumeComposer:
         "verified_progress", "invalidations", "assumptions", "open_work",
         "environment", "trust", "continuity_lineage", "evidence_index",
         "evidence_coverage", "omissions", "recent_context", "token_estimate",
+        "scope", "complete", "mandatory_control", "max_response_bytes", "response_format",
     })
     MARKDOWN_DECLARED_METADATA = frozenset({
         "schema_version", "packet_id", "generated_at", "project_state_at",
         "project_state_basis", "packet_digest", "signature",
+        "tenant_id", "project_id", "authority_set_digest",
     })
 
     def __init__(
             self, store, graph, memory, policy=None, *,
-            tenant_id: str | None = None):
+            tenant_id: str | None = None, control_provider=None):
         self.store = store
         self.graph = graph
         self.memory = memory
         self.policy = policy
         self.tenant_id = tenant_id
+        self.control_provider = control_provider
+
+    def _runtime_selection(self, project_id: str, tenant_id: str, task_id) -> dict:
+        """Standalone composition is a privileged, unscoped runtime interface.
+
+        Only the Engine can establish event-derived confirmation or task scope.
+        Refuse those inputs here instead of manufacturing a canonical witness.
+        """
+        if task_id is not None:
+            raise ValueError("task packets require an Engine confirmation witness")
+        instant = parse_ts(utcnow())
+        controls = []
+        for node in self.graph.current(project_id, tenant_id=tenant_id):
+            if (node["entity_type"] not in ("requirement", "constraint", "decision", "assumption")
+                    or node.get("status") in ("quarantined", "revoked", "withdrawn",
+                                              "superseded", "invalidated", "rejected")
+                    or (node.get("valid_from") and parse_ts(node["valid_from"]) > instant)
+                    or (node.get("valid_to") and instant >= parse_ts(node["valid_to"]))):
+                continue
+            if (any(row.get("extractor") for row in self.graph.history(node["node_id"]))
+                    or node["data"].get("authority_scope", {"kind": "global"})
+                    != {"kind": "global"}):
+                raise ValueError("scoped or extracted controls require an Engine witness")
+            member = {key: node.get(key) for key in (
+                "node_id", "entity_type", "status", "criticality", "confidence",
+                "authority", "valid_from", "valid_to")}
+            member.update(origin="runtime", authority_scope={"kind": "global"},
+                          content=node["data"], confirmation=None)
+            controls.append(member)
+        return {"scope": {"kind": "project"}, "controls": sorted(
+            controls, key=lambda node: (node["entity_type"], node["node_id"])),
+            "valid_task_ids": sorted(node["node_id"] for node in self.graph.current(
+                project_id, "task", tenant_id=tenant_id)
+                if (not node.get("valid_from") or parse_ts(node["valid_from"]) <= instant)
+                and (not node.get("valid_to") or instant < parse_ts(node["valid_to"]))),
+            "excluded_ids": [], "excluded_counts": {}}
 
     def compose(
         self,
@@ -90,10 +198,21 @@ class ResumeComposer:
         session_id: str | None = None,
         state_basis: dict | None = None,
         record_audit: bool = True,
+        task_id: str | None = None,
+        _selection: dict | None = None,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        response_format: str = "engine-json",
+        _response_encoder=None,
     ) -> dict:
         """Compose a model-neutral Resume Packet. Never drops L0 (MIG-002)."""
         if target is not None and not isinstance(target, dict):
             raise ValueError("resume target must be an object or null")
+        if type(max_response_bytes) is not int or not 1 <= max_response_bytes <= 1_048_576:
+            raise ValueError("max_response_bytes must be an integer from 1 to 1048576")
+        if not isinstance(response_format, str) or response_format not in _RESPONSE_FORMATS:
+            raise ValueError("unsupported packet response format")
+        frozen_signer, signature_preview = _packet_signing_contract(signer)
+        encode = _response_encoder or (lambda value: canonical_json(value).encode("utf-8"))
         if (isinstance(token_budget, bool)
                 or not isinstance(token_budget, int)
                 or not 1 <= token_budget <= 100_000):
@@ -135,54 +254,69 @@ class ResumeComposer:
                 raise PermissionError(
                     "resume session_id is not a session in the bound project"
                 ) from None
-        omissions: list[dict] = []
-        scope_query = " ".join(str(v) for v in target.values())
-        policy_config = (
-            self.policy.project_config(project_id)
-            if self.policy is not None else {})
-        prose_may_mandate = policy_config.get("prose_may_mandate", True)
+        selection = _selection if _selection is not None else (
+            self.control_provider(project_id, task_id) if self.control_provider is not None
+            else self._runtime_selection(project_id, tenant_id, task_id))
+        controls = copy.deepcopy(selection["controls"])
+        included_ids = {node["node_id"] for node in controls}
+        valid_task_ids = set(selection["valid_task_ids"])
+        excluded_ids = set(selection["excluded_ids"])
 
-        def may_mandate(node: dict) -> bool:
-            # Extraction provenance distinguishes prose-derived control from
-            # tasks and requirements created through an explicit API. Apply
-            # the policy in force at projection so tightening it also closes
-            # already-stored prose, while the graph retains its history.
-            if not node.get("extractor"):
-                return True
-            if node.get("authority") in (
-                    "untrusted_content", "agent_inference"):
+        def applies(node):
+            if node["node_id"] in excluded_ids:
                 return False
-            return bool(
-                prose_may_mandate
-                or node.get("entity_type") not in (
-                    "requirement", "constraint", "decision", "task"))
+            if node["entity_type"] in ("requirement", "constraint", "decision", "assumption"):
+                return node["node_id"] in included_ids
+            if node["entity_type"] == "task":
+                return node["node_id"] in valid_task_ids
+            return True
 
-        l0_candidates = self.memory.l0(project_id, tenant_id=tenant_id)
-        l0_nodes = [node for node in l0_candidates if may_mandate(node)]
+        omissions: list[dict] = [
+            {"reason": "out_of_scope", "section": kind, "count": count,
+             "note": "authority assigned to other tasks is not applicable to this packet"}
+            for kind, count in sorted(selection["excluded_counts"].items())]
+        scope_query = " ".join(str(v) for v in target.values())
+        may_mandate = self.graph.may_mandate
+        # Memory's public L0 read already withholds unavailable authority. Read
+        # raw assignments here only to disclose those removals, never to bind them.
+        assigned_ids = {row["node_id"] for row in self.store._conn.execute(
+            "SELECT DISTINCT node_id FROM memory_assignments WHERE project_id = ?",
+            (project_id,))}
+        l0_candidates = [n for n in self.graph.current(project_id, tenant_id=tenant_id)
+                         if n["node_id"] in assigned_ids and n["status"] != "quarantined"
+                         and self.memory.tier_of(project_id, n["node_id"]) == "L0"]
+        l0_nodes = [node for node in self.memory.l0(project_id, tenant_id=tenant_id)
+                    if applies(node)]
         current_constraints = [n for n in self.graph.current(
             project_id, "constraint", tenant_id=tenant_id)
-            if n["status"] not in ("invalidated", "superseded")]
+            if n["status"] not in (
+                "invalidated", "superseded", "revoked", "withdrawn", "uncertain", "blocked")]
         current_requirements = [n for n in self.graph.current(
             project_id, "requirement", tenant_id=tenant_id)
-            if n["status"] not in ("invalidated", "superseded")]
+            if n["status"] not in (
+                "invalidated", "superseded", "revoked", "withdrawn", "uncertain", "blocked")]
         constraints = self._section(
-            [n for n in current_constraints if may_mandate(n)],
+            [n for n in current_constraints if may_mandate(n) and applies(n)],
             kind="constraint")
         requirements = self._section(
-            [n for n in current_requirements if may_mandate(n)],
+            [n for n in current_requirements if may_mandate(n) and applies(n)],
             kind="requirement")
         current_decisions = [n for n in self.graph.current(
             project_id, "decision", tenant_id=tenant_id)
             if n["status"] in ("accepted", "active", None)]
         decisions = self._section(
-            [n for n in current_decisions if may_mandate(n)],
+            [n for n in current_decisions if may_mandate(n) and applies(n)],
             kind="decision")
-        assumptions_active = self.graph.current(
+        candidate_assumptions_active = self.graph.current(
             project_id, "assumption", status=["active", "supported"],
             tenant_id=tenant_id)
-        assumptions_uncertain = self.graph.current(
+        candidate_assumptions_uncertain = self.graph.current(
             project_id, "assumption", status=["uncertain"],
             tenant_id=tenant_id)
+        assumptions_active = [n for n in candidate_assumptions_active
+                              if may_mandate(n) and applies(n)]
+        assumptions_uncertain = [n for n in candidate_assumptions_uncertain
+                                 if may_mandate(n) and applies(n)]
         open_invalidations = self.graph.current(
             project_id, "invalidation", status=["open", "pending_confirmation"],
             tenant_id=tenant_id)
@@ -190,41 +324,57 @@ class ResumeComposer:
         verified = [n for n in self.graph.current(
             project_id, tenant_id=tenant_id)
                     if n["entity_type"] in ("task", "action", "artifact")
-                    and n["status"] == "verified"]
+                    and n["status"] == "verified" and applies(n)]
         candidate_tasks = [t for t in tasks if t["status"] in
-                           ("open", "in_progress", "blocked", None)]
-        open_tasks = [t for t in candidate_tasks if may_mandate(t)]
+                           ("open", "active", "in_progress", "blocked",
+                            "review_required", "uncertain", None)]
+        open_tasks = [t for t in candidate_tasks if may_mandate(t) and applies(t)]
         demoted_authority = (
             len(current_constraints) - len(constraints["nodes"])
             + len(current_requirements) - len(requirements["nodes"])
+            - sum(n["node_id"] in excluded_ids
+                  for n in current_constraints + current_requirements)
         )
-        demoted_decisions = len(current_decisions) - len(decisions["nodes"])
-        demoted_l0 = len(l0_candidates) - len(l0_nodes)
-        demoted_tasks = len(candidate_tasks) - len(open_tasks)
+        demoted_decisions = (len(current_decisions) - len(decisions["nodes"])
+                             - sum(n["node_id"] in excluded_ids for n in current_decisions))
+        demoted_l0 = (len(l0_candidates) - len(l0_nodes)
+                     - sum(n["node_id"] in excluded_ids for n in l0_candidates))
+        demoted_tasks = (len(candidate_tasks) - len(open_tasks)
+                        - sum(n["node_id"] in excluded_ids for n in candidate_tasks))
+        demoted_assumptions = (
+            len(candidate_assumptions_active) - len(assumptions_active)
+            + len(candidate_assumptions_uncertain) - len(assumptions_uncertain)
+            - sum(n["node_id"] in excluded_ids for n in
+                  candidate_assumptions_active + candidate_assumptions_uncertain))
+        if demoted_assumptions:
+            omissions.append({
+                "reason": "authority_unavailable", "section": "assumptions",
+                "count": demoted_assumptions,
+                "note": "beliefs without current authority remain contextual, not binding"})
         if demoted_authority:
             omissions.append({
-                "reason": "policy_demoted_prose", "section": "authority",
+                "reason": "authority_unavailable", "section": "authority",
                 "count": demoted_authority,
-                "note": "prose-derived control is retained as history but is "
-                        "not authority under the current project policy"})
+                "note": "control without current authority is retained as history, "
+                        "not binding requirements or constraints"})
         if demoted_decisions:
             omissions.append({
-                "reason": "policy_demoted_prose",
+                "reason": "authority_unavailable",
                 "section": "accepted decisions", "count": demoted_decisions,
-                "note": "prose-derived decisions are proposals under the "
-                        "current authority boundary"})
+                "note": "decisions without current authority remain contextual, "
+                        "not accepted control"})
         if demoted_l0:
             omissions.append({
-                "reason": "policy_demoted_prose",
+                "reason": "authority_unavailable",
                 "section": "mission control state", "count": demoted_l0,
-                "note": "an existing memory assignment cannot elevate prose "
-                        "above its current source and policy authority"})
+                "note": "an existing memory assignment cannot substitute for "
+                        "current authority"})
         if demoted_tasks:
             omissions.append({
-                "reason": "policy_demoted_prose", "section": "open work",
+                "reason": "authority_unavailable", "section": "open work",
                 "count": demoted_tasks,
-                "note": "prose-derived checklist items are proposals, not "
-                        "actionable work under the current authority boundary"})
+                "note": "tasks without current authority remain contextual, "
+                        "not actionable work"})
         env_nodes = self.graph.current(
             project_id, "artifact", tenant_id=tenant_id)
         env = [n for n in env_nodes if n["data"].get("kind") == "environment"]
@@ -247,7 +397,15 @@ class ResumeComposer:
         mission = self._mission(
             project_id, l0_nodes, target, tenant_id=tenant_id)
         packet = {
-            "schema_version": "cce.resume.v1",
+            "schema_version": "cce.resume.v2",
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "scope": dict(selection["scope"]),
+            "complete": True,
+            "max_response_bytes": max_response_bytes,
+            "response_format": response_format,
+            "mandatory_control": controls,
+            "authority_set_digest": digest_obj(controls),
             "packet_id": new_id("packet"),
             "generated_at": utcnow(),
             "project_state_at": self._watermark(
@@ -292,7 +450,7 @@ class ResumeComposer:
                 for s in self.memory.retrieve(
                     project_id, query=scope_query, limit=10,
                     tenant_id=tenant_id)
-                if s["signals"]["pinned"] == 0
+                if s["signals"]["pinned"] == 0 and applies(s["node"])
             ],
         }
 
@@ -306,34 +464,70 @@ class ResumeComposer:
         # Defence in depth (AD-006): whatever any section selected, nothing
         # quarantined leaves in a packet. Every earlier barrier is a filter on
         # one path; this one is on the only exit.
+        mandatory_before = {key: copy.deepcopy(value) for key, value in packet.items()
+                            if key not in ("recent_context", "environment", "verified_progress",
+                                           "omissions", "evidence_index", "evidence_coverage")}
         packet = self._strip_quarantined(
             project_id, packet, tenant_id=tenant_id,
-            record_audit=record_audit)
+            record_audit=False, excluded_ids=excluded_ids)
+        if any(packet.get(key) != value for key, value in mandatory_before.items()):
+            raise ValueError("complete packet unavailable: mandatory content withheld")
         # Both budget trimming and quarantine stripping happen after the
         # initial action is chosen. Reconcile at the exit so the signed packet
         # never instructs its reader to act on work it simultaneously withholds.
         self._reconcile_open_work(
             packet, eligible_open_ids=eligible_open_ids,
             budget_removed_ids=budget_removed_ids)
-        packet["token_estimate"] = _tokens(packet)
-        # The digest is part of the signed packet. Signing first and then
-        # appending this field made every packet fail Signer.verify(): the
-        # verifier quite correctly included packet_digest in the body that
-        # the producer had signed without it.
-        packet["packet_digest"] = digest_obj(
-            {k: v for k, v in packet.items() if k not in ("signature", "packet_digest")})
+        # Own the final tree: nested caller-owned target objects must not move
+        # between prediction, signing and encoding. No signature is minted just
+        # to discover its size, and no mandatory section participates in fitting.
+        packet = strict_json_loads(canonical_json(packet))
+        optional_sections = iter(("recent_context", "verified_progress", "environment"))
+        while True:
+            packet.pop("token_estimate", None)
+            packet.pop("packet_digest", None)
+            packet["token_estimate"] = _tokens(packet)
+            packet["packet_digest"] = digest_obj(packet)
+            preview = dict(packet)
+            if signature_preview is not None:
+                preview["signature"] = signature_preview
+            predicted = encode(preview)
+            if not isinstance(predicted, bytes):
+                raise ValueError("packet response encoder must return bytes")
+            if len(predicted) <= max_response_bytes:
+                break
+            for section in optional_sections:
+                if packet[section]:
+                    count = len(packet[section]) if isinstance(packet[section], list) else 1
+                    packet[section] = [] if isinstance(packet[section], list) else {}
+                    packet["omissions"].append({
+                        "reason": "response_budget", "section": section, "count": count})
+                    break
+            else:
+                raise PacketBudgetExceeded()
         try:
             CapsuleManager._validate_resume_packet(packet)
         except CapsuleError as exc:
             raise ValueError(
                 f"resume composer produced an invalid packet: {exc}") from None
-        if signer is not None:
-            packet["signature"] = signer.sign(packet)
+        if frozen_signer is not None:
+            packet["signature"] = frozen_signer.sign(packet)
             try:
                 CapsuleManager._validate_resume_packet(packet)
             except CapsuleError as exc:
                 raise ValueError(
                     f"resume signer produced an invalid packet: {exc}") from None
+        encoded = encode(packet)
+        if not isinstance(encoded, bytes) or len(encoded) != len(predicted):
+            raise ValueError("packet response encoding violated its signing contract")
+        if type(signer) is LamportSigner:
+            fingerprint = packet["signature"]["fingerprint"]
+            signer.issued_fingerprints.append(fingerprint)
+            signer.registered_fingerprints.add(fingerprint)
+        if record_audit:
+            for omission in packet["omissions"]:
+                if omission.get("reason") == "quarantined_text_collision":
+                    self._audit_collision(project_id, omission["nodes"])
         return packet
 
     # ------------------------------------------------------------------ parts
@@ -401,17 +595,18 @@ class ResumeComposer:
         prioritized = sorted(
             open_tasks,
             key=lambda t: (
-                0 if t.get("status") == "blocked" else 1,
+                0 if t.get("status") in ("blocked", "review_required", "uncertain") else 1,
                 {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(
                     t.get("criticality") or "medium", 2),
             ),
         )
         next_safe = None
         for t in prioritized:
-            if t.get("status") != "blocked":
+            if t.get("status") not in ("blocked", "review_required", "uncertain"):
                 next_safe = self._summ(t)
                 break
-        blockers = [self._summ(t) for t in prioritized if t.get("status") == "blocked"]
+        blockers = [self._summ(t) for t in prioritized
+                    if t.get("status") in ("blocked", "review_required", "uncertain")]
         if open_invalidations and next_safe is None:
             next_safe = {
                 "summary": "Resolve open invalidations before continuing implementation.",
@@ -439,7 +634,8 @@ class ResumeComposer:
         if isinstance(action, dict) and action.get("node_id") in retained_ids:
             return
 
-        actionable = [task for task in tasks if task.get("status") != "blocked"]
+        actionable = [task for task in tasks
+                      if task.get("status") not in ("blocked", "review_required", "uncertain")]
         if actionable:
             work["next_safe_action"] = actionable[0]
             return
@@ -554,8 +750,9 @@ class ResumeComposer:
             level = self.policy.effective_level(project_id)
         return {
             "autonomy_level": level,
+            "policy": policy_config,
             "required_verifiers": required,
-            "completed_checks": [self._summ(v) for v in completed[-10:]],
+            "completed_checks": [self._summ(v) for v in completed],
             "failed_or_stale_checks": [self._summ(v) for v in failed],
             "gaps": gaps,
         }
@@ -580,7 +777,7 @@ class ResumeComposer:
     def _strip_quarantined(
             self, project_id: str, packet: dict, *,
             tenant_id: str | None = None,
-            record_audit: bool = True) -> dict:
+            record_audit: bool = True, excluded_ids: set[str] | None = None) -> dict:
         """Remove any reference to a quarantined node from a composed packet.
 
         Suspected-injection text must not reach an agent's context by ANY
@@ -618,7 +815,7 @@ class ResumeComposer:
         # too, so say which ones rather than leaving a hole.
         collisions = []
         for node in current:
-            if node["node_id"] in quarantined:
+            if node["node_id"] in quarantined or node["node_id"] in (excluded_ids or ()):
                 continue
             for value in (node.get("data") or {}).values():
                 if isinstance(value, str) and _matches(value, texts,
@@ -672,13 +869,17 @@ class ResumeComposer:
                         "or someone quoted live state to get it suppressed. "
                         "Both need a human."})
             if record_audit:
-                self.store.audit(
-                    actor="resume", action="packet.quarantine_collision",
-                    object_id=project_id, authority="verifier_authoritative",
-                    detail=f"{len(collisions)} live node(s) withheld for matching "
-                           f"quarantined text: "
-                           f"{','.join(c['node_id'] for c in collisions[:10])}")
+                self._audit_collision(project_id, collisions)
         return packet
+
+    def _audit_collision(self, project_id: str, collisions: list[dict]) -> None:
+        # Standalone composition has no outer Engine writer to roll back a
+        # refusal. Commit this observation only after successful validation.
+        self.store.audit(
+            actor="resume", action="packet.quarantine_collision",
+            object_id=project_id, authority="verifier_authoritative",
+            detail=f"{len(collisions)} live node(s) withheld for matching quarantined text: "
+                   f"{','.join(c['node_id'] for c in collisions[:10])}")
 
     def _evidence_for(self, node: dict) -> list[str]:
         """Evidence ids a reader can actually follow.
@@ -750,7 +951,6 @@ class ResumeComposer:
         trim_order = [
             ("recent_context", "recent context"),
             ("verified_progress", "verified progress detail"),
-            ("open_work", "open work detail"),
             ("environment", "environment detail"),
         ]
         for key, label in trim_order:
@@ -766,17 +966,6 @@ class ResumeComposer:
                     omissions.append({
                         "reason": "token_budget", "section": label,
                         "count": len(section) - len(kept)})
-            elif key == "open_work" and isinstance(section, dict):
-                tasks = section.get("tasks", [])
-                kept = list(tasks)
-                while kept and _tokens(
-                        {**packet, key: {**section, "tasks": kept}}) > budget:
-                    kept.pop()
-                if len(kept) != len(tasks):
-                    omissions.append({
-                        "reason": "token_budget", "section": label,
-                        "count": len(tasks) - len(kept)})
-                    section["tasks"] = kept
         packet["omissions"] = omissions
         return packet
 
@@ -807,6 +996,12 @@ class ResumeComposer:
             "# CCE Resume Packet",
             f"Packet `{packet['packet_id']}` | generated {packet['generated_at']}"
             f" | state at {packet.get('project_state_at')}",
+            "",
+            f"Scope: {value(packet['scope'])} | complete: {packet['complete']}",
+            f"Response: {packet['response_format']} | max bytes: {packet['max_response_bytes']}",
+            "",
+            "## Mandatory control",
+            value(packet["mandatory_control"]),
             "",
             "## Mission",
             f"**Project:** {packet['mission']['project']}",
@@ -875,6 +1070,7 @@ class ResumeComposer:
         lines += ["", "## Environment", f"- {value(packet['environment'])}"]
         lines += ["", "## Trust"]
         trust = packet["trust"]
+        lines.append(f"- configured policy: {value(trust['policy'])}")
         lines.append(f"- autonomy level: {trust.get('autonomy_level')}")
         required = ", ".join(trust.get("required_verifiers") or []) or "none"
         lines.append(f"- required verifiers: {required}")

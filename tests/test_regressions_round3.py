@@ -11,13 +11,14 @@ import sys
 
 import pytest
 
-from causal_continuity_engine.engine import Engine, stable_node_id
+from causal_continuity_engine.engine import Engine
 from causal_continuity_engine.graph import Graph
 from causal_continuity_engine.invalidation import InvalidationEngine
 from causal_continuity_engine.memory import Memory
 from causal_continuity_engine.redaction import apply_capture_mode
 from causal_continuity_engine.store import Store
 from causal_continuity_engine.verifiers import VerifierSpec
+from tests.authority_helpers import confirm_proposal
 
 TEN, PRJ = "ten_r3", "prj_r3"
 REPOSITORY_ID = 3003
@@ -127,10 +128,12 @@ class TestG2RedeliveryIsANoOp:
     """Re-processing an unchanged delivery must not change project state."""
 
     def test_redelivery_does_not_retire_the_surviving_requirement(self, engine):
-        engine.ingest_github(PRJ, "issues", "d1",
+        first = engine.ingest_github(PRJ, "issues", "d1",
                              _issue(1, "The exporter must write CSV output."))
-        engine.ingest_github(PRJ, "issues", "d2",
+        second = engine.ingest_github(PRJ, "issues", "d2",
                              _issue(2, "The exporter must write JSON output."))
+        for report in (first, second):
+            confirm_proposal(engine, PRJ, report["created"][0]["node_id"])
         snap = lambda: sorted(  # noqa: E731
             (n["data"]["statement"], n["status"], n["version"])
             for n in engine.graph.current(PRJ, "requirement"))
@@ -148,26 +151,71 @@ class TestG2RedeliveryIsANoOp:
         assert active_after == active_before
 
     def test_no_mutual_supersedes_cycle(self, engine):
-        engine.ingest_github(PRJ, "issues", "d1",
+        first = engine.ingest_github(PRJ, "issues", "d1",
                              _issue(1, "The exporter must write CSV output."))
-        engine.ingest_github(PRJ, "issues", "d2",
+        second = engine.ingest_github(PRJ, "issues", "d2",
                              _issue(2, "The exporter must write JSON output."))
+        for report in (first, second):
+            confirm_proposal(engine, PRJ, report["created"][0]["node_id"])
         engine.ingest_github(PRJ, "issues", "d3",
                              _issue(1, "The exporter must write CSV output."))
         pairs = set()
-        for n in engine.graph.current(PRJ, "requirement"):
+        requirements = engine.graph.current(PRJ, "requirement")
+        assert len(requirements) == 2
+        assert all(engine.graph.may_mandate(n) for n in requirements)
+        for n in requirements:
             for e in engine.graph.out_edges(n["node_id"], {"supersedes"}):
                 pairs.add((e["src_id"], e["dst_id"]))
         assert not any((b, a) in pairs for a, b in pairs), \
             "mutual supersedes cycle between two requirements"
 
+    def test_contested_decision_redelivery_preserves_nodes_and_edges(self, engine):
+        bodies = ("We decided to use MongoDB for storage.",
+                  "We decided to use PostgreSQL for storage.")
+        confirmation_ids = []
+        for number, body in enumerate(bodies, 1):
+            report = engine.ingest_github(
+                PRJ, "issues", f"decision-{number}", _issue(number, body))
+            confirmation_ids.append(confirm_proposal(
+                engine, PRJ, report["created"][0]["node_id"]).id)
+        before_nodes = {node_id: engine.graph.get(node_id) for node_id in confirmation_ids}
+        before_edges = {node_id: engine.graph.out_edges(node_id) for node_id in confirmation_ids}
+        conflicts = [edge for edges in before_edges.values() for edge in edges
+                     if edge["edge_type"] == "contradicts"]
+        # Compatible requirements never enter this conflict path. A nonempty
+        # contested edge is the deciding precondition for redelivery here.
+        assert len(before_nodes) == 2
+        assert len(conflicts) == 1
+        assert {conflicts[0]["src_id"], conflicts[0]["dst_id"]} == set(confirmation_ids)
+        assert conflicts[0]["data"]["contested"] is True
+        assert any(node["data"].get("conflict_requires_resolution")
+                   for node in before_nodes.values())
+        assert all(engine.graph.may_mandate(node) for node in before_nodes.values())
+
+        for number, body in enumerate(bodies, 1):
+            assert engine.ingest_github(
+                PRJ, "issues", f"decision-{number}", _issue(number, body)) is None
+            restated = engine.ingest_github(
+                PRJ, "issues", f"restated-{number}", _issue(number, body))
+            assert restated["invalidations"] == restated["conflicts"] == []
+        assert {node_id: engine.graph.get(node_id) for node_id in confirmation_ids} == before_nodes
+        after_edges = {node_id: engine.graph.out_edges(node_id) for node_id in confirmation_ids}
+        assert after_edges == before_edges
+        supersedes = {(edge["src_id"], edge["dst_id"])
+                      for edges in after_edges.values() for edge in edges
+                      if edge["edge_type"] == "supersedes"}
+        assert not any((dst, src) in supersedes for src, dst in supersedes)
+
     def test_version_does_not_grow_on_repeated_delivery(self, engine):
-        for i in range(4):
+        report = engine.ingest_github(PRJ, "issues", "d0",
+                                     _issue(1, "The parser must handle unicode."))
+        confirmed = confirm_proposal(engine, PRJ, report["created"][0]["node_id"])
+        for i in range(1, 4):
             engine.ingest_github(PRJ, "issues", f"d{i}",
                                  _issue(1, "The parser must handle unicode."))
-        node = engine.graph.get(
-            stable_node_id(PRJ, "requirement", "The parser must handle unicode"))
+        node = engine.graph.get(confirmed.id)
         assert node["version"] == 1
+        assert engine.graph.may_mandate(node)
 
 
 class TestT1SelfAssertionIsNotProof:
@@ -322,10 +370,9 @@ class TestP3QuarantineBarredFromEveryTier:
         assert engine.memory.l0(PRJ) == []
 
     def test_clean_node_can_still_be_pinned(self, engine):
-        engine.ingest_github(PRJ, "issues", "d1",
+        report = engine.ingest_github(PRJ, "issues", "d1",
                              _issue(1, "The parser must handle unicode."))
-        node_id = stable_node_id(PRJ, "requirement",
-                                 "The parser must handle unicode")
+        node_id = confirm_proposal(engine, PRJ, report["created"][0]["node_id"]).id
         engine.memory.promote(PRJ, node_id, "L0", actor="lead")
         assert [n["node_id"] for n in engine.memory.l0(PRJ)] == [node_id]
 

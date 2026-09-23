@@ -9,6 +9,9 @@ POSIX. Windows' stdlib chmod does not manage discretionary ACLs, so the local
 reference relies on the user's existing profile ACL there. This separation
 and the verifier snapshot stop ordinary relative-path disclosure; they do not
 isolate two hostile processes running as the same OS account.
+
+The authority command records an owner-local store-capability decision. It
+does not authenticate a uniquely human operator or expose a remote ingress.
 """
 
 from __future__ import annotations
@@ -45,6 +48,12 @@ from .ontology import (
     MVP_MAX_AUTONOMY,
 )
 from .policy import PolicyEngine
+from .resume import (
+    DEFAULT_MAX_RESPONSE_BYTES,
+    PACKET_BUDGET_ERROR,
+    PacketBudgetExceeded,
+    ResumeComposer,
+)
 from .store import AnchorExportError
 
 _SIGNING_KEY_FILE = "secrets/signing.key"
@@ -54,6 +63,7 @@ _MAX_POLICY_BYTES = 1024 * 1024
 _MAX_METADATA_BYTES = 64 * 1024
 _MAX_SECRET_BYTES = 64 * 1024
 _MAX_INGEST_BYTES = 1024 * 1024
+_MAX_AUTHORITY_REQUEST_BYTES = 64 * 1024
 _MAX_RECEIPT_BYTES = 1024 * 1024
 _MAX_CAPSULE_BYTES = 4 * 1024 * 1024
 _MAX_ANCHOR_BYTES = 1024 * 1024
@@ -130,6 +140,13 @@ def _token_budget(value: str) -> int:
     if parsed > _MAX_TOKEN_BUDGET:
         raise argparse.ArgumentTypeError(
             f"must be at most {_MAX_TOKEN_BUDGET}")
+    return parsed
+
+
+def _response_bytes(value: str) -> int:
+    parsed = _positive_int(value)
+    if parsed > 1048576:
+        raise argparse.ArgumentTypeError("must be at most 1048576")
     return parsed
 
 
@@ -776,16 +793,57 @@ def cmd_ingest(args):
 
 
 def cmd_resume(args):
+    def encode(packet):
+        text = (_sanitize_human(ResumeComposer.render_markdown(packet))
+                if args.format == "markdown" else _strict_json_text(packet, indent=2))
+        return (text + "\n").encode("utf-8")
+
     engine, meta = _engine(args)
-    result = engine.resume_packet(
+    result = engine._resume_packet(
         meta["project_id"],
         target={"issue": args.issue} if args.issue is not None else None,
-        token_budget=args.token_budget, fmt=args.format)
-    if args.format == "markdown":
-        print(_sanitize_human(result))
-    else:
-        _emit(args, result)
+        token_budget=args.token_budget, fmt=args.format, task_id=args.task_id,
+        record_state=True,
+        max_response_bytes=args.max_response_bytes,
+        _response_encoder=encode, _response_format="cli-" + args.format)
+    _write_utf8_bytes(sys.stdout, result)
     engine.close()
+
+
+def _write_utf8_bytes(stream, payload: bytes) -> None:
+    # Production uses bytes so platform newline/encoding translation cannot
+    # enlarge an already measured response. StringIO remains an embedding seam.
+    binary = getattr(stream, "buffer", None)
+    if binary is None:
+        stream.write(payload.decode("utf-8"))
+    else:
+        binary.write(payload)
+    stream.flush()
+
+
+def cmd_authority(args):
+    try:
+        request = strict_json_loads(_read_bounded_file(
+            args.request, _MAX_AUTHORITY_REQUEST_BYTES,
+            label="authority request"))
+        if not isinstance(request, dict):
+            raise ValueError("authority request must be a JSON object")
+    except (OSError, UnicodeError, ValueError):
+        _print_error("error: invalid authority request")
+        raise SystemExit(2) from None
+    engine, meta = _engine(args)
+    try:
+        # Project metadata binds the target; request labels cannot choose the
+        # local capability's scope. Only the Engine validates decision grammar.
+        try:
+            receipt = engine.record_authority_decision(
+                meta["project_id"], request)
+        except (ValueError, PermissionError):
+            _print_error("error: invalid authority request")
+            raise SystemExit(2) from None
+        _emit(args, receipt)
+    finally:
+        engine.close()
 
 
 def cmd_assumptions(args):
@@ -1241,9 +1299,19 @@ def main(argv=None):
         help="payload JSON file (default stdin)")
     s.set_defaults(fn=cmd_ingest)
 
+    s = sub.add_parser(
+        "authority", help="record an owner-local authority decision")
+    s.add_argument(
+        "--request", required=True, type=_nonempty_argument, metavar="FILE",
+        help="closed authority request JSON file (at most 65536 bytes)")
+    s.set_defaults(fn=cmd_authority)
+
     s = sub.add_parser("resume", help="compose a Resume Packet")
     s.add_argument("--issue", type=_nonempty_argument)
+    s.add_argument("--task-id", type=_public_identifier)
     s.add_argument("--token-budget", type=_token_budget, default=4000)
+    s.add_argument("--max-response-bytes", type=_response_bytes,
+                   default=DEFAULT_MAX_RESPONSE_BYTES)
     s.add_argument("--format", default="markdown", choices=["markdown", "json"])
     s.set_defaults(fn=cmd_resume)
 
@@ -1367,6 +1435,10 @@ def main(argv=None):
     active_exception = False
     try:
         args.fn(args)
+    except PacketBudgetExceeded:
+        active_exception = True
+        _write_utf8_bytes(sys.stderr, (PACKET_BUDGET_ERROR + "\n").encode("utf-8"))
+        raise SystemExit(2) from None
     except CLIOutputError as exc:
         active_exception = True
         _print_error(f"error: {exc}")

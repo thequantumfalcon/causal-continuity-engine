@@ -212,7 +212,8 @@ class PartialProgressManager:
         checkpoint = self.memory.last_safe_checkpoint(project_id)
         open_tasks = [t for t in self.graph.current(
                       project_id, "task", tenant_id=self.tenant_id)
-                      if t["status"] in ("open", "in_progress", "blocked", None)]
+                      if t["status"] in ("open", "in_progress", "blocked", None)
+                      and self.graph.may_mandate(t)]
         verified = [n for n in self.graph.current(
                     project_id, tenant_id=self.tenant_id)
                     if n["status"] == "verified"

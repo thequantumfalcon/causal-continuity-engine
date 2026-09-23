@@ -5,6 +5,11 @@ run is necessary but not sufficient: the published files must be derivable
 twice from the tagged tree, retain the project's independent audit surface,
 and remain bound to the reviewed tag.
 
+The current 0.2.0 work is local preparation, not a dated release or permission
+to tag, push, or publish. The release-date, tag, network-write and publication
+steps below are conditional instructions for a future separately authorized
+release after its prerequisites pass. No 0.2.0 publication is asserted here.
+
 ## One-time repository settings
 
 1. Ensure both committed rulesets described in `.github/ruleset.README.md` are
@@ -39,8 +44,17 @@ which maintainer signed.
 
 ## Prepare the tree
 
-Processor 1.8.0 is not an in-place projection upgrade. Preserve older stores
-and re-ingest retained sources into a distinct project/store (ADR-114).
+Processor 1.9.0 and extractor 1.4.0 are not an in-place projection upgrade.
+Stop writers and preserve each complete older database with its SQLite
+sidecars, including processor 1.8.0 stores. Re-ingest retained sources into a
+distinct current store/project (ADR-114, ADR-126). Review the
+new source-event-bound proposals and explicitly confirm the intended statements
+and global or confirmed-task scopes through the local authority producer.
+OWNER association, decision prose, copied node flags, and old approval status do
+not confer current authority. Re-ingestion creates new identities; it neither
+promotes the old projection in place nor restores payloads erased by retention.
+Preserve historical proofs and packets as historical artifacts, not current v2
+authority or spendable completion evidence.
 For a current-version store interrupted during processing, redeliver retained
 unprocessed events in canonical sequence before retrying later deliveries.
 An older quarantine cannot be retried after later terminal processing: retain
@@ -57,19 +71,26 @@ the main file: it may contain uncommitted pages. Cold journals also require this
 explicit procedure. A recovered older projection still refuses; re-ingest retained
 inputs into a separate current project instead of editing markers (ADR-121).
 
+The following numbered steps apply only when preparing an authorized release;
+local 0.2.0 preparation keeps `not yet released` and omits `date-released`.
+
 1. Set `__version__` in `causal_continuity_engine/__init__.py`. Change the
    matching `CHANGELOG.md` heading from `not yet released` to the real ISO
    `YYYY-MM-DD` release date, reset `Unreleased` exactly to `No unreleased
    changes.`, remove stale no-tag/not-yet-released language, and give
    `CITATION.cff` the same version and `date-released`. `pyproject.toml`
    derives distribution metadata from the package attribute; do not
-   reintroduce another package-version source. In the same commit, switch the
-   current-metadata test in `tests/test_release_controls.py` to its tag-ready
-   expectation with that version and date; the test gate fails otherwise.
+   reintroduce another package-version source. In the same separately authorized
+   release change, update both current-state metadata tests in
+   `tests/test_release_controls.py` from undated acceptance and exact-tag refusal
+   to the dated/tag-ready expectations for that version. Preserve the checker
+   and its negative fixtures; the test gate fails otherwise.
 2. Regenerate `docs/CAPABILITIES.md` only with
    `python -m causal_continuity_engine.capabilities --write`.
-3. Run `python .github/scripts/check_release_metadata.py --release v0.1.6`,
+3. For the future 0.2.0 release, run
+   `python .github/scripts/check_release_metadata.py --release v0.2.0`,
    then `just setup` and `just release` from a clean checkout.
+   Release-mode metadata checking must refuse while the candidate is undated.
 4. Drive the MCP server by hand from the built wheel with a real client, and
    read the responses. Install the wheel into an empty virtual environment,
    `cce-engine --dir <project> init`, then connect with the reference MCP SDK
@@ -130,6 +151,10 @@ interpreter setup, the isolated tool bootstrap, upload, and final reporting.
 These are failure ceilings, not performance targets.
 
 ## Sign and publish
+
+This section is a future release procedure, not an instruction to execute it
+during local 0.2.0 preparation. It requires separate owner authorization for
+tag creation and network writes in addition to every check above.
 
 On the owner's Mac, use a dedicated clean checkout whose exact origin is
 `ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git`. Verify the
@@ -198,7 +223,7 @@ ambient token or `PATH` entry to choose the credential source:
     /opt/homebrew/bin/gh auth token)"
   /usr/bin/env -i GH_TOKEN="$release_token" LANG=C LC_ALL=C \
     /opt/homebrew/bin/python3 -I \
-    .github/scripts/prepare_release_tag.py v0.1.6 --push \
+    .github/scripts/prepare_release_tag.py v0.2.0 --push \
     --git-executable /usr/bin/git \
     --tagger-name "Thomas Albrecht" \
     --tagger-email "thequantumfalcon@users.noreply.github.com" \
@@ -296,7 +321,9 @@ publishes anything:
 - every runtime-declared immutable public schema `$id`/TypeURI URL returns strict JSON whose
   bytes are exactly equal to the files in the checked-out release tree; those
   v1 URLs remain bound to `v0.1.0` on later package releases rather than being
-  derived from the later package tag;
+  derived from the later package tag. New v2 contracts declare separate
+  `v0.2.0` identities; those candidate URLs are not evidence that the tag or
+  publication exists, and this remote byte check remains a future release gate;
 - every release gate passes again from the tag and the second build is
   byte-identical;
 - the three-file candidate is uploaded before any artifact-carried code runs;
@@ -390,10 +417,14 @@ administrator may then disable only tag ruleset `20590968`, confirm that exact
 ruleset is disabled, delete only the named bad tag, restore the committed tag
 ruleset immediately even if deletion fails, and read it back:
 
+Replace the placeholder below only with the exact independently confirmed
+unpublished bad tag. Do not execute this block unedited or use the local
+candidate's version as a substitute for that incident evidence.
+
 ```bash
 REPO=thequantumfalcon/causal-continuity-engine
 RULESET=20590968
-TAG=v0.1.6
+TAG='<confirmed-unpublished-bad-tag>'
 ENDPOINT="repos/$REPO/rulesets/$RULESET"
 
 gh api "$ENDPOINT" --jq '{id,name,target,enforcement,bypass_actors,rules}'
@@ -473,9 +504,13 @@ python .github/scripts/verify_distributions.py \
   --structural-only <directory-containing-assets>
 ```
 
-An extracted source or sdist tree has no `.git`. Give portable semantic mode
-the Unix committer timestamp obtained independently from the verified signed
-tag's peeled commit—not a timestamp copied from the artifact being checked:
+Both structural CLI modes currently require a matching Git worktree whose
+index equals `HEAD` and whose physical source bytes equal the index, with no
+untracked release inputs. An extracted no-Git source or sdist tree is not
+sufficient: portable semantic mode does not bypass that admission check.
+Use the matching pristine checkout and give portable semantic mode the Unix
+committer timestamp obtained independently from the verified signed tag's
+peeled commit—not a timestamp copied from the artifact being checked:
 
 ```bash
 python .github/scripts/verify_distributions.py \
@@ -558,10 +593,13 @@ post-publication substitution. None alone replaces the others.
 
 ## Proposed differentiator: continuity-bound release receipts
 
-The engine now emits signed `cce.continuity-receipt.v1` operator receipts
-that distinguish a current frontier from an authentic historical one. They
-are useful source material, but they are tenant-key, local-state receipts—not
-public release attestations. The next trust increment should therefore define
+The engine now emits signed `cce.continuity-receipt.v2` operator receipts
+in this local candidate, with explicit project-only scope. They distinguish a
+current project frontier from an authentic historical one. They are useful
+source material, but they are tenant-key, local-state receipts—not public
+release attestations. Archived v1 schemas remain for historical interpretation;
+v1 receipts are not accepted by the live verifier. The next trust increment
+should therefore define
 a custom predicate at a stable, project-controlled absolute TypeURI and carry
 it in an in-toto Statement, not invent another application signature scheme.
 The exact payload serialization, media type, and signing envelope are separate

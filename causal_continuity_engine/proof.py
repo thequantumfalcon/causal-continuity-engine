@@ -24,11 +24,11 @@ from .core import (
     validate_public_identifier,
 )
 
-PROOF_SCHEMA = "cce.proof.v1"
+PROOF_SCHEMA = "cce.proof.v2"
 INTOTO_TYPE = "https://in-toto.io/Statement/v1"
 PREDICATE_TYPE = (
     "https://raw.githubusercontent.com/thequantumfalcon/"
-    "causal-continuity-engine/v0.1.0/schemas/cce.proof-predicate.v1.json"
+    "causal-continuity-engine/v0.2.0/schemas/cce.proof-predicate.v2.json"
 )
 
 FINAL_STATUSES = {"verified", "failed", "incomplete", "inconclusive", "stale", "invalid"}
@@ -52,6 +52,7 @@ _CANONICAL_CREATED_AT = re.compile(
 _ACTION_INTENT_FIELDS = {"type", "statement", "requirement_ids"}
 _SUBJECT_FIELDS = {"name", "digest"}
 _INPUT_FIELDS = {"name", "digest", "kind"}
+_OBLIGATION_PREFIX = "continuity:obligations:"
 _SUMMARY_FIELDS = {
     "unbacked_self_assertions", "required", "missing", "failed",
     "inconclusive", "skipped", "passed",
@@ -197,13 +198,14 @@ class ProofEnvelope:
         update_field: str | None = None,
         update_value: object = None,
         required_verifiers: list[str] | None = None,
+        final: bool = False,
     ) -> dict:
         """Return one normalized, structurally valid candidate envelope.
 
-        Builder methods use the same whole-envelope check as ``finalize`` so
-        malformed nested values are rejected atomically at the public
-        mutation boundary.  The synthetic signature exists only to exercise
-        the public envelope shape before any signing implementation is called.
+        Builder methods reject malformed nested values atomically while allowing
+        inputs and links to be assembled in either order. Finalization additionally
+        requires exact obligation coverage before any signing implementation runs.
+        The synthetic signature exercises the public envelope shape only.
         """
         draft = dict(self.body)
         if update_field is not None:
@@ -229,7 +231,7 @@ class ProofEnvelope:
             "algorithm": "preflight",
             "value": "preflight",
         }
-        errors = validate_envelope_shape(candidate)
+        errors = validate_envelope_shape(candidate, require_obligation_coverage=final)
         if errors:
             raise ValueError("proof draft is invalid: " + "; ".join(errors))
         return candidate
@@ -313,7 +315,7 @@ class ProofEnvelope:
     def finalize(self, signer, required_verifiers: list[str] | None = None) -> dict:
         """Evaluate and shape-check the complete proof before signing it."""
         candidate = self._preflight_candidate(
-            required_verifiers=required_verifiers)
+            required_verifiers=required_verifiers, final=True)
         try:
             signable = strict_json_loads(canonical_json(candidate))
             candidate["signature"] = signer.sign(signable)
@@ -411,14 +413,18 @@ def evaluate_status(verifications: list[dict],
     }
 
 
-def validate_envelope_shape(envelope: object) -> list[str]:
-    """Validate the security-relevant cce.proof.v1 structure with stdlib only.
+def validate_envelope_shape(
+        envelope: object, *, require_obligation_coverage: bool = True) -> list[str]:
+    """Validate the security-relevant cce.proof.v2 structure with stdlib only.
 
     Cryptographic validity and structural validity are separate properties.
     Signing a dictionary with no proof id, intent, or policy record does not
     manufacture those semantics.  This mirrors the shipped JSON Schema while
     keeping the runtime dependency-free and returning every useful defect to
     callers rather than stopping at the first missing key.
+
+    Only intermediate builder construction may defer obligation coverage. The
+    default is strict for every final status, including a supplied draft.
     """
     if not isinstance(envelope, dict):
         return ["envelope must be an object"]
@@ -453,7 +459,7 @@ def validate_envelope_shape(envelope: object) -> list[str]:
 
     status = envelope.get("status")
     if not isinstance(status, str) or status not in _PROOF_STATUSES:
-        errors.append(f"status {status!r} is not a cce.proof.v1 status")
+        errors.append(f"status {status!r} is not a cce.proof.v2 status")
 
     for name in ("subject", "inputs", "execution", "verifications"):
         if not isinstance(envelope.get(name), list):
@@ -540,6 +546,7 @@ def validate_envelope_shape(envelope: object) -> list[str]:
                 errors.append(f"subject[{index}].digest must be a sha256 digest")
 
     inputs = envelope.get("inputs")
+    obligation_tasks: set[str] = set()
     if isinstance(inputs, list):
         for index, item in enumerate(inputs):
             if not isinstance(item, dict):
@@ -556,6 +563,14 @@ def validate_envelope_shape(envelope: object) -> list[str]:
             if not isinstance(item.get("digest"), str) or not _DIGEST.fullmatch(
                     item.get("digest", "")):
                 errors.append(f"inputs[{index}].digest must be a sha256 digest")
+            name = item.get("name")
+            if isinstance(name, str) and name.startswith(_OBLIGATION_PREFIX):
+                target = name.removeprefix(_OBLIGATION_PREFIX)
+                if not is_public_identifier(target) or item.get("kind") != "continuity":
+                    errors.append(f"inputs[{index}] has a malformed obligation commitment")
+                elif target in obligation_tasks:
+                    errors.append(f"inputs[{index}] duplicates an obligation commitment")
+                obligation_tasks.add(target)
 
     execution = envelope.get("execution")
     if isinstance(execution, list):
@@ -684,6 +699,15 @@ def validate_envelope_shape(envelope: object) -> list[str]:
                     is_public_identifier(node_id) for node_id in value):
                 errors.append(
                     f"continuity_links.{field} must be an array of public identifiers")
+        tasks = links.get("task_ids", [])
+        if (isinstance(tasks, list) and all(is_public_identifier(task) for task in tasks)
+                and len(tasks) != len(set(tasks))):
+            errors.append("continuity_links.task_ids must contain distinct identifiers")
+        if (require_obligation_coverage and isinstance(tasks, list)
+                and all(is_public_identifier(task) for task in tasks)
+                and obligation_tasks != set(tasks)):
+            errors.append(
+                "inputs must carry exactly one obligation commitment per typed task target")
 
     context = envelope.get("evidence_context")
     if isinstance(context, dict):
@@ -892,6 +916,8 @@ def detect_stale(envelope: dict, current_inputs: dict[str, str]) -> dict:
 
 def to_intoto(envelope: dict) -> dict:
     """PA-006: lossless mapping into an in-toto-compatible statement."""
+    if validate_envelope_shape(envelope):
+        raise ValueError("not a current CCE proof envelope")
     return {
         "_type": INTOTO_TYPE,
         "subject": [
@@ -911,10 +937,16 @@ def from_intoto(statement: dict) -> dict:
     if statement.get("_type") != INTOTO_TYPE or \
             statement.get("predicateType") != PREDICATE_TYPE:
         raise ValueError("not a CCE proof-carrying-action statement")
-    envelope = dict(statement["predicate"])
+    predicate = statement.get("predicate")
+    if (not isinstance(predicate, dict)
+            or set(predicate) != _REQUIRED_FIELDS - {"subject", "schema_version"}):
+        raise ValueError("not a closed CCE proof predicate")
+    envelope = dict(predicate)
     envelope["schema_version"] = PROOF_SCHEMA
     envelope["subject"] = [
         {"name": s["name"], "digest": "sha256:" + s["digest"]["sha256"]}
         for s in statement.get("subject", [])
     ]
+    if validate_envelope_shape(envelope):
+        raise ValueError("not a current CCE proof envelope")
     return envelope

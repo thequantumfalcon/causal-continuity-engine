@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 from causal_continuity_engine.capsule import CapsuleError
-from causal_continuity_engine.engine import Engine, stable_node_id
+from causal_continuity_engine.engine import Engine
 
 PRJ = "prj_bench"
 REPOSITORY_ID = 880081
@@ -97,6 +97,28 @@ def _executed_proof(e, task_id, statement, *, project_id=PRJ):
         continuity={"task_ids": [task_id]})
 
 
+def _confirm(e, report, kind, text):
+    """Approve one explicitly named proposal through the owner-local producer.
+
+    Ingestion alone never supplies the authority these scenarios measure.
+    Selecting exact kind/text from one source report prevents fixture setup
+    from silently approving unrelated or future extracted statements.
+    """
+    proposals = [e.graph.get(item["node_id"]) for item in report["created"]
+                 if item["kind"] == "claim"]
+    matches = [node for node in proposals
+               if node["data"].get("proposed_kind") == kind
+               and node["data"].get("statement") == text]
+    assert len(matches) == 1, (kind, text)
+    proposal = matches[0]
+    assert not e.graph.may_mandate(proposal)
+    return e.record_authority_decision(PRJ, {
+        "operation": "confirm", "request_id": "bench-confirm-" + proposal["node_id"],
+        "tenant_id": e.tenant_id, "project_id": PRJ,
+        **e.authority_proposal(PRJ, proposal["node_id"]),
+    })
+
+
 def _issue(number, body, action="opened", association="OWNER"):
     return {
         "action": action,
@@ -134,10 +156,12 @@ def _push(commits):
 def interrupted_implementation():
     """Resume at the correct verified boundary without repeating done work."""
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(
+    report = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "- [ ] design the schema\n- [ ] implement the importer\n"
            "- [ ] write integration tests"))
-    done_id = stable_node_id(PRJ, "task", "design the schema")
+    done_id = _confirm(e, report, "task", "design the schema")["confirmation_id"]
+    _confirm(e, report, "task", "implement the importer")
+    _confirm(e, report, "task", "write integration tests")
     proof = _executed_proof(e, done_id, "schema done")
     e.complete_task(PRJ, done_id, proof=proof)
     e.memory.checkpoint(tenant_id=e.tenant_id, project_id=PRJ, session_id=None,
@@ -168,14 +192,18 @@ def interrupted_implementation():
 def changed_requirement():
     """Only affected work is revised; unrelated work is preserved."""
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(
+    original = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "The exporter must write CSV output."))
-    e.ingest_github(PRJ, "issues", "i2", _issue(
+    unrelated = e.ingest_github(PRJ, "issues", "i2", _issue(
         2, "The importer must validate schemas."))
-    old_id = stable_node_id(PRJ, "requirement", "The exporter must write CSV output")
-    other_id = stable_node_id(PRJ, "requirement", "The importer must validate schemas")
-    e.ingest_github(PRJ, "issues", "i3", _issue(
+    old_id = _confirm(e, original, "requirement",
+                      "The exporter must write CSV output")["confirmation_id"]
+    other_id = _confirm(e, unrelated, "requirement",
+                        "The importer must validate schemas")["confirmation_id"]
+    replacement = e.ingest_github(PRJ, "issues", "i3", _issue(
         1, "The exporter must write JSON output.", action="edited"))
+    new_id = _confirm(e, replacement, "requirement",
+                      "The exporter must write JSON output")["confirmation_id"]
     fired = e.graph.current(PRJ, "invalidation")
     expected_targets = {old_id}
     actual_targets = {i["data"]["target_node_id"] for i in fired}
@@ -184,9 +212,7 @@ def changed_requirement():
         ("changed requirement is invalidated",
          e.graph.get(old_id)["status"] == "invalidated"),
         ("replacement requirement is active",
-         e.graph.get(stable_node_id(
-             PRJ, "requirement", "The exporter must write JSON output"))
-         ["status"] == "active"),
+         e.graph.get(new_id)["status"] == "active"),
         ("unrelated requirement untouched",
          e.graph.get(other_id)["status"] == "active"),
         ("exactly the expected invalidation fired",
@@ -201,19 +227,27 @@ def changed_requirement():
 
 
 def stale_architecture_document():
-    """Newer, stronger evidence wins; the conflict stays inspectable."""
+    """An approved prior architecture conflicts with a newer approved decision.
+
+    Both approvals have equal local authority (ADR-126): the conflict remains
+    contested, rather than source prose silently outranking an approval.
+    """
     e = _engine()
-    e.ingest_agent_trace(PRJ, session_id=None, span_id="doc1", payload={
+    document = e.ingest_agent_trace(PRJ, session_id=None, span_id="doc1", payload={
         "message": "Per ARCHITECTURE.md we decided to use MongoDB for storage."})
-    e.ingest_human_decision(PRJ, actor="lead",
-                            decision="We decided to use PostgreSQL for storage.")
+    mongo_receipt = _confirm(e, document, "decision", "use MongoDB for storage")
+    decision = e.ingest_human_decision(PRJ, actor="lead",
+                                      decision="We decided to use PostgreSQL for storage.")
+    postgres_receipt = _confirm(e, decision, "decision", "use PostgreSQL for storage")
     conflicts = [ed for n in e.graph.current(PRJ)
                  for ed in e.graph.out_edges(n["node_id"], {"contradicts"})]
-    mongo = [n for n in e.graph.current(PRJ)
-             if "mongodb" in (n["data"].get("statement") or "").lower()]
-    postgres = [n for n in e.graph.current(PRJ)
-                if "postgresql" in (n["data"].get("statement") or "").lower()]
+    mongo = [e.graph.get(mongo_receipt["confirmation_id"])]
+    postgres = [e.graph.get(postgres_receipt["confirmation_id"])]
     checks = [
+        ("both decisions have distinct explicit confirmation receipts",
+         mongo_receipt["operation"] == postgres_receipt["operation"] == "confirm"
+         and mongo_receipt["event_id"] != postgres_receipt["event_id"]
+         and mongo_receipt["confirmation_id"] != postgres_receipt["confirmation_id"]),
         ("conflict is exposed as a contradicts edge", bool(conflicts)),
         ("stale doc claim demoted",
          any(n["status"] in ("superseded", "uncertain") for n in mongo)),
@@ -221,6 +255,8 @@ def stale_architecture_document():
          any(n["status"] in ("accepted", "active") for n in postgres)),
         ("history of the demoted claim preserved",
          all(len(e.graph.history(n["node_id"])) >= 2 for n in mongo)),
+        ("equal local approvals remain contested rather than silently ranked",
+         any((edge.get("data") or {}).get("contested") for edge in conflicts)),
     ]
     e.close()
     return {"name": "stale_architecture_document", "checks": checks, "metrics": {}}
@@ -229,13 +265,14 @@ def stale_architecture_document():
 def dependency_drift():
     """Manifest change invalidates dependent assumptions, nothing else."""
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(
+    dependent = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "We assume the requests library version stays below 3."))
-    e.ingest_github(PRJ, "issues", "i2", _issue(
+    unrelated = e.ingest_github(PRJ, "issues", "i2", _issue(
         2, "We assume the office coffee machine works."))
-    dep_id = stable_node_id(PRJ, "assumption",
-                            "the requests library version stays below 3")
-    coffee_id = stable_node_id(PRJ, "assumption", "the office coffee machine works")
+    dep_id = _confirm(e, dependent, "assumption",
+                      "the requests library version stays below 3")["confirmation_id"]
+    coffee_id = _confirm(e, unrelated, "assumption",
+                         "the office coffee machine works")["confirmation_id"]
     e.ingest_github(PRJ, "push", "p1", _push(
         [{"id": "b" * 40, "message": "bump requests to 3.0", "added": [],
           "modified": ["requirements.txt"], "removed": [],
@@ -263,10 +300,12 @@ def conflicting_human_decisions():
     instructions; the system must ABSTAIN or REQUEST RESOLUTION according to
     authority policy — not silently pick a winner (ADR-008, ADR-017)."""
     e = _engine()
-    e.ingest_human_decision(PRJ, actor="maintainer-a",
-                            decision="We will use tabs for indentation in this repo.")
-    e.ingest_human_decision(PRJ, actor="maintainer-b",
-                            decision="We will use spaces for indentation in this repo.")
+    tabs = e.ingest_human_decision(PRJ, actor="maintainer-a",
+                                   decision="We will use tabs for indentation in this repo.")
+    _confirm(e, tabs, "decision", "tabs for indentation in this repo")
+    spaces = e.ingest_human_decision(PRJ, actor="maintainer-b",
+                                     decision="We will use spaces for indentation in this repo.")
+    _confirm(e, spaces, "decision", "spaces for indentation in this repo")
     conflicts = [ed for n in e.graph.current(PRJ)
                  for ed in e.graph.out_edges(n["node_id"], {"contradicts"})]
     decisions = e.graph.current(PRJ, "decision")
@@ -305,12 +344,12 @@ def stale_capsule_vs_newer_invalidation():
     found.
     """
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(
+    report = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "We assume the upstream feed is ordered by timestamp.\n"
            "The exporter must stream rows instead of buffering."))
-    assumption = next(
-        n for n in e.graph.current(PRJ, "assumption")
-        if "ordered by timestamp" in n["data"].get("statement", ""))
+    assumption_id = _confirm(e, report, "assumption",
+                             "the upstream feed is ordered by timestamp")["confirmation_id"]
+    _confirm(e, report, "requirement", "The exporter must stream rows instead of buffering")
     session = e.graph.put_node(entity_type="session", tenant_id=e.tenant_id,
                                project_id=PRJ, status="ended",
                                data={"model": "model-a", "runtime": "rt-a"})
@@ -324,7 +363,7 @@ def stale_capsule_vs_newer_invalidation():
 
     # The target then discovers the assumption was wrong.
     fired = e.invalidation.fire(
-        tenant_id=e.tenant_id, project_id=PRJ, target_node_id=assumption.id,
+        tenant_id=e.tenant_id, project_id=PRJ, target_node_id=assumption_id,
         trigger_type="contradictory_evidence",
         reason="the feed turned out to be unordered")
     live_open = {item["node_id"] for item in
@@ -369,11 +408,14 @@ def stale_capsule_vs_newer_invalidation():
 def model_migration():
     """Portable state preserves objectives/constraints/decisions/evidence."""
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(
+    report = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "The service must acknowledge webhooks within two seconds.\n"
            "We assume GitHub delivers each event at least once."))
-    e.ingest_human_decision(PRJ, actor="lead",
-                            decision="We decided to use PostgreSQL for storage.")
+    _confirm(e, report, "requirement", "The service must acknowledge webhooks within two seconds")
+    _confirm(e, report, "assumption", "GitHub delivers each event at least once")
+    decision = e.ingest_human_decision(PRJ, actor="lead",
+                                      decision="We decided to use PostgreSQL for storage.")
+    _confirm(e, decision, "decision", "use PostgreSQL for storage")
     session = e.graph.put_node(entity_type="session", tenant_id=e.tenant_id,
                                project_id=PRJ, status="ended",
                                data={"model": "model-a", "runtime": "rt-a"})
@@ -416,9 +458,10 @@ def model_migration():
 def partial_tool_failure():
     """Verified artifacts preserved; recovery names the exact boundary."""
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(
+    report = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "- [ ] migrate the database\n- [ ] deploy the service"))
-    migrate_id = stable_node_id(PRJ, "task", "migrate the database")
+    migrate_id = _confirm(e, report, "task", "migrate the database")["confirmation_id"]
+    deploy_id = _confirm(e, report, "task", "deploy the service")["confirmation_id"]
     e.complete_task(PRJ, migrate_id,
                     proof=_executed_proof(e, migrate_id, "migration done"))
     e.memory.checkpoint(tenant_id=e.tenant_id, project_id=PRJ, session_id=None,
@@ -443,6 +486,8 @@ def partial_tool_failure():
          any("deploy the service" in s for s in rp["rerun_instructions"])),
         ("remaining work excludes the verified task",
          all(t["node_id"] != migrate_id for t in rp["remaining_tasks"])),
+        ("remaining work retains the failed task",
+         any(t["node_id"] == deploy_id for t in rp["remaining_tasks"])),
     ]
     reused = 1 if migrate_id in kept else 0
     e.close()
@@ -453,8 +498,8 @@ def partial_tool_failure():
 def misleading_success_claim():
     """Completion claim without authoritative proof must be rejected."""
     e = _engine()
-    e.ingest_github(PRJ, "issues", "i1", _issue(1, "- [ ] ship the feature"))
-    task_id = stable_node_id(PRJ, "task", "ship the feature")
+    report = e.ingest_github(PRJ, "issues", "i1", _issue(1, "- [ ] ship the feature"))
+    task_id = _confirm(e, report, "task", "ship the feature")["confirmation_id"]
     false_completions = 0
     # 1: bare claim, no proof
     try:

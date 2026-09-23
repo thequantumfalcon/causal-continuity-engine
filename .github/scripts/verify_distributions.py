@@ -96,7 +96,8 @@ SDIST_GENERATED_FILES = {
     f"{EGG_INFO}/top_level.txt",
 }
 # Selected shipped test modules, chosen to cover the installed
-# CLI, the store and graph, trust, conformance vectors and the MCP server
+# CLI, store and graph, trust, conformance, authority/scoped-packet contracts
+# and bounded CLI/HTTP/MCP transports
 # against the artifact itself. The rest ship as audit evidence a reader can
 # run, not as checks this gate executes.
 WHEEL_BEHAVIOR_TESTS = (
@@ -107,6 +108,8 @@ WHEEL_BEHAVIOR_TESTS = (
     "tests/test_cli.py",
     "tests/test_conformance.py",
     "tests/test_mcp_server.py",
+    "tests/test_installed_contracts.py",
+    "tests/test_installed_packet_bounds.py",
 )
 WHEEL_EVIDENCE_TREES = {
     "benchmarks": {".py"},

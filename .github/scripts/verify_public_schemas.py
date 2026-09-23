@@ -19,6 +19,21 @@ RAW_ORIGIN = (
 TAG_RE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+\Z")
 SCHEMA_VERSION_RE = re.compile(r"cce\.[a-z][a-z0-9-]*\.v[1-9][0-9]*\Z")
 MAX_SCHEMA_BYTES = 2 * 1024 * 1024
+SCHEMA_RELEASES = {
+    "cce.anchor.v1.json": "v0.1.0",
+    "cce.capsule.v1.json": "v0.1.0",
+    "cce.continuity-receipt.v1.json": "v0.1.0",
+    "cce.event.v1.json": "v0.1.0",
+    "cce.proof-predicate.v1.json": "v0.1.0",
+    "cce.proof.v1.json": "v0.1.0",
+    "cce.recovery.v1.json": "v0.1.0",
+    "cce.resume.v1.json": "v0.1.0",
+    "cce.capsule.v2.json": "v0.2.0",
+    "cce.continuity-receipt.v2.json": "v0.2.0",
+    "cce.proof-predicate.v2.json": "v0.2.0",
+    "cce.proof.v2.json": "v0.2.0",
+    "cce.resume.v2.json": "v0.2.0",
+}
 
 
 def _runtime_schema_versions(root: Path) -> dict[str, str]:
@@ -61,8 +76,11 @@ def _runtime_schema_versions(root: Path) -> dict[str, str]:
 def _schema_public_urls(root: Path) -> dict[str, str]:
     names = sorted(
         f"{version}.json" for version in _runtime_schema_versions(root).values())
+    unreviewed = sorted(set(names) - SCHEMA_RELEASES.keys())
+    if unreviewed:
+        raise SystemExit("unreviewed schema release identity: " + ", ".join(unreviewed))
     return {
-        name: f"{RAW_ORIGIN}/v0.1.0/schemas/{name}"
+        name: f"{RAW_ORIGIN}/{SCHEMA_RELEASES[name]}/schemas/{name}"
         for name in names
     }
 
@@ -147,8 +165,8 @@ def verify(
             "public schema inventory differs from the reviewed runtime contract")
 
     # A schema TypeURI identifies that schema version, not the package release
-    # currently carrying it. Later package tags must continue to verify the
-    # immutable v0.1.0 URLs instead of silently repointing the v1 identities.
+    # currently carrying it. Each reviewed filename retains its assigned release
+    # independently of both the package tag and the payload's claimed $id.
     expected_urls = set(schema_public_urls.values())
     observed_ids: set[str] = set()
     for name in schema_names:
@@ -171,7 +189,7 @@ def verify(
                 + ", ".join(sorted(unexpected_urls)))
 
         # Fetch the committed identity itself. The explicit map above freezes
-        # today's v1 contract; this variable makes the deciding path follow the
+        # each reviewed identity; this variable makes the deciding path follow the
         # schema's checked-in $id rather than the current package tag.
         remote_bytes = fetch(committed_url)
         if not isinstance(remote_bytes, bytes):

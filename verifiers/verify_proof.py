@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent verifier for cce.proof.v1 envelopes.
+"""Independent verifier for cce.proof.v2 envelopes.
 
 Written against SPEC.md. Standard library only. Imports NOTHING from `causal_continuity_engine`
 by design — if it did, it would share whatever the reference implementation
@@ -35,7 +35,7 @@ import stat
 import sys
 from datetime import datetime
 
-SCHEMA = "cce.proof.v1"
+SCHEMA = "cce.proof.v2"
 MAX_PATH_PATTERNS = 128
 MAX_PATTERN_BYTES = 4096
 MAX_GLOB_MATCHES = 4096
@@ -368,6 +368,7 @@ def check_shape(envelope) -> None:
                 subject["digest"]):
             raise SpecError("E_SHAPE", f"subject[{i}].digest")
 
+    obligation_tasks = set()
     for i, item in enumerate(envelope["inputs"]):
         if not isinstance(item, dict) or set(item) != INPUT_FIELDS:
             raise SpecError("E_SHAPE", f"inputs[{i}] fields")
@@ -377,6 +378,13 @@ def check_shape(envelope) -> None:
         if not isinstance(item["digest"], str) or not DIGEST.fullmatch(
                 item["digest"]):
             raise SpecError("E_SHAPE", f"inputs[{i}].digest")
+        if item["name"].startswith("continuity:obligations:"):
+            target = item["name"].removeprefix("continuity:obligations:")
+            if not PUBLIC_ID.fullmatch(target) or item["kind"] != "continuity":
+                raise SpecError("E_SHAPE", f"inputs[{i}] obligation syntax")
+            if target in obligation_tasks:
+                raise SpecError("E_SHAPE", "duplicate obligation commitment")
+            obligation_tasks.add(target)
 
     for i, item in enumerate(envelope["execution"]):
         if not isinstance(item, dict):
@@ -498,6 +506,11 @@ def check_shape(envelope) -> None:
                 isinstance(node_id, str) and PUBLIC_ID.fullmatch(node_id)
                 for node_id in value):
             raise SpecError("E_SHAPE", f"continuity_links.{field}")
+    tasks = links.get("task_ids", [])
+    if len(tasks) != len(set(tasks)):
+        raise SpecError("E_SHAPE", "duplicate typed task target")
+    if obligation_tasks != set(tasks):
+        raise SpecError("E_SHAPE", "obligation commitments do not match typed task targets")
 
     context = envelope["evidence_context"]
     if set(context) - EVIDENCE_CONTEXT_FIELDS:
@@ -1026,7 +1039,7 @@ def _expand_paths(patterns: list[str]) -> list[str]:
 
 
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(description="Verify cce.proof.v1 envelopes.")
+    p = argparse.ArgumentParser(description="Verify cce.proof.v2 envelopes.")
     p.add_argument(
         "paths",
         nargs="+",

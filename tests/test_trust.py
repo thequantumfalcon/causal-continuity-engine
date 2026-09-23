@@ -23,6 +23,7 @@ from causal_continuity_engine.proof import (
     verify_envelope,
 )
 from causal_continuity_engine.verifiers import VerifierRunner, VerifierSpec
+from tests.authority_helpers import confirmed_task
 
 TEN, PRJ = "ten_t", "prj_t"
 
@@ -350,9 +351,7 @@ class TestFalseCompletionGate:
         e.close()
 
     def _task(self, engine):
-        return engine.graph.put_node(
-            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-            data={"title": "implement feature"}, status="open")
+        return confirmed_task(engine, PRJ, text="implement the feature")
 
     def test_claim_without_proof_rejected(self, engine):
         task = self._task(engine)

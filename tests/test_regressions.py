@@ -389,12 +389,19 @@ class TestF6OutsiderCannotMandate:
         blob = str(pkt["authority"])
         assert "skip the reconciliation" not in blob
 
-    def test_maintainer_requirement_is_honored(self, engine):
+    def test_maintainer_requirement_needs_local_confirmation(self, engine):
+        from tests.authority_helpers import confirm_proposal
+
         r = engine.ingest_github(PRJ, "issue_comment", "d2", self._comment(
             "The deploy job must run the reconciliation tests.", "MEMBER", cid=2))
-        assert any(c["kind"] == "requirement" for c in r["created"])
+        assert engine.graph.current(PRJ, "requirement") == []
+        proposal, = [engine.graph.get(c["node_id"]) for c in r["created"]
+                     if engine.graph.get(c["node_id"])["data"].get(
+                         "proposed_kind") == "requirement"]
+        confirmation = confirm_proposal(engine, PRJ, proposal["node_id"])
         reqs = engine.graph.current(PRJ, "requirement")
-        assert reqs and reqs[0]["authority"] == "human_intent"
+        assert [r["node_id"] for r in reqs] == [confirmation.id]
+        assert engine.graph.may_mandate(reqs[0])
 
     def test_outsider_cannot_outrank_maintainer_on_the_same_statement(self, engine):
         engine.ingest_github(PRJ, "issue_comment", "d1", self._comment(

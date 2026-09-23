@@ -34,6 +34,7 @@ from causal_continuity_engine.evidence import grade_evidence, run_mutation_probe
 from causal_continuity_engine.policy import PolicyEngine
 from causal_continuity_engine.store import GENESIS, AnchorExportError, Store
 from causal_continuity_engine.verifiers import VerifierRunner, VerifierSpec
+from tests.authority_helpers import confirmed_task
 
 TENANT = "ten_round14"
 PROJECT = "prj_round14"
@@ -117,10 +118,8 @@ def _proof_engine(tmp_path: Path, *, artifact: str = "deliverable.txt"):
     return engine
 
 
-def _task(engine: Engine, name: str, *, criticality: str = "medium"):
-    return engine.graph.put_node(
-        entity_type="task", tenant_id=TENANT, project_id=PROJECT,
-        status="open", criticality=criticality, data={"title": name})
+def _task(engine: Engine, name: str):
+    return confirmed_task(engine, PROJECT, text="Complete the " + name + " work")
 
 
 def _proof(engine: Engine, task_id: str):
@@ -133,10 +132,22 @@ def _proof(engine: Engine, task_id: str):
 def test_later_proof_cannot_bypass_pending_or_critical_invalidation(tmp_path):
     engine = _proof_engine(tmp_path)
     try:
-        blocked = _task(engine, "blocked", criticality="high")
+        blocked = _task(engine, "blocked")
+        # Checklist confirmations retain their producer's medium criticality.
+        # Keep the high-risk invalidation fixture on a privileged assumption
+        # with an actual dependency instead of altering confirmed task metadata.
+        high_risk = engine.graph.put_node(
+            entity_type="assumption", tenant_id=TENANT, project_id=PROJECT,
+            status="active", criticality="high", data={
+                "statement": "The release channel remains available",
+                "authority_scope": {"kind": "tasks", "task_ids": [blocked.id]}})
+        engine.graph.put_edge(
+            edge_type="depends_on", src_id=blocked.id, dst_id=high_risk.id,
+            tenant_id=TENANT, project_id=PROJECT)
+        assert engine.graph.get(high_risk.id)["criticality"] == "high"
         pending = engine.invalidation.fire(
             tenant_id=TENANT, project_id=PROJECT,
-            target_node_id=blocked.id,
+            target_node_id=high_risk.id,
             trigger_type="contradictory_evidence", trigger_confidence=0.2)
         assert pending["status"] == "pending_confirmation"
         assert engine.graph.get(blocked.id)["status"] == "open"

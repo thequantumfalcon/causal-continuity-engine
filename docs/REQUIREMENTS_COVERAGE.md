@@ -1,5 +1,11 @@
 # Requirement Coverage — CCE reference implementation
 
+This matrix describes the local 0.2.0 candidate, not a published release or a
+claim that its artifact/platform gates have run. Processor 1.9.0 refuses older
+projections: preserve those stores, re-ingest retained inputs into a distinct
+current store/project, then review and explicitly confirm new proposals.
+Payloads already removed by retention cannot be reconstructed (ADR-114, ADR-126).
+
 > **Public vocabulary.** Every identifier in this matrix is defined in
 > [REQUIREMENTS.md](REQUIREMENTS.md). The mechanically checked subset lives in
 > [CAPABILITIES.md](CAPABILITIES.md), which is generated from
@@ -49,9 +55,9 @@ Status legend:
 | AD-001 | implemented | pattern extraction from issues/PRs/comments/decisions |
 | AD-002 | partial | implicit assumptions only via dependency/scope heuristics; LLM adapter is the plug point (ADR-012) |
 | AD-003 | implemented | scope/criticality/confidence/authority/valid-time on every node |
-| AD-004 | implemented | normalized-statement stable ids; occurrences become versions |
-| AD-005 | implemented | resolve API (accept/reject/narrow/supersede) versioned |
-| AD-006 | implemented | source typing by author association (outsiders = untrusted, cannot mandate) + injection quarantine; bench `prompt_injection`, `TestF6OutsiderCannotMandate` |
+| AD-004 | implemented | current prose proposals use `cce.proposal-id.v1`, binding tenant/project, canonical source event, source identity/field, proposed kind and exact retained text; confirmation has a distinct canonical-decision identity. Older normalized statement identities retain compatibility checks but are not current proposal authority (ADR-126; `test_authority_extraction.py`, `test_authority_producer.py`). |
+| AD-005 | implemented | status resolution is versioned but cannot grant prose authority. Owner-local `record_authority_decision` and `authority --request FILE` provide closed confirm/revoke/replace_scope operations with canonical operand checks; HTTP/MCP expose no confirmation producer (ADR-126). |
+| AD-006 | implemented | source typing and injection quarantine precede extraction. All prose, including OWNER and human-decision prose, proposes rather than mandates; explicit local confirmation is required (`test_authority_extraction.py`, `test_authority_consumers.py`; ADR-126). |
 | AD-007 | implemented | calibration by source authority + abstention gate |
 | AD-008 | partial | assumes/depends_on edges supported; automatic linking only where extraction sees both ends |
 
@@ -59,12 +65,12 @@ Status legend:
 
 | ID | Status | Evidence |
 |---|---|---|
-| CI-001 | implemented | 8 trigger types incl. changed_requirement, failed_check, dependency_drift; a requirement stated by several sources is retired only when the last source retracts it (ADR-017) |
+| CI-001 | implemented | 8 trigger types incl. changed_requirement, failed_check, dependency_drift. Current confirmations bind an exact source statement: its admitted withdrawal invalidates that confirmation and closes validity. Confirmed requirement/constraint withdrawal uses changed_requirement; other confirmed kinds use expired_approval (`test_authority_withdrawal_classification.py`; ADR-126). Historical merged-statement last-source behavior is recorded in ADR-017. |
 | CI-002 | implemented | typed-edge propagation with strength decay + budgets |
 | CI-003 | implemented | deterministic matrix `classify()` |
 | CI-004 | implemented | minimal causal path + evidence + recommended action |
 | CI-005 | implemented | `pending_confirmation` applies no silent L0 rewrite. Completion also refuses any task touched by an unresolved open/pending invalidation and refuses every task under a critical unresolved invalidation, even for later proofs; the affected set still depends on the typed graph and classification policy (ADR-089). |
-| CI-006 | implemented | persisted packet watermark (survives process restarts; `TestF5PacketWatermarkPersists`); on-demand recompute |
+| CI-006 | implemented | persisted project/task-scope packet watermarks survive process restarts; packet membership and final watermark admission share the selected validity instant. Later freshness checks use current time; clock-only changes and broad project safety changes can stale a scope (`test_task_packets.py`, `test_packet_validity_frontier.py`; ADR-128, ADR-130). |
 | CI-007 | implemented | 3 resolution modes with lineage |
 | CI-008 | implemented | `metrics()` counters + ContinuityBench precision/recall |
 
@@ -72,20 +78,20 @@ Status legend:
 
 | ID | Status | Evidence |
 |---|---|---|
-| MIG-001 | implemented | `ResumeComposer.compose` emits target, mission, authority, accepted-decision, verified-progress, invalidation, assumption, open-work, environment, trust, lineage, evidence, recent-context, and omission sections; closed schema `cce.resume.v1` |
-| MIG-002 | implemented | budget trim with explicit omissions; L0 never dropped. Capsules commit the full semantic control basis before trimming, so presentation omissions do not manufacture migration drift and real state changes remain detectable; this does not establish model-semantic equivalence (ADR-094). |
-| MIG-003 | implemented | signed capsules, digest tamper detection |
+| MIG-001 | implemented | Engine emits closed `cce.resume.v2` with explicit project or singleton-task scope, complete applicable mandatory controls, their digest, work, policy/trust state and contextual sections. Quarantine or budget pressure cannot produce a signed partial-success packet (`test_task_packets.py`, `test_packet_failure_boundaries.py`; ADR-128). |
+| MIG-002 | implemented | only optional context is trimmed, with disclosed omissions; mandatory controls/work/policy/trust remain complete. `max_response_bytes` bounds the final selected representation, including CLI/HTTP/MCP wrappers: default 131072, accepted integers 1–1048576. Oversized mandatory state refuses before signing or success bookkeeping (`test_packet_byte_bounds.py`, `test_packet_byte_transports.py`; ADR-129). Capsules retain the pre-trim semantic basis (ADR-094); this does not establish model-semantic equivalence or a capsule-outer-byte bound. |
+| MIG-003 | implemented | signed `cce.capsule.v2` with digest tamper detection and project-only export/challenge/import; inner/outer scope binding prevents relabeling a task packet as a project capsule. Continuity receipts are likewise project-only v2 (ADR-128; `test_capsule_packet_clock.py`, `test_packet_scope_receipts.py`). |
 | MIG-004 | implemented | migrated_from lineage edges + source identities |
 | MIG-005 | implemented | challenge step ENFORCES a policy-engine ceiling on failure (`test_failed_migration_challenge_enforces_ceiling`) |
 | MIG-006 | contract-only | comparison harness exists (bench scenario); multi-adapter CSR delta needs real model adapters |
-| MIG-007 | implemented | resume by issue/branch/task target |
+| MIG-007 | implemented | explicit `task_id` selects a live confirmed task's packet scope; issue/branch/descriptive target metadata does not select authority. Omitting the task selector requests project scope (`test_task_packets.py`; ADR-128). |
 | MIG-008 | implemented | hidden-reasoning keys stripped; schema forbids them |
 
 ## Trust (PA, EV, AUT, GPP)
 
 | ID | Status | Evidence |
 |---|---|---|
-| PA-001 | implemented | `ProofEnvelope` builds the closed action, subject, input, execution, policy, verification, and continuity record; conformance shape tests |
+| PA-001 | implemented | `cce.proof.v2` binds the closed action, subject, input, execution, policy, verification and continuity record, with exactly one complete-obligation commitment per distinct typed task. Historical v1 schemas remain unchanged but v1 proofs are not current spendable evidence (`test_proof_obligation_wire.py`; ADR-127). |
 | PA-002 | implemented | canonical content and artifact digests in `proof.py`; tamper and reseal vectors |
 | PA-003 | implemented | tenant HMAC and one-time Lamport signers; authenticity requires an out-of-band key binding (ADR-013, ADR-031, ADR-057) |
 | PA-004 | implemented | signed continuity links plus tenant/project/subject checks and project-scoped single-use proof spends (ADR-018, `TestR5ProofBinding`) |
@@ -95,7 +101,7 @@ Status legend:
 | EV-002 | implemented | command, unit-test, integration-test, lint, type-check, build, file-digest, and value-oracle adapters exercised in verifier tests |
 | EV-003 | implemented | `check_run`/`workflow_run` -> verification nodes. An external pass is current only for the current head under the same monotonic tracked-ref revision and a non-uncertain frontier; missing, changed, deleted, or out-of-order ref observations fail closed without claiming complete Git ancestry (ADR-090). |
 | EV-004 | implemented | Non-substitutable **only when pinned** with a command (ADR-024): a bare-name entry is satisfiable by a command the claimant chooses, caps the evidence grade at D, and is refused by the default `min_evidence_grade: C`. Self-asserted results never satisfy a required verifier (ADR-019). |
-| EV-005 | implemented | Wired into the completion gate (ADR-043): attestation records declared artifact digests as signed inputs, and `complete_task` refuses changed deliverables or changed linked continuity state. Every declared artifact route and nested descendant must remain a physical path under the work tree; symlinks, junctions, and reparse points fail closed. This is not a kernel sandbox and cannot eliminate privileged concurrent filesystem mutation (ADR-096). Unresolved invalidations are current control state under CI-005, not merely a proof-age test (ADR-089). |
+| EV-005 | implemented | Wired into the completion gate (ADR-043): attestation records declared artifact digests as signed inputs, and `complete_task` refuses changed deliverables, linked continuity state, or the complete applicable obligation/policy basis, including unlinked controls (ADR-127). Every declared artifact route and nested descendant must remain a physical path under the work tree; symlinks, junctions, and reparse points fail closed. This is not a kernel sandbox and cannot eliminate privileged concurrent filesystem mutation (ADR-096). Unresolved invalidations are current control state under CI-005, not merely a proof-age test (ADR-089). |
 | EV-006 | partial | Timeouts, output caps, a scrubbed env with a named threat per entry, and an indirection guard. NOT kernel isolation, and NOT a defence against in-process forgery — a test must import the code under test, so the subject can rewrite the runner's report (ADR-025). |
 | EV-007 | implemented | Mutation probes establish that a check binds to a declared deliverable (ADR-027). A mechanical LOWER BOUND: never evidence that the check tests the right property. Per-file line coverage is still not computed. |
 | AUT-001 | implemented | levels 0–4 are explicit; new projects default to observation-only |
@@ -148,7 +154,7 @@ Status legend:
 | SEC-002 | partial | tenant scoping on every row + project-scoped queries; RLS needs Postgres |
 | SEC-003 | implemented | capture modes and secret screening run before persistence; raw-source and stored-byte commitments stay distinct (ADR-016, ADR-079) |
 | SEC-004 | implemented | extraction reads only the persisted redacted payload, and quarantine is enforced at every memory and packet exit (`TestR3RedactionBeforeExtraction`) |
-| SEC-005 | partial | approvals and sensitive transitions are audited; service-layer RBAC roles remain deployment work |
+| SEC-005 | partial | explicit authority decisions and sensitive transitions are audited. Owner-local confirmation relies on the OS/store capability, not independent human authentication or same-account isolation; service-layer RBAC remains deployment work (ADR-126). |
 | SEC-006 | partial | deletion and retention sweeps preserve audit metadata and integrity commitments; service retention policy remains deployment work |
 | SEC-007 | implemented | Triggers refuse mutation; event and audit entry hashes bind every immutable canonical field, including the raw-source and persisted-byte commitments, and retained payload bytes are checked against the latter. Anchor input is a closed, typed, internally consistent v1 document with optional tenant/project binding and clean malformed-input failure (ADR-095). The chain detects rewrites even with triggers dropped; an anchor detects tail truncation **only if published somewhere the operator does not control**, and CCE ships no publication channel (ADR-028, ADR-079). |
 | SEC-008 | partial | see EV-006 |

@@ -10,6 +10,9 @@ Security invariants (AD-006, R3):
     about intent, never privileged instruction.
   * Statements from untrusted content can never carry authority above
     'untrusted_content' regardless of their wording.
+  * Every prose requirement, constraint, decision, assumption and task is a
+    claim with its proposed kind. Source standing cannot replace an explicit
+    recorded confirmation; the legacy permissive setting is refused.
   * Imperative policy-override wording in untrusted content is flagged as
     suspected prompt injection and quarantined, never promoted.
 
@@ -28,7 +31,7 @@ from .core import canonical_json, strict_json_loads
 from .ontology import AUTHORITY_RANK, authority_rank
 
 EXTRACTOR_NAME = "cce-deterministic"
-EXTRACTOR_VERSION = "1.3.0"
+EXTRACTOR_VERSION = "1.4.0"
 
 
 @dataclass
@@ -132,7 +135,7 @@ _INJECTION_PATTERNS = re.compile(
     re.I,
 )
 
-# Sources whose text cannot mandate (requirements demoted to claims).
+# Sources whose provenance also records the untrusted-source demotion reason.
 _UNTRUSTED_SOURCES = {"untrusted_content", "agent_inference"}
 # Sources screened for prompt injection: everything an outsider can author.
 # Issue/PR bodies (human_intent) are the primary R3 injection channel.
@@ -148,12 +151,16 @@ class DeterministicExtractor:
 
     def extract(self, text: str, *, source_authority: str,
                 scope: dict | None = None,
-                prose_may_mandate: bool = True) -> ExtractionResult:
+                prose_may_mandate: bool = False) -> ExtractionResult:
         if not isinstance(text, str):
             raise ValueError("extraction text must be a string")
         if (not isinstance(source_authority, str)
                 or source_authority not in AUTHORITY_RANK):
             raise ValueError("source_authority must be a recognized authority")
+        if not isinstance(prose_may_mandate, bool):
+            raise ValueError("prose_may_mandate must be a boolean")
+        if prose_may_mandate:
+            raise ValueError("prose_may_mandate must be false; prose requires confirmation")
         if scope is not None and not isinstance(scope, dict):
             raise ValueError("extraction scope must be an object or null")
         if scope is not None:
@@ -170,12 +177,6 @@ class DeterministicExtractor:
         if not text or not text.strip():
             return result
         untrusted = source_authority in _UNTRUSTED_SOURCES
-        # A project may decide that no free prose mandates anything, whatever
-        # its author's standing. Published measurements put rule-based
-        # requirements extraction around F1 0.14, so a project that wants its
-        # authority declared rather than inferred can say so and have every
-        # prose match recorded as a claim instead.
-        prose_demoted = not prose_may_mandate
         screened = source_authority in _INJECTION_SCREENED
 
         # Interpret security markers and extraction patterns over the same
@@ -287,11 +288,13 @@ class DeterministicExtractor:
                 item.meta["quarantine_reason"] = (
                     "extracted from a text block that attempted to override "
                     "policy; the whole block is treated as hostile")
-            # AD-006: untrusted text may propose, never mandate.
-            if (untrusted or prose_demoted) and kind in (
-                    "requirement", "constraint", "decision"):
+            # Detection proposes a kind; even a trusted source does not record
+            # the separate operator decision required to make it authoritative.
+            if kind in ("requirement", "constraint", "decision", "assumption"):
                 item.kind = "claim"
                 item.meta["demoted_from"] = kind
+                item.meta["proposed_kind"] = kind
+                item.meta["needs_confirmation"] = True
                 item.meta["demotion_reason"] = (
                     "untrusted source cannot mandate" if untrusted
                     else "project policy requires declared authority; prose "
@@ -314,16 +317,17 @@ class DeterministicExtractor:
             # ADR-042 applies to EVERY extractor, not only the pattern loop.
             # A checklist under an override attempt is the worst case: the
             # payload arrives as actionable open work rather than as prose.
-            item_kind = "claim" if untrusted or prose_demoted else "task"
-            demotion = ({
+            demotion = {
                 "demoted_from": "task",
+                "proposed_kind": "task",
+                "needs_confirmation": True,
                 "demotion_reason": (
                     "untrusted source cannot mandate" if untrusted
                     else "project policy requires declared authority; prose "
                          "may propose but never mandate"),
-            } if item_kind == "claim" else {})
+            }
             result.items.append(Extracted(
-                kind=item_kind, statement=statement,
+                kind="claim", statement=statement,
                 span=text[offsets[m.start()]:offsets[m.end()]].strip(),
                 confidence=_calibrate(0.85, source_authority),
                 criticality="medium", scope=scope,

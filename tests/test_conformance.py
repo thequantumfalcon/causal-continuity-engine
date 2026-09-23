@@ -45,7 +45,7 @@ from tests.schema_validation import (
 ROOT = Path(__file__).resolve().parent.parent
 VECTORS = ROOT / "vectors"
 VERIFIER = ROOT / "verifiers" / "verify_proof.py"
-PROOF_SCHEMA = ROOT / "schemas" / "cce.proof.v1.json"
+PROOF_SCHEMA = ROOT / "schemas" / "cce.proof.v2.json"
 TIMESTAMP_KEY = bytes.fromhex(
     "7cce0000000000000000000000000000000000000000000000000000000000ff")
 
@@ -265,9 +265,9 @@ def test_invalid_dominates_in_a_batch(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "body", ['{"schema_version":"cce.proof.v1","status":"draft",'
+    "body", ['{"schema_version":"cce.proof.v2","status":"draft",'
              '"status":"verified"}',
-             '{"schema_version":"cce.proof.v1","confidence":NaN}'])
+             '{"schema_version":"cce.proof.v2","confidence":NaN}'])
 def test_independent_verifier_rejects_ambiguous_or_nonfinite_json(tmp_path, body):
     path = tmp_path / "ambiguous.json"
     path.write_text(body, encoding="utf-8")
@@ -537,7 +537,7 @@ def test_independent_verifier_rejects_descriptor_change_while_reading(
         tmp_path, monkeypatch):
     module = _standalone_verifier_module()
     path = tmp_path / "proof.json"
-    path.write_text('{"schema_version":"cce.proof.v1"}', encoding="utf-8")
+    path.write_text('{"schema_version":"cce.proof.v2"}', encoding="utf-8")
     native_fstat = module["os"].fstat
     calls = 0
 

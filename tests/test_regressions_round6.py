@@ -12,6 +12,7 @@ import sys
 import pytest
 
 from causal_continuity_engine.engine import Engine
+from tests.authority_helpers import confirm_proposal, confirmed_task
 
 PRJ = "prj_r6"
 REPOSITORY_ID = 6006
@@ -40,8 +41,7 @@ def _project(tmp_path, artifacts=("deliverable.py",)):
     e.create_project("p", project_id=PRJ, config=cfg)
     e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
     e.policy.set_project_config(PRJ, cfg)
-    task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                            project_id=PRJ, data={"title": "ship"}, status="open")
+    task = confirmed_task(e, PRJ, text="ship the deliverable")
     asm = e.graph.put_node(entity_type="assumption", tenant_id=e.tenant_id,
                            project_id=PRJ, data={"statement": "schema stable"},
                            status="active", criticality="critical")
@@ -140,8 +140,7 @@ class TestR6FingerprintMustBeDerivedNotClaimed:
         e.create_project("p", project_id=PRJ, config=cfg)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         e.policy.set_project_config(PRJ, cfg)
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "t"}, status="open")
+        task = confirmed_task(e, PRJ)
         good = e.attest_action(PRJ, intent_type="task_complete",
                                intent_statement="honest", actor={"agent": "a"},
                                action_type="run_verifier",
@@ -237,7 +236,7 @@ class TestR6ChecklistItemsObeyBlockQuarantine:
         e = Engine(workdir=tmp_path)
         e.create_project("p", project_id=PRJ,
                          repository_id=REPOSITORY_ID)
-        e.ingest_github(PRJ, "issues", "d2", {
+        report = e.ingest_github(PRJ, "issues", "d2", {
             "action": "opened",
             "issue": {"number": 2, "title": "T",
                       "body": "- [ ] implement the exporter\n"
@@ -246,9 +245,16 @@ class TestR6ChecklistItemsObeyBlockQuarantine:
                       "author_association": "OWNER",
                       "created_at": "2026-07-30T10:00:00Z"},
             "repository": {"id": REPOSITORY_ID, "full_name": "o/r"}})
+        assert e.graph.current(PRJ, "task") == []
+        proposals = [e.graph.get(row["node_id"]) for row in report["created"]]
+        assert len(proposals) == 2
+        assert all(n["data"].get("proposed_kind") == "task" for n in proposals)
+        for proposal in proposals:
+            confirm_proposal(e, PRJ, proposal["node_id"])
         tasks = e.graph.current(PRJ, "task")
         assert len(tasks) == 2
         assert all(t["status"] != "quarantined" for t in tasks)
+        assert all(e.graph.may_mandate(t) for t in tasks)
         e.close()
 
     def test_format_control_cannot_hide_the_block_override(self, tmp_path):
@@ -293,8 +299,7 @@ class TestR6ProofRequiredMeansVerifiersDeclared:
         e = Engine(workdir=tmp_path)
         e.create_project("p", project_id=PRJ,
                          config={"require_proof_for": ["task_complete"]})
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
+        task = confirmed_task(e, PRJ)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         from causal_continuity_engine.proof import ProofEnvelope
         env = ProofEnvelope(tenant_id=e.tenant_id, project_id=PRJ,
@@ -303,6 +308,9 @@ class TestR6ProofRequiredMeansVerifiersDeclared:
         env.add_verification({"verifier": "whatever", "result": "passed",
                               "source": "executed"})
         env.set_continuity(task_ids=[task.id])
+        # This fixture isolates the earlier no-verifier gate, not live currency.
+        env.add_input(f"continuity:obligations:{task.id}", "sha256:" + "1" * 64,
+                      kind="continuity")
         proof = env.finalize(e.signer, ["whatever"])
         with pytest.raises(PermissionError, match="no required verifiers"):
             e.complete_task(PRJ, task.id, proof=proof)
@@ -312,8 +320,7 @@ class TestR6ProofRequiredMeansVerifiersDeclared:
         e = Engine(workdir=tmp_path)
         e.create_project("p", project_id=PRJ,
                          config={"require_proof_for": ["task_complete"]})
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
+        task = confirmed_task(e, PRJ)
         try:
             e.complete_task(PRJ, task.id, proof=None)
         except PermissionError as exc:
@@ -324,8 +331,7 @@ class TestR6ProofRequiredMeansVerifiersDeclared:
         e = Engine(workdir=tmp_path)
         e.create_project("p", project_id=PRJ,
                          config={"require_proof_for": ["task_complete"]})
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
+        task = confirmed_task(e, PRJ)
         from causal_continuity_engine.proof import ProofEnvelope
         env = ProofEnvelope(tenant_id=e.tenant_id, project_id=PRJ,
                             intent_type="task_complete", intent_statement="d",
@@ -333,6 +339,8 @@ class TestR6ProofRequiredMeansVerifiersDeclared:
         env.add_verification({"verifier": "w", "result": "passed",
                               "source": "executed"})
         env.set_continuity(task_ids=[task.id])
+        env.add_input(f"continuity:obligations:{task.id}", "sha256:" + "1" * 64,
+                      kind="continuity")
         with pytest.raises(PermissionError):
             e.complete_task(PRJ, task.id, proof=env.finalize(e.signer, ["w"]))
         assert e.store.audit_entries("policy.misconfigured")
@@ -345,8 +353,7 @@ class TestR6ProofRequiredMeansVerifiersDeclared:
         e.create_project("p", project_id=PRJ, config=cfg)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         e.policy.set_project_config(PRJ, cfg)
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
+        task = confirmed_task(e, PRJ)
         proof = e.attest_action(PRJ, intent_type="task_complete",
                                 intent_statement="done", actor={"agent": "a"},
                                 action_type="run_verifier",
@@ -454,8 +461,7 @@ class TestR6BindingReachesTheGate:
         e.create_project("p", project_id=PRJ, config=cfg)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         e.policy.set_project_config(PRJ, cfg)
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
+        task = confirmed_task(e, PRJ)
         proof = e.attest_action(PRJ, intent_type="task_complete",
                                 intent_statement="x", actor={"agent": "a"},
                                 action_type="run_verifier",
@@ -497,13 +503,13 @@ class TestR6QuarantineIsTerminal:
         e.create_project("p", project_id=PRJ, config=cfg)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         e.policy.set_project_config(PRJ, cfg)
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
-        e.partial.quarantine(task.id, actor="cce", reason="ambiguous artifact")
+        task = confirmed_task(e, PRJ)
         proof = e.attest_action(PRJ, intent_type="task_complete",
                                 intent_statement="x", actor={"agent": "a"},
                                 action_type="run_verifier",
                                 continuity={"task_ids": [task.id]})
+        assert proof["status"] == "verified"
+        e.partial.quarantine(task.id, actor="cce", reason="ambiguous artifact")
         with pytest.raises(PermissionError, match="quarantined"):
             e.complete_task(PRJ, task.id, proof=proof)
         assert e.graph.get(task.id)["status"] == "quarantined"
@@ -550,8 +556,7 @@ class TestR6PolicyInForceAtCompletion:
         e.create_project("p", project_id=PRJ, config=lax)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         e.policy.set_project_config(PRJ, lax)
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "x"}, status="open")
+        task = confirmed_task(e, PRJ)
         proof = e.attest_action(PRJ, intent_type="task_complete",
                                 intent_statement="x", actor={"agent": "a"},
                                 action_type="run_verifier",

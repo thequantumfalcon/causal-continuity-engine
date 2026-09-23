@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No unreleased changes.
+The local 0.2.0 candidate is described below. It is not yet released.
+
+## 0.2.0 — not yet released
+
+Local next-version preparation; no release date, published artifact or completed
+platform-validation claim is implied by this entry.
+
+### Changed
+
+- **Breaking: extracted prose proposes; local confirmation confers authority.**
+  Requirements, constraints, decisions, assumptions and tasks extracted from
+  retained source text require an explicit owner-local decision before becoming
+  binding control state. Consumers check canonical decision history, source
+  support and the actual projection. A trusted author label or mutable graph
+  flag is not approval. Confirmation has no HTTP or MCP
+  endpoint; this trusts the existing OS/store owner, not an independently
+  authenticated human or a process isolated from that same account (ADR-126).
+- **Breaking: processor compatibility advances to `cce-processor/1.9.0` and
+  extraction to `cce-deterministic/1.4.0`.** Preserve older projected stores and
+  their SQLite sidecars after stopping writers. Re-ingest retained sources into
+  a separate new store/project and review its proposals before confirming them.
+  Older authority projections do not upgrade in place; erased source payloads
+  cannot be reconstructed by replay. Existing finite admission limits still
+  apply; the version check is not a claim of complete database provenance.
+- **Proof v2 binds the complete applicable obligation set.** Confirmed task
+  proofs include applicable requirements, constraints, decisions and assumptions,
+  their canonical scope and the relevant policy. Caller-supplied links cannot
+  subtract mandatory controls. Initial and final deciding reads are separate;
+  later changes can stale the proof. A verifier's evidence grade remains a
+  mechanical binding check, not proof of the obligation's semantic truth
+  (ADR-127).
+- **Resume v2 is complete and explicitly project- or task-scoped.** Mandatory
+  controls, work, policy and trust information cannot be silently trimmed to fit
+  a budget. Watermarks are scope-specific; descriptive target metadata is not
+  a task selector. Current capsule v2 and continuity-receipt v2 remain project-only.
+  Historical v1 schemas are retained for interpretation, not current proof or
+  receipt acceptance (ADR-128).
+- **Successful resume responses have a hard serialized-byte bound.** The default
+  is 131,072 bytes; the accepted range is 1 through 1,048,576. Engine, CLI, HTTP
+  and MCP count their actual final representation, including the relevant wrapper
+  and line ending. Only optional sections may be removed. Mandatory overflow
+  refuses before signing, collision audit or watermark advancement. Packet-budget
+  refusals have a separate 1,024-byte bound. This does not bound computation,
+  input memory, HTTP headers, arbitrary reserialization or an outer capsule
+  (ADR-129).
+
+### Fixed
+
+- **Task expiry during packet composition used two validity instants.** Final
+  watermark admission now retains the selected instant while rechecking canonical
+  authority, source support, projected semantics and live status. Later freshness
+  uses current time; an as-of packet is not a lease. Unrelated late failures do
+  not promise to refund a consumed signature (ADR-130).
+- **One obligation read repeatedly reconstructed the same canonical witnesses.**
+  Validated control witnesses and shared scope-task identities are reused only
+  within that non-mutating call, never across requests or a writer's own changes.
+  Measured read counts fall without dropping authority checks. Distinct witnesses
+  still traverse history; no latency or total-history scaling bound is claimed
+  (ADR-131).
+- **The continuity-receipt specification named the historical v1 contract.**
+  SPEC §12 now matches the current project-only v2 producer and verifier, including
+  expected-scope binding and archived-v1 refusal. Historical schemas are unchanged.
 
 ## 0.1.6 — 2026-09-20
 

@@ -524,17 +524,29 @@ def test_resume_explicit_local_session_is_preserved(tmp_path):
         engine.close()
 
 
-def test_resume_packet_shape_is_preflighted_before_signer(tmp_path):
+def test_resume_packet_shape_is_preflighted_before_signer(tmp_path, monkeypatch):
     engine = _engine(tmp_path)
+    calls = []
+    original = hmac.new
+
+    def observed(*args, **kwargs):
+        calls.append(True)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(hmac, "new", observed)
+    engine.composer.compose(tenant_id=TENANT, project_id=PROJECT, signer=engine.signer)
+    assert calls == [True]
+    calls.clear()
     engine.graph.put_node(
         entity_type="task", tenant_id=TENANT, project_id=PROJECT,
         data={"title": 7}, status="open")
-    signer = _SignerSpy()
+    before = tuple(engine.store._conn.iterdump())
     try:
         with pytest.raises(ValueError, match="resume summary"):
             engine.composer.compose(
-                tenant_id=TENANT, project_id=PROJECT, signer=signer)
-        assert signer.calls == 0
+                tenant_id=TENANT, project_id=PROJECT, signer=engine.signer)
+        assert calls == []
+        assert tuple(engine.store._conn.iterdump()) == before
     finally:
         engine.close()
 

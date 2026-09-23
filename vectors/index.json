@@ -285,5 +285,47 @@
     ],
     "expected_verdict": "INVALID",
     "name": "retry_cannot_launder_a_failure"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "obligation_missing"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "obligation_duplicate"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "obligation_wrong_kind"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "obligation_wrong_task"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "obligation_duplicate_task"
+  },
+  {
+    "expected_errors": [
+      "E_SHAPE"
+    ],
+    "expected_verdict": "INVALID",
+    "name": "historical_proof_version"
   }
 ]

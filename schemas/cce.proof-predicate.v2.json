@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.2.0/schemas/cce.proof-predicate.v2.json",
+  "title": "CCE in-toto Proof-Carrying Action Predicate v2",
+  "description": "The predicate object used when a cce.proof.v2 envelope is projected into an in-toto Statement v1. The Statement subject carries the envelope subject, and schema_version is identified by predicateType.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "proof_id",
+    "created_at",
+    "tenant_id",
+    "project_id",
+    "action_id",
+    "action_intent",
+    "actor",
+    "inputs",
+    "environment",
+    "execution",
+    "verifications",
+    "policy_decision",
+    "continuity_links",
+    "evidence_context",
+    "status",
+    "verification_summary",
+    "proof_digest",
+    "signature"
+  ],
+  "properties": {
+    "proof_id": {
+      "$ref": "cce.proof.v2.json#/properties/proof_id"
+    },
+    "created_at": {
+      "$ref": "cce.proof.v2.json#/properties/created_at"
+    },
+    "tenant_id": {
+      "$ref": "cce.proof.v2.json#/properties/tenant_id"
+    },
+    "project_id": {
+      "$ref": "cce.proof.v2.json#/properties/project_id"
+    },
+    "action_id": {
+      "$ref": "cce.proof.v2.json#/properties/action_id"
+    },
+    "action_intent": {
+      "$ref": "cce.proof.v2.json#/properties/action_intent"
+    },
+    "actor": {
+      "$ref": "cce.proof.v2.json#/properties/actor"
+    },
+    "inputs": {
+      "$ref": "cce.proof.v2.json#/properties/inputs"
+    },
+    "environment": {
+      "$ref": "cce.proof.v2.json#/properties/environment"
+    },
+    "execution": {
+      "$ref": "cce.proof.v2.json#/properties/execution"
+    },
+    "verifications": {
+      "$ref": "cce.proof.v2.json#/properties/verifications"
+    },
+    "policy_decision": {
+      "$ref": "cce.proof.v2.json#/properties/policy_decision"
+    },
+    "continuity_links": {
+      "$ref": "cce.proof.v2.json#/properties/continuity_links"
+    },
+    "evidence_context": {
+      "$ref": "cce.proof.v2.json#/properties/evidence_context"
+    },
+    "status": {
+      "$ref": "cce.proof.v2.json#/properties/status"
+    },
+    "verification_summary": {
+      "$ref": "cce.proof.v2.json#/properties/verification_summary"
+    },
+    "proof_digest": {
+      "$ref": "cce.proof.v2.json#/properties/proof_digest"
+    },
+    "signature": {
+      "$ref": "cce.proof.v2.json#/properties/signature"
+    }
+  },
+  "$comment": "Candidate v0.2.0 predicate contract; this URL is not a publication claim. SPEC's obligation input/task coverage rules also apply."
+}

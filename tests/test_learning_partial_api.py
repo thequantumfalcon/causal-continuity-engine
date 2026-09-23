@@ -275,9 +275,11 @@ class TestHTTPAPI:
         assert status == 200 and body == {"status": "ok"}
         status, packet = self._post(
             server, f"/v1/projects/{PRJ}/resume-packets:compose", {})
-        assert status == 200 and packet["schema_version"] == "cce.resume.v1"
+        assert status == 200 and packet["schema_version"] == "cce.resume.v2"
 
-    def test_ingest_and_assumptions(self, server):
+    def test_ingest_and_assumptions(self, server, engine):
+        from tests.authority_helpers import confirm_proposal
+
         status, report = self._post(server, "/v1/events:ingest", {
             "event_name": "issues", "delivery_id": "api-d1",
             "payload": {
@@ -289,13 +291,20 @@ class TestHTTPAPI:
                 "repository": {"id": REPOSITORY_ID, "full_name": "o/r"}}})
         assert status == 202 and report["created"]
         status, rows = self._get(server, f"/v1/projects/{PRJ}/assumptions")
+        assert status == 200 and rows == []
+        proposals = [engine.graph.get(row["node_id"]) for row in report["created"]]
+        assumption, = [node for node in proposals
+                       if node["data"].get("proposed_kind") == "assumption"]
+        confirmation = confirm_proposal(engine, PRJ, assumption["node_id"])
+        status, rows = self._get(server, f"/v1/projects/{PRJ}/assumptions")
         assert status == 200 and len(rows) == 1
+        assert rows[0]["node_id"] == confirmation.id
 
     def test_compose_with_budget(self, server):
         status, packet = self._post(
             server, f"/v1/projects/{PRJ}/resume-packets:compose",
             {"token_budget": 500})
-        assert status == 200 and packet["schema_version"] == "cce.resume.v1"
+        assert status == 200 and packet["schema_version"] == "cce.resume.v2"
 
     def test_attest_endpoint(self, server):
         status, proof = self._post(server, "/v1/actions:attest", {
@@ -356,7 +365,7 @@ class TestHTTPAPI:
         def fail(*args, **kwargs):
             raise RuntimeError(f"database failed at {leaked}")
 
-        monkeypatch.setattr(engine, "resume_packet", fail)
+        monkeypatch.setattr(engine, "_resume_packet", fail)
         with pytest.raises(urllib.error.HTTPError) as failure:
             self._post(
                 server, f"/v1/projects/{PRJ}/resume-packets:compose", {})

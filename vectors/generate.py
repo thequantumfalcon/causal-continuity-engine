@@ -71,16 +71,25 @@ def _mint(workdir: Path, *, signer, command=None, bind_task=True):
     engine.create_project("vectors", project_id="prj_vectors", config=cfg)
     engine.policy.grant(project_id="prj_vectors", level=2, granted_by="lead")
     engine.policy.set_project_config("prj_vectors", cfg)
-    task = engine.graph.put_node(
-        entity_type="task", tenant_id=engine.tenant_id,
-        project_id="prj_vectors", data={"title": "ship it"}, status="open")
+    report = engine.ingest_human_decision(
+        "prj_vectors", actor="vector-owner", decision="- [ ] Ship the exporter")
+    proposals = [engine.graph.get(item["node_id"]) for item in report["created"]]
+    tasks = [node for node in proposals if node["data"].get("proposed_kind") == "task"
+             and node["data"].get("statement") == "Ship the exporter"]
+    assert len(tasks) == 1
+    receipt = engine.record_authority_decision("prj_vectors", {
+        "operation": "confirm", "request_id": "vectors-confirm-task",
+        "tenant_id": engine.tenant_id, "project_id": "prj_vectors",
+        **engine.authority_proposal("prj_vectors", tasks[0]["node_id"]),
+    })
+    task_id = receipt["confirmation_id"]
     proof = engine.attest_action(
         "prj_vectors", intent_type="task_complete",
         intent_statement="the exporter is done", actor={"agent": "generator"},
         action_type="run_verifier",
-        continuity={"task_ids": [task.id]} if bind_task else None)
+        continuity={"task_ids": [task_id]} if bind_task else None)
     engine.close()
-    return proof, task.id
+    return proof, task_id
 
 
 def _reseal(proof: dict) -> dict:
@@ -279,6 +288,8 @@ def build() -> list[dict]:
     # re-signed, so E_UNBOUND cannot be hidden behind a signature failure.
     t = json.loads(json.dumps(good_hmac))
     t["continuity_links"] = {"unrelated_ids": [task_id]}
+    t["inputs"] = [item for item in t["inputs"]
+                   if not item["name"].startswith("continuity:obligations:")]
     _reseal(t)
     t["signature"] = hmac_signer.sign(t)
     add("task_id_under_unrelated_field", t, "INVALID", ["E_SHAPE"],
@@ -313,7 +324,7 @@ def build() -> list[dict]:
         add(name, t, "INVALID", ["E_SHAPE"], hmac_key_hex=key_hex)
 
     t = json.loads(json.dumps(good_hmac))
-    t["schema_version"] = "cce.proof.v2"
+    t["schema_version"] = "cce.proof.v999"
     add("unknown_schema_version", t, "INVALID", ["E_SHAPE"])
 
     t = json.loads(json.dumps(good_hmac))
@@ -342,12 +353,12 @@ def build() -> list[dict]:
         ("input_item_wrong_type", "inputs", [42]),
     ):
         t = json.loads(json.dumps(good_hmac))
-        t[field] = value
+        t[field] = [*t[field], *value] if field == "inputs" else value
         _reseal(t)
         t["signature"] = hmac_signer.sign(t)
         add(name, t, "INVALID", ["E_SHAPE"], hmac_key_hex=key_hex)
 
-    # cce.proof.v1 is a closed contract.  Unknown fields cannot acquire
+    # cce.proof.v2 is a closed contract.  Unknown fields cannot acquire
     # meaning merely by being covered by a signature.
     t = json.loads(json.dumps(good_hmac))
     t["future_semantics"] = {"completed": True}
@@ -397,6 +408,29 @@ def build() -> list[dict]:
     add("retry_cannot_launder_a_failure", _reseal(t), "INVALID",
         ["E_SIGNATURE", "E_STATUS"], hmac_key_hex=key_hex)
 
+    for mutation in ("missing", "duplicate", "wrong_kind", "wrong_task", "duplicate_task"):
+        t = json.loads(json.dumps(good_hmac))
+        item = next(item for item in t["inputs"]
+                    if item["name"].startswith("continuity:obligations:"))
+        if mutation == "missing":
+            t["inputs"].remove(item)
+        elif mutation == "duplicate":
+            t["inputs"].append({**item, "digest": digest_obj("another basis")})
+        elif mutation == "wrong_kind":
+            item["kind"] = "declared"
+        elif mutation == "wrong_task":
+            item["name"] = "continuity:obligations:tsk_other"
+        else:
+            t["continuity_links"]["task_ids"].append(task_id)
+        _reseal(t)
+        t["signature"] = hmac_signer.sign(t)
+        add("obligation_" + mutation, t, "INVALID", ["E_SHAPE"], hmac_key_hex=key_hex)
+
+    t = json.loads(json.dumps(good_hmac))
+    t["schema_version"] = "cce.proof.v1"
+    _reseal(t)
+    t["signature"] = hmac_signer.sign(t)
+    add("historical_proof_version", t, "INVALID", ["E_SHAPE"], hmac_key_hex=key_hex)
     return vectors
 
 
@@ -424,7 +458,11 @@ def reference_verdict(vector) -> str:
     from causal_continuity_engine.core import Signer, canonical_json, digest_obj
     from causal_continuity_engine.engine import _proof_covers
     from causal_continuity_engine.lamport import LamportSigner
-    from causal_continuity_engine.proof import evaluate_status, verify_envelope
+    from causal_continuity_engine.proof import (
+        evaluate_status,
+        validate_envelope_shape,
+        verify_envelope,
+    )
 
     envelope = vector["envelope"]
     ctx = vector["context"]
@@ -437,10 +475,7 @@ def reference_verdict(vector) -> str:
     # SPEC §9: INVALID dominates UNVERIFIED, so every check that does NOT
     # need key material has to run before the undecidable case below. A
     # forgery a keyless party CAN detect must still read INVALID.
-    if not isinstance(envelope, dict) or \
-            envelope.get("schema_version") != "cce.proof.v1" or \
-            "verification_summary" not in envelope or \
-            "signature" not in envelope:
+    if validate_envelope_shape(envelope):
         return "INVALID"
 
     algorithm = (envelope.get("signature") or {}).get("algorithm")

@@ -21,6 +21,7 @@ from causal_continuity_engine.lamport import LamportSigner
 from causal_continuity_engine.proof import verify_envelope
 from causal_continuity_engine.store import Store
 from causal_continuity_engine.verifiers import VerifierRunner, VerifierSpec
+from tests.authority_helpers import confirmed_task
 
 PRJ = "prj_r5"
 REPOSITORY_ID = 5005
@@ -213,8 +214,7 @@ class TestR5LamportAuthenticityIsNotVacuous:
         e.create_project("p", project_id=PRJ, config=cfg)
         e.policy.grant(project_id=PRJ, level=2, granted_by="lead")
         e.policy.set_project_config(PRJ, cfg)
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "t"}, status="open")
+        task = confirmed_task(e, PRJ)
         proof = e.attest_action(PRJ, intent_type="task_complete",
                                 intent_statement="honest", actor={"agent": "a"},
                                 action_type="run_verifier",
@@ -252,8 +252,7 @@ class TestR5LamportAuthenticityIsNotVacuous:
     def test_hmac_remains_self_authenticating(self, tmp_path):
         e = _engine(tmp_path, required_verifiers=[
             {"name": "t", "command": PASS_COMMAND}])
-        task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                                project_id=PRJ, data={"title": "t"}, status="open")
+        task = confirmed_task(e, PRJ)
         proof = e.attest_action(PRJ, intent_type="task_complete",
                                 intent_statement="x", actor={"agent": "a"},
                                 action_type="run_verifier",

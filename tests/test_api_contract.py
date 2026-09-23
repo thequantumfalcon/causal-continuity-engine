@@ -527,10 +527,14 @@ def test_invalidation_resolution_is_bound_to_path_resource(api):
     invalidation = engine.invalidation.fire(
         tenant_id=TENANT, project_id=PROJECT, target_node_id=target.id,
         trigger_type="contradictory_evidence", reason="contract test")
+    evidence = engine.graph.put_node(
+        entity_type="evidence", tenant_id=TENANT, project_id=PROJECT,
+        data={"subject_node_id": target.id}, status="verified",
+        authority="verifier_authoritative")
     request = {
         "invalidation_id": invalidation["node_id"],
-        "mode": "narrowed_scope",
-        "narrowed_scope": {"scope": "target only"},
+        "mode": "replacement_evidence",
+        "replacement_node_id": evidence.id,
     }
 
     mismatch = server.request(
@@ -564,7 +568,7 @@ def test_internal_builtin_exceptions_are_generic_500(api, monkeypatch, exception
     def fail(*args, **kwargs):
         raise exception
 
-    monkeypatch.setattr(engine, "resume_packet", fail)
+    monkeypatch.setattr(engine, "_resume_packet", fail)
     response = server.request(
         "POST", f"/v1/projects/{PROJECT}/resume-packets:compose", {})
     assert response[0] == 500
@@ -576,8 +580,11 @@ def test_internal_builtin_exceptions_are_generic_500(api, monkeypatch, exception
 
 def test_nonfinite_or_unknown_response_never_becomes_success(api, monkeypatch):
     server, engine = api
-    monkeypatch.setattr(
-        engine, "resume_packet", lambda *args, **kwargs: {"value": math.nan})
+
+    def nonfinite(*args, **kwargs):
+        return kwargs["_response_encoder"]({"value": math.nan})
+
+    monkeypatch.setattr(engine, "_resume_packet", nonfinite)
     response = server.request(
         "POST", f"/v1/projects/{PROJECT}/resume-packets:compose", {})
     assert response[0] == 500

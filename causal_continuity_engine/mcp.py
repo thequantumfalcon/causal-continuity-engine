@@ -24,7 +24,13 @@ import json
 import sys
 from pathlib import Path
 
-from .core import canonical_json
+from .core import canonical_json, validate_public_identifier
+from .resume import (
+    DEFAULT_MAX_RESPONSE_BYTES,
+    PACKET_BUDGET_ERROR,
+    PacketBudgetExceeded,
+    ResumeComposer,
+)
 
 # Protocol revisions this server answers, newest first. "Answers" is the whole
 # claim: the methods it implements — initialize, ping, tools/list, tools/call
@@ -64,6 +70,15 @@ TOOLS = [
             "type": "object",
             "properties": {
                 **_PROJECT_ARG,
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional confirmed task scope; defaults to the project.",
+                },
+                "max_response_bytes": {
+                    "type": "integer", "minimum": 1, "maximum": 1048576,
+                    "default": DEFAULT_MAX_RESPONSE_BYTES,
+                    "description": "Hard cap on the complete UTF-8 JSON-RPC response plus LF.",
+                },
                 "token_budget": {
                     "type": "integer",
                     "description": (
@@ -85,9 +100,9 @@ TOOLS = [
     {
         "name": "list_assumptions",
         "description": (
-            "Active assumptions extracted from repository prose. These are "
-            "proposals, not authority: an assumption is what the project "
-            "currently believes, and may have been contradicted."),
+            "Active assumptions with current authority. Repository prose "
+            "alone remains a proposal and is not included in this binding "
+            "view of what the project currently believes."),
         "inputSchema": {"type": "object", "properties": dict(_PROJECT_ARG),
                         "additionalProperties": False},
     },
@@ -151,23 +166,33 @@ class _Session:
         engine._require_project(project_id)
         return project_id
 
-    def call(self, name: str, arguments: dict) -> str:
+    def call(self, name: str, arguments: dict, *, request_id=None) -> str | bytes:
         engine, _ = self._open()
         engine.store._assert_read_only_source_unchanged()
         project_id = self.project(arguments)
         if name == "resume_packet":
             budget = arguments.get("token_budget", 4000)
             fmt = arguments.get("format", "markdown")
-            packet = engine._resume_packet(
-                project_id, token_budget=budget, fmt=fmt, record_state=False)
-            if fmt == "json":
-                result = canonical_json(packet)
-            else:
-                result = packet
+
+            def encode(packet):
+                body = (canonical_json(packet) if fmt == "json"
+                        else ResumeComposer.render_markdown(packet))
+                # The signed-64-bit request id is framing, not signed packet
+                # content: canonical packet integers have a narrower domain.
+                return _encode_response({
+                    "jsonrpc": "2.0", "id": request_id, "result": _text(body)})
+
+            result = engine._resume_packet(
+                project_id, token_budget=budget, fmt=fmt, record_state=False,
+                task_id=arguments.get("task_id"),
+                max_response_bytes=arguments.get(
+                    "max_response_bytes", DEFAULT_MAX_RESPONSE_BYTES),
+                _response_encoder=encode, _response_format="mcp-" + fmt)
         elif name == "list_assumptions":
             nodes = engine.graph.current(
                 project_id, "assumption", status=["active", "supported"],
                 tenant_id=engine.tenant_id)
+            nodes = [node for node in nodes if engine.graph.may_mandate(node)]
             if not nodes:
                 result = "No active assumptions."
             else:
@@ -214,6 +239,21 @@ def _valid_request_id(value) -> bool:
             or isinstance(value, int) and not isinstance(value, bool))
 
 
+def _valid_resume_id(value) -> bool:
+    if type(value) is int:
+        return -(2**63) <= value <= 2**63 - 1
+    if not isinstance(value, str):
+        return False
+    try:
+        return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) <= 128
+    except UnicodeEncodeError:
+        return False
+
+
+def _encode_response(response: dict) -> bytes:
+    return (json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def _valid_initialize(params: dict) -> bool:
     client = params.get("clientInfo")
     return bool(
@@ -236,6 +276,15 @@ def _tool_argument_error(name: str, arguments: dict) -> str | None:
             not isinstance(project_id, str) or not project_id):
         return "project_id must be a non-empty string"
     if name == "resume_packet":
+        if "task_id" in arguments:
+            try:
+                validate_public_identifier(arguments["task_id"], field="task_id")
+            except ValueError:
+                return "task_id must be a valid public identifier"
+        if "max_response_bytes" in arguments:
+            limit = arguments["max_response_bytes"]
+            if type(limit) is not int or not 1 <= limit <= 1048576:
+                return "max_response_bytes must be an integer from 1 to 1048576"
         budget = arguments.get("token_budget")
         if budget is not None and (
                 isinstance(budget, bool) or not isinstance(budget, int)
@@ -247,10 +296,17 @@ def _tool_argument_error(name: str, arguments: dict) -> str | None:
     return None
 
 
-def _handle(request: dict, session: _Session) -> dict | None:
+def _handle(request: dict, session: _Session) -> dict | bytes | None:
     has_id = "id" in request
     notification = not has_id
     request_id = request.get("id") if has_id else None
+    # Bound resume IDs before any branch could echo them or open project state.
+    # This restriction does not change IDs accepted by unrelated protocol calls.
+    params = request.get("params")
+    if (has_id and request.get("method") == "tools/call"
+            and isinstance(params, dict) and params.get("name") == "resume_packet"
+            and not _valid_resume_id(request_id)):
+        return _error(None, _INVALID_REQUEST, "invalid resume request id")
     if request.get("jsonrpc") != "2.0":
         # TC-010 binds one-way semantics to the absent id even when the
         # surrounding request object is malformed.
@@ -321,7 +377,12 @@ def _handle(request: dict, session: _Session) -> dict | None:
         if argument_error:
             return _error(request_id, _INVALID_PARAMS, argument_error)
         try:
+            if name == "resume_packet":
+                return session.call(name, arguments, request_id=request_id)
             body = session.call(name, arguments)
+        except PacketBudgetExceeded:
+            return {"jsonrpc": "2.0", "id": request_id,
+                    "result": _text(PACKET_BUDGET_ERROR, is_error=True)}
         except (Exception, SystemExit) as exc:  # noqa: BLE001 - tool-local failure
             # A tool failure is a result with isError, not a protocol error:
             # the call was well formed. Exception values can contain project
@@ -372,7 +433,12 @@ def serve(directory: str = ".", *, stdin=None, stdout=None) -> int:
                                     "error": {"code": _INTERNAL_ERROR,
                                               "message": "internal server error"}}
             if response is not None:
-                sink.write(json.dumps(response, ensure_ascii=False) + "\n")
+                payload = response if isinstance(response, bytes) else _encode_response(response)
+                binary = getattr(sink, "buffer", None)
+                if binary is None:
+                    sink.write(payload.decode("utf-8"))
+                else:
+                    binary.write(payload)
                 sink.flush()
     finally:
         session.close()

@@ -2889,7 +2889,7 @@ compatibility. No new completion rejection gate is introduced.
 
 ## ADR-122 — Release provenance retains an independently reviewed dependency closure
 
-**Status.** Prepared locally, 2026-09-20; adoption requires hosted validation.
+**Status.** Adopted on 2026-09-20 after hosted validation.
 
 **Context.** The official attestation action's production dependency closure
 still matched retained GitHub advisory records. Updating to upstream
@@ -2918,6 +2918,14 @@ subject digest verify, altered-subject refusal, and an unchanged-subject recheck
 Synthetic endpoint tests alone cannot satisfy that hosted prerequisite. The
 existing release structural/behavior controls remain required.
 
+Hosted [validation run 35535656097](https://github.com/thequantumfalcon/cce-release-attest/actions/runs/35535656097)
+completed all three jobs successfully on attempt 1 for the adopted snapshot
+`7222071cbb16300546aa89e840e57a0c9ceeae89`. CCE's subsequent
+[release run 35538827889](https://github.com/thequantumfalcon/causal-continuity-engine/actions/runs/35538827889)
+used that exact pin and completed all five jobs successfully on attempt 1,
+publishing v0.1.6 from `6a37f4fa6ea51acd07aa38a129db453584fa1638`.
+These records establish the original adoption, not approval of a later snapshot.
+
 **Alternatives and consequences.** Waiting for a fixed official action avoids
 fork maintenance but leaves the blocker unresolved. Suppressing advisories or
 removing provenance loses a control. This snapshot instead requires explicit
@@ -2929,3 +2937,566 @@ The hosted runner, GitHub identity issuance, certificate authority, transparency
 log, verification client and signing library remain trusted dependencies.
 Attestation authenticates artifact provenance, not application correctness.
 The toy validation is not a CCE release. No Engine completion gate is changed.
+
+## ADR-123 — Versioning cannot erase a packet authority restriction
+
+**Status.** Local implementation candidate, 2026-09-22; not published.
+
+**Context.** A project can disable prose authority after ingestion. The packet
+composer recognized extracted control only from the current node's extractor
+field. Ordinary graph versioning, including the authenticated HTTP resolution
+route, omits that field because the new version was not produced by an
+extractor. A versioned requirement, constraint, decision or task then reappeared
+as authority or pinned control despite the unchanged restrictive policy.
+
+**Decision.** Determine extraction origin from all retained versions in the
+bound tenant/project once per composition. Continue applying the existing
+source-authority and project-policy rules to every packet section that already
+uses the authority predicate. A later version with no extractor does not undo
+the identity's extracted origin. Leave the historical and current graph rows,
+memory assignment history, and privileged direct-Graph creation unchanged.
+
+**Alternatives.** Carrying the old extractor onto every new version would
+misattribute a local or API edit to the earlier producer. Checking mutable data
+flags or authority labels still lets an ordinary resolution change the answer.
+Reading full history separately for every section and node repeats work; one
+scoped query records the affected identities for the composition.
+
+**Consequences.** Previously edited extracted control now stays withheld under
+the restrictive policy, including existing L0 assignments. The existing
+omission records disclose that withholding. Each composition adds a scoped
+historical query and a set proportional to extracted identities. The public
+packet shape and event projection are unchanged; the processor is not
+relabelled. The internal packet control basis advances to v2 so a watermark
+composed under the prior interpretation becomes stale without a graph edit.
+A newly composed packet records the current basis through the existing audit
+path. The approved next-version confirmation contract remains separate.
+
+**Verification.** The regression drives public ingestion, policy tightening,
+ordinary versioning, and real HTTP resolution with and without a data patch.
+Both the authority section and L0 exit are checked. Tasks, several versions,
+file-backed reopen, privileged direct-Graph positives and the current permissive
+policy are covered. Eleven deciding cases fail against the unchanged composer
+at `742174ba44172705865ac2f4b8f0f585403aaaa5`. A version-domain simulation
+additionally pins old-watermark refusal and current recomposition. No
+completion rejection is added.
+
+**Limit.** Extraction history is structural classification, not an operator
+decision witness or immutable authentication against a database owner. This
+fix does not add confirmation/revocation, change assumption policy, restrict
+all HTTP semantic edits, or make proof consumers require complete obligations.
+Those remain work in the next-version contract. Retaining original provenance
+does not certify that a changed statement still matches its source.
+
+## ADR-124 — Local decisions may own their canonical append transaction
+
+**Status.** Local storage prerequisite, 2026-09-22; not an exposed confirmation
+operation and not published.
+
+**Context.** Connector ingestion deliberately commits the canonical event
+before projecting it. An owner-local decision needs a narrower atomic unit:
+read the current proposal under the writer lock, append its decision, project
+it and audit it, or preserve the prior state if any step fails. Public
+`append_event` refuses an existing Store transaction by design.
+
+**Decision.** Keep public append behavior unchanged and add a private append
+that requires an already-owned Store writer transaction. Share the same event
+validation and chain insertion. The private call joins through a nested
+savepoint and never commits independently. A caught append failure rolls back
+its sequence changes and insertion effects without discarding earlier owner
+writes. The outer operation owns the final commit or rollback.
+
+**Alternatives.** Changing ordinary connector append semantics would remove
+the retained-event recovery boundary. Validating a proposal and then committing
+its event independently leaves a gap for changes and partial state. Copying the
+event writer would create two versions of validation and hash-chain logic.
+
+**Consequences.** The future decision producer can compose one write unit
+without a new schema or transaction framework. Public duplicate and mismatch
+behavior is preserved, including durable mismatch diagnostics. Private mismatch
+diagnostics instead roll back with the failed append; this path cannot promise
+an independently durable rejection and an atomic owner operation simultaneously.
+
+**Limit.** This storage primitive applies neither capture policy nor operator
+authorization, and is not by itself the confirmation feature. The Engine
+producer must still validate source/proposal/current scope, capture exact
+retained bytes, process the event and audit before allowing its transaction to
+commit. Arbitrary code with Store or SQLite access remains privileged. No
+processor, package, public command or completion gate changes here.
+
+## ADR-125 — A rejected standalone commit leaves no pending append
+
+**Status.** Local correction, 2026-09-22; not published.
+
+**Context.** Review of the transactional append prerequisite found a separate,
+pre-existing failure in public `append_event`. A deferred database constraint
+could reject COMMIT after insertion, leaving the connection in a transaction
+with an advanced event sequence and an uncommitted event. A later operation
+then failed to start its own transaction.
+
+**Decision.** If the standalone success-path commit raises and SQLite still
+has an open transaction, roll it back before propagating the failure. This
+matches the existing `Store.transaction` commit-failure rule. Leave successful
+appends, duplicate detection, and durable payload-mismatch logging unchanged.
+
+**Alternatives.** Closing the entire Store would prevent ordinary recovery.
+Leaving rollback to every caller conceals an unfinished transaction behind a
+method that promises a standalone append. Swallowing the error would report
+an event whose commit failed as successful.
+
+**Verification and consequences.** A real deferred foreign-key failure,
+introduced by a fixture trigger, fails against the exact baseline. The
+correction restores event count, sequence and trigger state, leaves transaction
+depth zero, and permits a subsequent valid append with an intact chain. The
+owned-transaction path has the same positive rollback control. This is one
+inherited defect, not a claim that missing private-API baseline tests exposed
+additional released bugs.
+
+**Limit.** Rollback can only be attempted while the connection remains usable.
+This is not a guarantee against storage loss, failing hardware or an ambiguous
+external durability failure. It adds no automatic retry or silent replacement
+of a rejected append.
+
+## ADR-126 — Prose proposes; owner-local canonical decisions confer authority
+
+**Status.** Accepted design, local implementation candidate, 2026-09-22;
+not published. Supersedes permissive prose authority, not the retained
+statement-id-v2 compatibility check for older identities.
+
+**Context.** Source-authority labels and mutable graph flags cannot establish
+that an operator approved an extracted statement. The owner approved a stricter
+next-version contract and selected the existing OS/store capability as its local
+trust boundary, without a remote confirmation endpoint.
+
+**Decision.** Every prose requirement, constraint, decision, assumption and task
+is a claim requiring explicit confirmation. A proposal uses the separate
+`cce.proposal-id.v1` namespace over tenant, project, canonical source event,
+source identity/field, proposed kind and exact retained statement. Explicit
+`prose_may_mandate=true` refuses; old statement identity is not reinterpreted.
+The processor advances to 1.9.0 and extractor to 1.4.0, so old projected stores
+must remain preserved rather than be relabelled compatible.
+
+The local Engine operation and `authority --request FILE` CLI accept a closed
+confirm/revoke/replace_scope grammar. Confirm binds a producer-created proposal
+version/digest, exact kind/text, and global or explicit confirmed-task scope.
+Subsequent operations bind the event-derived authority revision/digest, not
+incidental graph version changes. The producer fixes its actor labels and
+request digest, applies capture policy, and appends a structured canonical
+decision, projects, checks its marker and audits under one Store writer. A
+failure rolls the whole unit back. Identical retries return the original receipt
+even after revocation; that receipt is not a claim of current authority.
+Confirmation preserves the original extraction's calibrated criticality; source
+re-extraction validates that value and the consuming witness rejects a changed
+confirmation scalar. Approval does not silently lower invalidation severity.
+
+Ordinary decision prose and nested decision-shaped strings never dispatch this
+operation. HTTP and MCP expose no confirmation producer. HTTP status resolution
+cannot rewrite control text/scope or assign a human-decision authority label.
+Consumers check canonical decision history and exact projected semantics;
+removing a current extractor, copying an event id, or changing flags is not a
+grant. Standalone privileged Graph access retains its explicit local boundary.
+
+An admitted source edit withdrawing the exact bound statement invalidates its
+confirmation and closes validity. Equal restatement or an unrelated field edit
+does not withdraw it; older, weaker and quarantined updates do not acquire that
+power. Reappearance needs a new confirmation. Equal-authority explicit literal
+opposites remain contested, not ranked by arrival order. Compatible requirements
+are not silently superseded. Disjoint explicit task scopes do not conflict.
+Withdrawal must also preserve quarantine on both the original proposal and its
+current projection. Replacing that status with `withdrawn` would make previously
+screened content eligible for retrieval and memory promotion.
+Withdrawal of a confirmed requirement/constraint retains the changed-requirement
+classification; other withdrawn confirmations use expired-approval, as explicit
+revocation does. Neither is a dependency-version change. Recommendations request
+fresh approval without asserting a policy downgrade that severity may not cause.
+
+**Alternatives.** Keeping permissive defaults preserves accidental authority.
+Mutable confirmation flags or API status changes lack a replayable decision.
+A remote approval endpoint or separately protected operator identity would be
+a different security design; neither is authorized by this local boundary.
+Changing the existing stable-id algorithm would silently rewrite old identities.
+
+**Consequences.** Local tooling needs explicit review requests and older
+projections cannot upgrade in place. Canonical history determines decision time,
+identity and semantic version on replay. Consumer witness checks incur history
+queries; performance at large histories is not yet established. An unavailable
+withdrawal never revives approval. Retention before a later confirmation's
+validated creation cannot poison that new identity; unavailable decision history
+at or after its creation conservatively withholds it because it may contain a
+revocation. That can withhold unrelated older approvals too, and is a deliberate
+availability cost, not a claim that their witnesses were verified.
+Required source loss also prevents a new explicit revocation from being
+recorded: the canonical confirmation witness is unavailable. Such authority is
+already withheld, not silently active; a new proposal/approval is a new identity.
+
+**Verification.** Deciding tests cover real local CLI requests, capture refusals,
+closed fields and exact numeric types, canonical binding, retries, two-connection
+duplicate production, suppressed markers, audit failure, deferred COMMIT failure,
+revocation, scope replacement, source withdrawal, retention and replay. A planted
+completion defect names the new current-authority rejection. Independent tests
+first exposed unavailable-withdrawal revival, unrelated early-retention poisoning,
+and a disconnected literal-conflict path; each is retained as a regression.
+Source-history migration additionally exposed withdrawal overwriting quarantine;
+deciding tests exercise the actual retrieval and L0–L3 promotion exits, not just
+the stored status. Historical statement-identity fixtures now explicitly plant
+synthetic stable-key rows; current prose no longer produces those identities.
+These are focused candidate checks, not a claim that the full suite or release
+gates pass during the remaining next-version transition.
+
+**Limit.** Owner-local means any process with the same OS/store capability, not
+independent proof of a human decision. Direct Store/Graph/database access remains
+privileged. Pattern-based extraction and literal conflict checks do not establish
+semantic compatibility. Retention can make reconstruction unavailable. This
+slice does not yet implement complete task-scoped mandatory-obligation proof
+commitments, task watermarks, or the final serialized transport byte cap. Existing
+tests, public schemas, capability wording and release documentation still require
+explicit next-version migration and full verification before promotion.
+
+## ADR-127 — Complete applicable obligations in versioned task proofs
+
+**Status.** Accepted for the local next-version candidate, 2026-09-22; not a
+release or publication decision. The broader integration transition is open.
+
+**Context.** A caller could omit an applicable requirement from continuity
+links, and adding a confirmed requirement, constraint, decision or assumption
+after attestation did not stale that proof. Even a freshly committed unresolved
+conflict did not itself prevent completion. The old independent verifier would
+accept an unknown input commitment under proof v1 without knowing its meaning.
+
+**Decision.** Produce `cce.proof.v2`, with exactly one reserved
+`continuity:obligations:<task-id>` input per distinct typed task. Final builders,
+runtime validation and independent verification reject incomplete, duplicate,
+wrong-kind or foreign-target commitments. Intermediate builder order remains
+usable. The new predicate uses its own version; published v1 schema bytes are
+retained as historical contracts, not current spendable proof. The candidate's
+v0.2.0 schema URLs are not a claim that that tag or release exists.
+
+The engine derives a closed `cce.obligation-basis.v1` from the expected tenant,
+project and confirmed task identity, canonical applicability, all four control
+kinds, and normalized verifier policy. Global controls and controls explicitly
+scoped to the target apply. Privileged runtime controls default to global only
+when their own explicit scope is absent; extraction history never becomes a
+runtime origin by losing a current extractor field. Persisted confirmed scopes
+must agree with canonical history; damage must not silently erase obligations.
+Scoped sibling identity is canonical, but sibling completion does not remove an
+obligation still applying to the target. Caller supplemental requirements are
+additive, with both supplied lists required to agree even when one is empty.
+
+Each basis uses one database frontier and one parsed validity instant, with
+half-open intervals. Recompute under the final writer before persistence and
+spending; retain the independent broad concurrency guard. Exclude graph versions,
+audit/action/verification bookkeeping, unrelated tasks and observation time.
+Commit complete control data, excluding only a confirmed control's validated
+canonical `decided_at`; evidence-looking keys can themselves affect consumers.
+Unknown semantic additions therefore conservatively stale proofs.
+
+Uncertain, blocked or review-required applicable controls, or a truthy explicit
+conflict flag, block completion even when proof is optional. Resolved assumptions
+remain obligations if authoritative and valid. Terminal withdrawn, revoked,
+superseded, invalidated, rejected and quarantined controls do not mandate.
+An explicitly confirmed task with zero applicable obligations remains a valid
+baseline when all existing proof, verifier, evidence and policy gates pass.
+
+**Alternatives.** Caller-selected links are not a completeness boundary. A whole
+graph or audit digest self-stales on proof bookkeeping and couples unrelated
+tasks. Statement-only commitments omit deciding flags and evidence pointers.
+Silently extending v1 would let old consumers report validity while overlooking
+the new contract. Mandatory nonempty requirements would turn unconfirmed noise
+into a blocker rather than prove a configured verifier's adequacy.
+
+**Consequences.** Task completion fixtures and clients must explicitly confirm
+their targets. Old v1 proof spending is refused; archived schemas remain usable
+for historical interpretation. Required-verifier coverage remains a separately
+named gate ahead of policy freshness. Canonical-history reads impose an
+unmeasured large-history performance cost. Exact retry of an already-recorded
+completion remains an acknowledgment, not a new certificate of currentness;
+the existing independent authority and invalidation checks still precede it.
+
+**Verification.** Real producers first reproduced omission, stale-proof spending
+and conflict acceptance. Literal field tests freeze the digest contract; tests
+exercise actual attest-to-complete, empty sets, all four kinds, unrelated scope,
+retired siblings, offset-bearing validity and clock-only transitions. A
+two-connection interposition checks one read frontier and refusal before proof
+persistence. Named instrument defects preserve earlier gate reasons. Review
+also reproduced damaged-scope omission and explicit-empty-list mismatch before
+repair. Wire checks independently reject new versions in the preserved old
+verifier and retain parser/schema negative controls. Full source, artifact and
+platform gates remain required; focused passes do not complete that work.
+
+**Limit.** This binds the configured control set, not every unstated human intent
+or the semantic adequacy of a verifier. Direct same-account Store/Graph access
+remains privileged. Literal conflicts are not a general contradiction solver.
+The standalone verifier cannot recompute live store obligations. This decision
+does not implement task-scoped packet watermarks, final transport-byte limits,
+capsule changes, or publish the next package version.
+
+## ADR-128 — Complete scoped packets and isolated freshness records
+
+**Status.** Accepted for the local next-version candidate, 2026-09-22. This is
+an intermediate unpublished contract; final byte limits and release integration
+remain open.
+
+**Context.** A single project watermark could not distinguish targeted work
+from a project-wide snapshot. The earlier packet could drop open work to meet
+an advisory token hint or withhold mandatory text while still returning success.
+Its trust display truncated required successful checks at ten and omitted the
+configured policy. Those behaviors cannot describe a complete scoped packet.
+
+**Decision.** Emit `cce.resume.v2` with canonical tenant/project identity,
+explicit project or singleton task scope, a literal completeness assertion,
+the complete applicable obligation members and their digest. The task operand
+must identify a live, currently confirmed event-derived task. Descriptive target
+metadata never selects authority. Proofs and packets use the same applicability
+collector, including conservative unscoped runtime controls, canonical persisted
+scope validation and half-open valid intervals. Sample membership once for packet
+contents and their state commitment; a later validity transition makes it stale.
+Live active, uncertain and review-required task states remain visible; the latter
+two are blockers, not next-safe actions. Unrelated confirmed tasks and explicitly
+out-of-scope controls are disclosed by category counts, not identifier lists.
+
+Mandatory controls, work, policy and trust state cannot be trimmed. Preserve all
+required current verifier summaries and the full normalized configuration.
+Quarantine still acts on the only exit; if it removes mandatory state, refuse
+before signing or success bookkeeping instead of signing a partial packet.
+Standalone composition delays collision audit writes until validation succeeds.
+Its privileged unscoped Graph-only interface has no canonical event witness and
+therefore refuses extracted/scoped controls or a task operand. It is not a
+substitute for the Engine confirmation boundary.
+
+Scope-key `packet_watermark` by `(project_id, scope_key)`, with distinct project
+and task keys. Audit objects bind tenant, project and exact scope without
+delimiter ambiguity. Readers use the same identity and compare the latest audit
+within that scope. Old project-only rows retain their recorded data but remain
+stale after the structural upgrade; read-only opening of that old table refuses
+without attempting migration. This is not permission to upgrade old released
+processor projections, which still fail the earlier compatibility boundary.
+All pending canonical events and broad project safety changes conservatively
+stale every scope. Separate watermarks do not imply semantic independence from
+the rest of the project.
+
+Continuity receipts use v2 with explicit project scope; verification compares
+the externally expected scope and refuses task expectations. No project verdict
+is relabeled task-specific. Capsules use v2 but remain project-only at export,
+validation, challenge and import, including inner/outer tenant/project binding.
+Their shared packet shape validator supports both packet modes. Published v1
+schemas remain unchanged historical contracts and old consumers reject v2.
+Export and live import challenge receive paired membership and state basis from
+the Engine, so a validity transition between independent reads cannot pass a
+capsule against a different control set. The pairing does not sign an inner
+packet before the capsule's own forbidden-content checks.
+
+**Alternatives.** Caller-selected requirement lists are not completeness checks.
+Reusing the project watermark lets targeted composition bless unseen work.
+Silently extending v1 lets old consumers overlook new semantics. Task-scoped
+continuity verdicts or capsules would require a separately specified predicate
+and portability product; neither is added here. Filtering project safety state
+by absent graph edges would incorrectly infer irrelevance. Partial success under
+budget pressure hides exactly the controls the packet exists to preserve.
+
+**Consequences.** Packets can be larger, and global authority can prevent a
+small bounded response. The following byte-limit unit must refuse that state,
+not weaken completeness. Project changes may force unnecessary task refreshes;
+this conservative cost is accepted. Canonical-history validation adds unmeasured
+large-store query cost. Existing partial-packet fixtures now assert retention or
+explicit refusal; optional context can still be trimmed. HTTP/MCP/CLI continue
+to request project packets until bounded transport integration is complete.
+
+**Verification.** Frozen real-confirmation fixtures distinguish unsupported old
+APIs from actual missing refusal. Project and two task watermarks coexist;
+cross-scope audit substitution, malformed authority scope, unprocessed history,
+wrong targets and mandatory quarantine collisions refuse. Review reproduced and
+repaired split-time membership, omitted live statuses, and nested read-snapshot
+ownership; time-only expiry, concurrent initialization and read-only behavior
+are separately tested. Runtime and literal public-schema checks reject malformed
+members and scope substitutions. Older validators reject actual v2 artifacts.
+Source-frozen broad and release verification remain required, not implied by
+these focused checks.
+
+**Limit.** Completeness means the configured, mechanically applicable retained
+control set, not unstated intent or verifier adequacy. Owner-local authority is
+not human authentication or same-account isolation. This unit does not enforce
+the approved final serialized-byte cap, expose remote task selectors, establish
+large-history performance, or publish any new schema/package version. The v0.2.0
+schema identities are candidate URLs, not evidence that a release exists.
+
+## ADR-129 — Bound the final packet representation before signing
+
+**Status.** Accepted for the local next-version candidate, 2026-09-22; no
+publication or complete release-validation claim.
+
+**Context.** Advisory token fitting cannot enforce a byte limit: escaping,
+signatures, terminal sanitization and transport wrappers all change the final
+length. Complete mandatory state from ADR-128 may itself exceed a small budget.
+Producing a stateful signature just to measure it would make refusal consume
+signing state, and measuring after composition could leave a success watermark.
+
+**Decision.** Accept an exact integer `max_response_bytes` from 1 through
+1048576, default 131072. Bind that value and a closed `response_format` into
+the packet and its digest/signature. Engine JSON means canonical signed UTF-8;
+Engine Markdown means its rendered UTF-8. CLI includes pretty JSON or sanitized
+Markdown and LF, HTTP includes the complete JSON body, and MCP includes the
+JSON-RPC result wrapper, encoded request ID and LF. Adapters provide fixed
+internal encoders; the exact admitted bytes are returned for verbatim output,
+not serialized a second time after the transaction commits.
+
+After quarantine and reconciliation, own the final JSON tree and freeze the
+reviewed built-in signer's key ID, algorithm and HMAC key where applicable.
+Encode an exact-width signature preview through that same final encoder. HMAC
+and Lamport hexadecimal fields have fixed widths; use the real key ID so its
+escaping is measured. Refuse custom signer types, subclasses and instance sign
+overrides without invoking them. Validate the synthetic signature's existing
+wire shape and canonical encoding before fitting, so malformed key metadata is
+not mistaken for budget overflow or discovered after cryptographic work.
+Only after the predicted response fits may a
+private signer instance sign once. Validate and encode the actual packet and
+require its length to equal the prediction before recording success. Publish
+only the newly minted Lamport fingerprint to the original issuer's registries.
+
+If necessary remove optional recent context, verified progress and environment,
+in that order, as whole sections with bounded count disclosures. Recompute the
+estimate and digest each time. Never trim mandatory controls, work, policy or
+trust. If they cannot fit, raise `PacketBudgetExceeded` before any signing,
+collision audit or watermark write. The public refusal is fixed content-free
+JSON: code `packet_budget_exceeded`, message `Complete packet exceeds
+max_response_bytes.` CLI emits it on stderr with LF and exit 2, HTTP uses 422,
+and MCP returns a normal tool result with `isError: true` and remains usable.
+Those refusal frames are independently bounded at 1024 bytes, not constrained
+by a caller's possibly one-byte success budget.
+
+Only provided resume-tool MCP IDs are additionally constrained: exact signed
+64-bit integers or strings whose JSON encoding is at most 128 UTF-8 bytes.
+Invalid IDs return a fixed invalid-request response with null ID before any
+echo or state open. Absent-ID notifications remain unexecuted and unanswered.
+Framing IDs are not added to the signed canonical packet, whose integer domain
+is narrower. Task selection is now exposed on these bounded resume adapters;
+it does not expose confirmation or add task capsules or receipts.
+Unavailable, foreign, unconfirmed and terminal task selectors use one typed
+Engine refusal; HTTP maps it to the same identifier-free 404. Unrelated internal
+exceptions retain generic 500 responses rather than being reclassified as input.
+
+**Alternatives.** Character counts and scalar signature allowances miss actual
+escaping and wrappers. Signing first violates the no-consumption budget refusal
+contract. Returning partial mandatory state violates completeness. Accepting
+arbitrary signers makes fixed pre-signing prediction impossible without a new
+reviewed interface. Whole-section optional removal avoids a combinatorial fit
+policy; retaining the most optional content is not a promised optimization.
+
+**Consequences.** A large global control set can make every small request refuse;
+the remedy is an adequate limit or legitimate narrower task scope, not hidden
+authority loss. The final size is representation-specific; converting a returned
+packet into another encoding is a new operation, not covered by the old cap.
+Existing custom signer integrations must use the reviewed built-ins for bounded
+packets. The default is exercised with real HMAC and Lamport output, including
+escaped IDs, but is not a universal fit guarantee for arbitrary projects.
+
+**Verification.** Literal tests are compared with the preserved prior candidate;
+unsupported new fields/APIs are capability gaps, not broken old release promises.
+Exact boundaries, optional trimming, mandatory refusal, private signer/input
+mutation, full database preservation and real transport bytes are exercised.
+Broad source and release validation remain separate gates, not implied by these
+focused checks.
+
+**Limit.** This bounds successful response bytes, not CPU, input memory, query
+cost, HTTP headers, network framing beyond the stated body/frame, or another
+consumer's reserialization. The wire validator checks the declaration's shape,
+not an external transport's length. Capsule inner packets use the default but
+the separately signed outer capsule is not covered by this response contract.
+Internal encoders and class code remain privileged; this is not same-account
+isolation. Budget refusal consumes no signature, but unrelated late database,
+delivery or task-validity failures after admitted signing are not promised to
+refund it. Output failure after commit does not prove receipt by a client.
+
+## ADR-130 — One validity instant through packet watermark admission
+
+**Status.** Accepted for the local next-version candidate, 2026-09-23;
+not published.
+
+**Context.** Packet selection already sampled one validity instant for its
+membership and state commitment. The final task-watermark check sampled time
+again. If a confirmed task expired during composition, that second check refused
+after signing: the database rolled back, but a Lamport fingerprint was consumed.
+Read-only composition returned the same selected snapshot without that refusal.
+This was a conservative availability defect, not acceptance of expired authority
+or a violation of the byte-budget refusal contract.
+
+**Decision.** Carry the selection's parsed instant privately through the final
+watermark scope check. Re-fetch the task and revalidate canonical confirmation,
+source support, projected semantics and live status; only validity time is reused.
+Keep the pre-composition state commitment. The instant is not a new wire field
+or commitment member and is never reused across requests. Direct watermark
+callers that supply no selected instant retain the current-time check.
+
+**Alternatives.** Removing the final check would overlook authority changes.
+Resampling time preserves inconsistent writer/read-only behavior and consumes a
+signature for a snapshot that was valid when selected. Recomputing the state
+commitment after composition could bless unseen changes. Rejecting every eligible
+privileged mutation would impose a stronger contract than the existing as-of
+snapshot plus freshness check; that policy is not introduced here.
+
+**Consequences.** A packet can describe a valid selected snapshot whose task has
+expired by delivery. A new freshness check or request uses current time and
+refuses that task; this is not a lease or permission to act after expiry.
+Revocation, quarantine, terminal status, changed statement or validity excluding
+the selected instant still refuse at final admission. Changes that remain
+eligible cannot advance the old packet's commitment: they make it stale.
+
+**Verification.** Frozen tests on real confirmed tasks fail against the prior
+candidate for both HMAC and Lamport writer paths at the exact half-open expiry
+boundary. Candidate tests cover writer/read-only composition, signature and
+registry counts, unchanged canonical data, already-expired refusal before crypto,
+semantic mutation rollback, and eligible rescope/validity changes retaining a
+stale pre-composition commitment. Later freshness is checked independently.
+
+**Limit.** This corrects the split-time check, not arbitrary late database,
+delivery or privileged mutation failures. It does not refund consumed signatures,
+establish a response-time or history-query bound, add persistent caching, or
+change owner-local trust. Broad source and release verification remain separate.
+
+## ADR-131 — Reuse canonical witnesses only within one obligation read
+
+**Status.** Accepted for the local next-version candidate, 2026-09-23;
+not published.
+
+**Context.** One obligation collection reconstructed the same confirmed control
+three times and repeatedly reconstructed shared scope-task identities. These
+reads traverse canonical authority history, making duplicated validation costly.
+Reusing a result across calls would instead risk missing revocation, retention
+or a change inside an outer writer transaction.
+
+**Decision.** Derive each confirmed control's canonical witness once within the
+non-mutating collector and compare the actual node against that witness. Retain
+only successfully validated scope-task identities in a set local to that call.
+Continue checking scope shape and identifiers before a set hit. Preserve
+persisted/canonical scope agreement and scope-before-source-support error order.
+The public authority predicate still derives its own witness; no caller may
+supply one. Source-support errors retain their original exception behavior.
+
+**Alternatives.** Engine-wide or transaction-wide caching can outlive relevant
+changes, including changes by the same writer, and is rejected. Filtering
+authority history by target before validation could hide unavailable later
+records and is not introduced. Keeping every duplicate read preserves behavior
+but pays repeated canonical reconstruction for an already coherent selection.
+
+**Consequences.** Shared scope identities are checked once per collection, not
+once per occurrence. This validates identity, not present liveness: a retired
+sibling does not erase another task's obligation. A subsequent collection,
+including one in the same outer transaction, must reconstruct again. Membership,
+sorting, source support and actual-node semantics remain binding. There is no
+new schema, wire field, processor version or persistent cache to migrate.
+
+**Verification.** Frozen real-producer tests fail the prior implementation on
+four duplicate-read counts while semantic controls pass both versions. New-call
+revocation, source loss, retained-history boundaries, scope damage, actual-node
+mutation and time-only validity remain covered. Independent differential reads
+compare exact members and exceptions, including scoped-sibling source loss
+between calls in one writer. All 24 measured project/task packet and proof-
+currency cases use fewer SELECTs and canonical reconstructions. At 16 task-
+scoped controls, the task packet falls from 1,979 to 818 SELECTs and from 102
+to 39 canonical reconstructions; these are counts, not elapsed-time claims.
+
+**Limit.** Each distinct canonical witness still traverses relevant history.
+This removes duplicate work but does not establish linear total history cost,
+a latency bound, arbitrary privileged mutation isolation, or release readiness.
+The collector relies on its existing coherent caller snapshot or writer and
+does not support mutation callbacks inside the read. No result survives the
+collector call or substitutes for a later proof, completion or freshness check.

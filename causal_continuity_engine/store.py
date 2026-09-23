@@ -622,8 +622,10 @@ class Store:
 
         Methods that use :meth:`write_scope` join this transaction instead of
         committing independently. ``append_event`` deliberately remains a
-        standalone canonical-log append; callers start a transaction only for
-        the projection performed after that append succeeds.
+        standalone canonical-log append; ordinary ingestion starts a transaction
+        only for the projection performed after that append succeeds. The private
+        transactional append lets a locally owned decision include its canonical
+        event in this write unit without changing connector append semantics.
         """
         with self._lock:
             nested = self._transaction_depth > 0
@@ -716,6 +718,55 @@ class Store:
         Raises DuplicateEventError on benign redelivery and
         PayloadMismatchError when the same key arrives with different content.
         """
+        return self._append_event(
+            tenant_id=tenant_id, project_id=project_id, source_type=source_type,
+            idempotency_key=idempotency_key, payload=payload, authority=authority,
+            observed_at=observed_at, valid_from=valid_from, valid_to=valid_to,
+            actor_type=actor_type, actor_id=actor_id, source_id=source_id,
+            sensitivity=sensitivity, capture_mode=capture_mode,
+            schema_version=schema_version, payload_digest=payload_digest,
+            _join_transaction=False)
+
+    def _append_event_in_transaction(self, **event) -> dict:
+        """Append inside an already owned writer, never commit independently.
+
+        This lower-level primitive applies no capture or operator authorization.
+        Its event arguments and duplicate exceptions match ``append_event``.
+        A failed call rolls back its savepoint, including mismatch diagnostics;
+        unlike the public standalone append, it cannot commit a durable rejection
+        outside its owner's decision. Earlier writes in the owner are preserved.
+        """
+        with self._lock:
+            if (self._read_only or not self._transaction_depth
+                    or not self._conn.in_transaction):
+                raise RuntimeError(
+                    "transactional event append requires an owned Store writer transaction")
+            # A caller may catch a failed INSERT and continue its outer decision.
+            # Do not leave its event sequence or trigger side effects half-written.
+            with self.transaction():
+                return self._append_event(_join_transaction=True, **event)
+
+    def _append_event(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        source_type: str,
+        idempotency_key: str,
+        payload: dict | None,
+        authority: str,
+        observed_at: str | None = None,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        actor_type: str = "service",
+        actor_id: str = "cce",
+        source_id: str | None = None,
+        sensitivity: str = "internal",
+        capture_mode: str = "full",
+        schema_version: str = "cce.event.v1",
+        payload_digest: str | None = None,
+        _join_transaction: bool,
+    ) -> dict:
         for field, value in (
                 ("tenant_id", tenant_id), ("project_id", project_id),
                 ("source_type", source_type),
@@ -756,14 +807,16 @@ class Store:
         stored_digest = sha256_hex(payload_text or "")
         now = utcnow()
         with self._lock:
-            if self._transaction_depth:
+            if not _join_transaction and self._transaction_depth:
                 raise RuntimeError(
                     "append_event is a standalone canonical-log commit; append it before "
                     "opening the projection transaction")
             # Acquire SQLite's cross-process writer lock before looking up
             # the key. A SELECT-first sequence lets two processes both see
             # absence and race the insert.
-            self._conn.execute("BEGIN IMMEDIATE")
+            # The private path already owns this lock through Store.transaction.
+            if not _join_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
             try:
                 row = self._conn.execute(
                     "SELECT event_id, payload_digest FROM events "
@@ -771,16 +824,18 @@ class Store:
                     (tenant_id, project_id, idempotency_key),
                 ).fetchone()
                 if row is not None and row["payload_digest"] == digest:
-                    self._conn.commit()
+                    if not _join_transaction:
+                        self._conn.commit()
                     raise DuplicateEventError(row["event_id"])
                 if row is not None:
                     self._conn.execute(
                         "INSERT INTO payload_mismatches VALUES (?,?,?,?)",
                         (idempotency_key, row["payload_digest"], digest, now),
                     )
-                    # CCG-001 requires the mismatch flag to survive the
-                    # rejection raised to the caller.
-                    self._conn.commit()
+                    # A standalone delivery's mismatch flag survives rejection
+                    # (CCG-001); the private path retains its owner's atomicity.
+                    if not _join_transaction:
+                        self._conn.commit()
                     raise PayloadMismatchError(
                         f"idempotency key {idempotency_key!r} redelivered with"
                         " different payload"
@@ -827,11 +882,19 @@ class Store:
                     ),
                 )
             except BaseException:
-                if self._conn.in_transaction:
+                if not _join_transaction and self._conn.in_transaction:
                     self._conn.rollback()
                 raise
             else:
-                self._conn.commit()
+                if not _join_transaction:
+                    try:
+                        self._conn.commit()
+                    except BaseException:
+                        # A deferred constraint fails only at COMMIT. As with
+                        # Store.transaction(), leave no open partial write unit.
+                        if self._conn.in_transaction:
+                            self._conn.rollback()
+                        raise
         return self.get_event(event_id)
 
     @serialized_access

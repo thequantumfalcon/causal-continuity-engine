@@ -58,13 +58,8 @@ def _write_identity_store(
                 capture_mode="full",
                 config={"require_proof_for": []},
             )
-            for index, decision in enumerate(decisions):
-                engine.ingest_human_decision(
-                    "prj_identity",
-                    actor="owner",
-                    decision=decision,
-                    request_id=f"evt_identity_{index}",
-                )
+            for decision in decisions:
+                _plant_identity(engine, "prj_identity", decision, legacy=legacy)
             return [
                 node["node_id"]
                 for node in engine.graph.current("prj_identity")
@@ -73,11 +68,22 @@ def _write_identity_store(
         finally:
             engine.close()
 
-    if not legacy:
-        return write()
-    with monkeypatch.context() as fixture:
-        fixture.setattr(engine_module, "stable_node_id", _v1_stable_node_id)
-        return write()
+    return write()
+
+
+def _plant_identity(engine, project_id, decision, *, legacy):
+    """Synthetic historical row, not a claim of released-producer provenance.
+
+    Current prose produces proposal IDs, so monkeypatching stable_node_id
+    during ingest no longer exercises the historical identity boundary.
+    """
+    statement = decision.removeprefix("We decided to ").removesuffix(".")
+    identity = _v1_stable_node_id if legacy else stable_node_id
+    node_id = identity(project_id, "decision", statement)
+    return engine.graph.put_node(
+        entity_type="decision", tenant_id=engine.tenant_id,
+        project_id=project_id, node_id=node_id, authority="human_decision",
+        status="accepted", data={"statement": statement, "stable_key": node_id})
 
 
 def _snapshot_files(root: Path) -> dict[str, bytes]:
@@ -133,8 +139,7 @@ def test_identity_check_reads_historical_node_versions(tmp_path, monkeypatch):
 def test_identity_check_reads_committed_wal_history(tmp_path, monkeypatch):
     database = tmp_path / "legacy-wal.sqlite3"
     writer = None
-    with monkeypatch.context() as fixture:
-        fixture.setattr(engine_module, "stable_node_id", _v1_stable_node_id)
+    try:
         writer = Engine(database)
         writer.create_project(
             "identity fixture",
@@ -142,14 +147,8 @@ def test_identity_check_reads_committed_wal_history(tmp_path, monkeypatch):
             capture_mode="full",
             config={"require_proof_for": []},
         )
-        writer.ingest_human_decision(
-            "prj_identity",
-            actor="owner",
-            decision="We decided to use C++ for the €500 parser.",
-            request_id="evt_identity_wal",
-        )
-
-    try:
+        _plant_identity(writer, "prj_identity",
+                        "We decided to use C++ for the €500 parser.", legacy=True)
         wal_path = Path(str(database) + "-wal")
         assert wal_path.stat().st_size > 0
         immutable = sqlite3.connect(
@@ -260,7 +259,7 @@ def test_unclassifiable_self_bound_identity_fails_closed(
         Engine(database)
 
 
-def test_v1_v2_shared_identity_and_v013_style_v2_rebuild(tmp_path, monkeypatch):
+def test_v1_v2_shared_identity_and_current_proposal_rebuild(tmp_path, monkeypatch):
     shared_database = tmp_path / "shared.sqlite3"
     shared_ids = _write_identity_store(
         shared_database,
@@ -284,14 +283,23 @@ def test_v1_v2_shared_identity_and_v013_style_v2_rebuild(tmp_path, monkeypatch):
         legacy=False,
     )
     upgraded = Engine(v2_database)
+    assert upgraded.graph.get(v2_ids[0])["data"]["statement"] == "use C++ for the €500 parser"
+    report = upgraded.ingest_human_decision(
+        "prj_identity", actor="owner",
+        decision="We decided to use C++ for the €500 parser.", request_id="current-proposal")
+    proposal_ids = [row["node_id"] for row in report["created"]]
+    assert len(proposal_ids) == 1
     rebuilt = upgraded.rebuild_projection("prj_identity")
     try:
+        # Historical row admission is not an in-place authority upgrade.
+        # Canonical current prose replays to the same proposal, not a mandate.
         rebuilt_ids = [
             node["node_id"]
             for node in rebuilt.graph.current("prj_identity")
-            if node["data"].get("stable_key")
+            if node["data"].get("needs_confirmation")
         ]
-        assert rebuilt_ids == v2_ids
+        assert rebuilt_ids == proposal_ids
+        assert rebuilt.graph.current("prj_identity", "decision") == []
     finally:
         rebuilt.close()
         upgraded.close()
@@ -305,18 +313,12 @@ def test_cli_refusal_precedes_legacy_secret_migration(
     cce_dir = tmp_path / ".cce"
     database = cce_dir / "cce.db"
 
-    with monkeypatch.context() as fixture:
-        fixture.setattr(engine_module, "stable_node_id", _v1_stable_node_id)
-        engine = Engine(database)
-        try:
-            engine.ingest_human_decision(
-                project_id,
-                actor="owner",
-                decision="We decided to use C++ for the €500 parser.",
-                request_id="evt_identity_cli",
-            )
-        finally:
-            engine.close()
+    engine = Engine(database)
+    try:
+        _plant_identity(engine, project_id,
+                        "We decided to use C++ for the €500 parser.", legacy=True)
+    finally:
+        engine.close()
 
     meta_path = cce_dir / "meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))

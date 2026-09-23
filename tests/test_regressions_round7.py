@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from causal_continuity_engine.engine import Engine
+from tests.authority_helpers import confirmed_task
 
 ROOT = Path(__file__).resolve().parent.parent
 PRJ = "prj_r7"
@@ -185,44 +186,66 @@ def _reasons(packet):
     return [o["reason"] for o in packet.get("omissions", [])]
 
 
-def test_quarantined_text_under_any_key_is_stripped(tmp_path):
+@pytest.mark.parametrize("mandatory", [True, False])
+def test_quarantined_text_under_any_key_is_stripped(tmp_path, monkeypatch, mandatory):
     """Pre-fix the strip collected only `data["statement"]`, so a payload
     living under `title` — where tasks put their text — was invisible to it,
-    and a live node quoting that payload carried it into the packet."""
+    and a live node quoting that payload carried it into the packet. V2 may
+    strip optional context, but must refuse if mandatory authority collides."""
     e = _engine(tmp_path)
+    _packet(e)
     e.graph.put_node(entity_type="task", tenant_id=e.tenant_id, project_id=PRJ,
                      status="quarantined", data={"title": PAYLOAD})
-    e.graph.put_node(entity_type="decision", tenant_id=e.tenant_id,
-                     project_id=PRJ, status="active",
+    e.graph.put_node(entity_type="decision" if mandatory else "artifact",
+                     tenant_id=e.tenant_id,
+                     project_id=PRJ, status="active" if mandatory else "verified",
                      data={"statement": "proceed with the cutover: " + PAYLOAD})
-    packet = _packet(e)
-    assert PAYLOAD not in json.dumps(packet), \
-        "suspected-injection text reached the agent-facing packet"
-    assert "quarantined_text_collision" in _reasons(packet)
+    if mandatory:
+        before = tuple(e.store._conn.iterdump())
+        monkeypatch.setattr(type(e.signer), "sign", lambda *_: pytest.fail(
+            "a mandatory-content refusal must precede signing"))
+        with pytest.raises(ValueError, match="mandatory content withheld"):
+            _packet(e)
+        assert tuple(e.store._conn.iterdump()) == before
+    else:
+        packet = _packet(e)
+        assert PAYLOAD not in json.dumps(packet), \
+            "suspected-injection text reached the agent-facing packet"
+        assert "quarantined_text_collision" in _reasons(packet)
     e.close()
 
 
-def test_a_suppressed_live_node_is_named_not_silently_dropped(tmp_path):
+@pytest.mark.parametrize("mandatory", [True, False])
+def test_a_suppressed_live_node_is_named_not_silently_dropped(tmp_path, monkeypatch, mandatory):
     """Quoting a critical constraint inside content that gets quarantined
-    still suppresses the constraint — a leak is worse — but pre-fix it
-    vanished with no indication which node was lost or why."""
+    cannot erase it into partial success. V2 refuses that complete packet;
+    optional progress may still be withheld, with its identity and audit."""
     e = _engine(tmp_path)
-    cst = e.graph.put_node(entity_type="constraint", tenant_id=e.tenant_id,
-                           project_id=PRJ, status="active",
-                           criticality="critical", data={"statement": CRITICAL})
+    _packet(e)
+    live = e.graph.put_node(entity_type="constraint" if mandatory else "artifact",
+                            tenant_id=e.tenant_id,
+                            project_id=PRJ, status="active" if mandatory else "verified",
+                            criticality="critical", data={"statement": CRITICAL})
     e.graph.put_node(entity_type="claim", tenant_id=e.tenant_id, project_id=PRJ,
                      status="quarantined", authority="untrusted_content",
                      data={"statement": CRITICAL, "suspected_injection": True})
-    packet = _packet(e)
-    assert CRITICAL not in json.dumps(packet)
-
-    collision = next(o for o in packet["omissions"]
-                     if o["reason"] == "quarantined_text_collision")
-    assert cst.id in [n["node_id"] for n in collision["nodes"]], \
-        "the withheld live node was not named"
-    detail = [r["detail"] for r in e.store.audit_entries()
-              if r["action"] == "packet.quarantine_collision"]
-    assert detail and cst.id in detail[0], "the suppression was not audited"
+    if mandatory:
+        before = tuple(e.store._conn.iterdump())
+        monkeypatch.setattr(type(e.signer), "sign", lambda *_: pytest.fail(
+            "a mandatory-content refusal must precede signing"))
+        with pytest.raises(ValueError, match="mandatory content withheld"):
+            _packet(e)
+        assert tuple(e.store._conn.iterdump()) == before
+    else:
+        packet = _packet(e)
+        assert CRITICAL not in json.dumps(packet)
+        collision = next(o for o in packet["omissions"]
+                         if o["reason"] == "quarantined_text_collision")
+        assert live.id in [n["node_id"] for n in collision["nodes"]], \
+            "the withheld live node was not named"
+        detail = [r["detail"] for r in e.store.audit_entries()
+                  if r["action"] == "packet.quarantine_collision"]
+        assert detail and live.id in detail[0], "the suppression was not audited"
     e.close()
 
 
@@ -325,8 +348,7 @@ def test_a_caller_declared_input_does_not_permanently_stale_a_proof(tmp_path):
     unusable forever, under a reason that read 'deliverables changed' when
     nothing had."""
     e = _verified_project(tmp_path)
-    task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                            project_id=PRJ, data={"title": "ship"}, status="open")
+    task = confirmed_task(e, PRJ)
     proof = e.attest_action(PRJ, intent_type="task_complete",
                             intent_statement="done", actor={"agent": "a"},
                             action_type="run_verifier",
@@ -343,8 +365,7 @@ def test_a_caller_declared_input_does_not_permanently_stale_a_proof(tmp_path):
 def test_a_caller_may_still_opt_an_input_into_artifact_tracking(tmp_path):
     """The fix must not become a way to escape the freshness check."""
     e = _verified_project(tmp_path)
-    task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                            project_id=PRJ, data={"title": "ship"}, status="open")
+    task = confirmed_task(e, PRJ)
     proof = e.attest_action(
         PRJ, intent_type="task_complete", intent_statement="done",
         actor={"agent": "a"}, action_type="run_verifier",
@@ -357,8 +378,7 @@ def test_a_caller_may_still_opt_an_input_into_artifact_tracking(tmp_path):
 def test_a_changed_deliverable_still_stales_the_proof(tmp_path):
     """The control the fix touched must still fire on the case it exists for."""
     e = _verified_project(tmp_path)
-    task = e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                            project_id=PRJ, data={"title": "ship"}, status="open")
+    task = confirmed_task(e, PRJ)
     proof = e.attest_action(PRJ, intent_type="task_complete",
                             intent_statement="done", actor={"agent": "a"},
                             action_type="run_verifier",
@@ -379,15 +399,13 @@ def test_upgrading_a_store_does_not_unspend_old_proofs(tmp_path):
     signer = Signer("upgrade", bytes.fromhex("5cce" + "00" * 30 + "ff"))
 
     e = _verified_project(tmp_path, db=db, signer=signer)
-    for name in ("first", "second"):
-        e.graph.put_node(entity_type="task", tenant_id=e.tenant_id,
-                         project_id=PRJ, node_id=f"tsk_{name}",
-                         data={"title": name}, status="open")
+    first = confirmed_task(e, PRJ, text="Ship the first deliverable")
+    second = confirmed_task(e, PRJ, text="Ship the second deliverable")
     proof = e.attest_action(PRJ, intent_type="task_complete",
                             intent_statement="done", actor={"agent": "a"},
                             action_type="run_verifier",
-                            continuity={"task_ids": ["tsk_first", "tsk_second"]})
-    e.complete_task(PRJ, "tsk_first", proof=proof, actor="agent")
+                            continuity={"task_ids": [first.id, second.id]})
+    e.complete_task(PRJ, first.id, proof=proof, actor="agent")
     # simulate the pre-ADR-059 state: the completion is recorded on the task,
     # but the single-use table does not know about it.
     e.store._conn.execute("DELETE FROM spent_proofs")
@@ -396,8 +414,8 @@ def test_upgrading_a_store_does_not_unspend_old_proofs(tmp_path):
 
     reopened = _verified_project(tmp_path, db=db, signer=signer)
     with pytest.raises(PermissionError,
-                       match="already used to complete tsk_first"):
-        reopened.complete_task(PRJ, "tsk_second", proof=proof, actor="agent")
+                       match=f"already used to complete {first.id}"):
+        reopened.complete_task(PRJ, second.id, proof=proof, actor="agent")
     detail = [r["detail"] for r in reopened.store.audit_entries()
               if r["action"] == "spent_proofs.backfill"]
     assert detail, "the backfill was not recorded"
@@ -531,7 +549,8 @@ def test_retention_does_not_mask_a_real_divergence(tmp_path):
         PRJ, actor="lead",
         decision="We must encrypt every backup before it leaves the cluster")
     target = next(n for n in e.graph.current(PRJ)
-                  if "encrypt" in json.dumps(n["data"]))
+                  if n["entity_type"] == "claim"
+                  and "encrypt" in n["data"].get("statement", ""))
     e.graph.put_node(entity_type=target["entity_type"], tenant_id=e.tenant_id,
                      project_id=PRJ, node_id=target["node_id"], data={},
                      status="superseded")
@@ -540,12 +559,12 @@ def test_retention_does_not_mask_a_real_divergence(tmp_path):
     partial = e.replay_agrees_where_replayable(PRJ, fresh)
     assert not partial["agrees"], \
         "a node that replayed to a different value was not reported"
-    semantic_target = (
-        f"stable:{target['entity_type']}:{target['data']['stable_key']}")
     assert any(
         d.get("kind") == "node"
-        and d.get("semantic_id") == semantic_target
         and d.get("issue") == "replayed differently"
+        and d["replayed"]["data"].get("statement") == target["data"]["statement"]
+        and d["live"]["status"] == "superseded"
+        and d["replayed"]["status"] == "recorded"
         for d in partial["disagreements"])
     fresh.close()
     e.close()

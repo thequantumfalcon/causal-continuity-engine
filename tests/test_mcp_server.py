@@ -295,6 +295,8 @@ def test_unexpected_request_errors_do_not_echo_exception_values(
 
 def test_tools_answer_from_a_real_project(tmp_path):
     from causal_continuity_engine.cli import main
+    from causal_continuity_engine.engine import Engine
+    from tests.authority_helpers import confirm_proposal
 
     main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
           "--repo-id", "123"])
@@ -311,6 +313,16 @@ def test_tools_answer_from_a_real_project(tmp_path):
                   "updated_at": "2026-08-01T00:00:00Z"}}), encoding="utf-8")
     main(["--dir", str(tmp_path), "ingest", "--event", "issues",
           "--delivery-id", "d1", "--file", str(issue)])
+
+    meta = json.loads((tmp_path / ".cce" / "meta.json").read_text())
+    engine = Engine(tmp_path / ".cce" / "cce.db")
+    try:
+        assert engine.graph.current(meta["project_id"], "assumption") == []
+        proposal, = [n for n in engine.graph.current(meta["project_id"], "claim")
+                     if n["data"].get("proposed_kind") == "assumption"]
+        confirm_proposal(engine, meta["project_id"], proposal["node_id"])
+    finally:
+        engine.close()
 
     responses = _drive_ready([
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -400,7 +412,7 @@ def test_continuity_check_answers_the_question_without_the_receipt(
     original_sign = Signer.sign
 
     def count_receipts(signer, body):
-        if body.get("schema_version") == "cce.continuity-receipt.v1":
+        if body.get("schema_version") == "cce.continuity-receipt.v2":
             signed_receipts.append(body)
         return original_sign(signer, body)
 
@@ -432,6 +444,12 @@ def test_continuity_tool_refuses_success_for_an_unprojected_event(
         "require_proof_for": [], "required_verifiers": [],
         "min_evidence_grade": None,
     })
+    packet = engine.resume_packet(project_id)
+    assert packet["complete"] is True
+    assert engine.packet_is_stale(project_id) is False
+    previous_watermark = dict(engine.store._conn.execute(
+        "SELECT * FROM packet_watermark WHERE project_id=? AND scope_key='project'",
+        (project_id,)).fetchone())
     original = engine._process_prepared_event
 
     def interrupted(*args, **kwargs):
@@ -444,7 +462,15 @@ def test_continuity_tool_refuses_success_for_an_unprojected_event(
                 project_id, actor="owner", decision="Ship the release")
     finally:
         engine._process_prepared_event = original
-    engine.resume_packet(project_id)
+    assert len(engine.store.unprocessed_event_ids(
+        project_id, tenant_id=engine.tenant_id)) == 1
+    before_refusal = tuple(engine.store._conn.iterdump())
+    with pytest.raises(ValueError, match="^complete packet unavailable: unprocessed events$"):
+        engine.resume_packet(project_id)
+    assert tuple(engine.store._conn.iterdump()) == before_refusal
+    assert dict(engine.store._conn.execute(
+        "SELECT * FROM packet_watermark WHERE project_id=? AND scope_key='project'",
+        (project_id,)).fetchone()) == previous_watermark
     engine.close()
 
     (response,) = _drive_ready(
@@ -623,7 +649,7 @@ def _local_state_snapshot(directory):
     return snapshot
 
 
-def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
+def test_resume_tool_mandatory_collision_refusal_is_logically_read_only(tmp_path):
     from causal_continuity_engine.cli import _engine, main
 
     main(["--dir", str(tmp_path), "init", "--repo", "octo/demo",
@@ -648,7 +674,10 @@ def test_resume_tool_is_a_logically_read_only_projection(tmp_path):
         "params": {"name": "resume_packet", "arguments": {}},
     }], directory=str(tmp_path))
 
-    assert response["result"]["isError"] is False
+    assert response["result"] == {
+        "isError": True,
+        "content": [{"type": "text", "text": "tool execution failed"}],
+    }
     assert _database_dump(tmp_path) == before
 
 
@@ -947,7 +976,7 @@ def test_resume_tool_can_return_the_complete_canonical_packet(tmp_path):
     packet = json.loads(text)
     assert text == canonical_json(packet)
     assert set(packet) >= ResumeComposer.MARKDOWN_RENDERED_TOP_LEVEL
-    assert packet["schema_version"] == "cce.resume.v1"
+    assert packet["schema_version"] == "cce.resume.v2"
 
 
 def test_list_projections_read_canonical_status_and_nested_data(tmp_path):

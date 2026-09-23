@@ -1,8 +1,8 @@
 """Temporal memory tiers L0-L4 (TM-001..TM-008).
 
 L0  pinned control state   — mission, non-negotiable constraints, accepted
-                             decisions, critical invalidations. Always in
-                             packets; human/policy controlled.
+                             decisions, critical invalidations. Binding only
+                             while the owning authority remains current.
 L1  working state          — durable checkpoints of plan/task-queue state.
 L2  episodic memory        — events/decisions/failures retrieved by causal,
                              temporal, lexical signals.
@@ -100,6 +100,17 @@ class Memory:
 
     # ---------------------------------------------------------------- tiers
 
+    def _l0_is_binding(self, node: dict) -> bool:
+        # An authority witness survives temporary invalidation so restoration
+        # can use it. L0 must additionally respect the current control's status;
+        # invalidation records themselves remain eligible conflict controls.
+        if (node["entity_type"] in (
+                "requirement", "constraint", "decision", "assumption", "task", "claim")
+                and node["status"] in (
+                    "invalidated", "superseded", "revoked", "withdrawn", "uncertain", "blocked")):
+            return False
+        return self.graph.may_mandate(node)
+
     def promote(self, project_id: str, node_id: str, tier: str, actor: str,
                 reason: str | None = None):
         if not isinstance(tier, str) or tier not in TIERS:
@@ -113,6 +124,8 @@ class Memory:
             raise ValueError(
                 f"quarantined node {node_id} cannot be promoted to any tier"
                 f" (requested {tier})")
+        if tier == "L0" and not self._l0_is_binding(node):
+            raise ValueError("L0 requires current, live authority")
         if tier == "L3":
             # TM-005: distillation requires provenance that actually resolves.
             if not self._has_real_provenance(project_id, node_id):
@@ -151,7 +164,8 @@ class Memory:
         def is_terminal(candidate: dict) -> bool:
             if candidate.get("status") == "quarantined":
                 return False
-            if candidate.get("authority") == "human_decision":
+            if (candidate.get("authority") == "human_decision"
+                    and self.graph.may_mandate(candidate)):
                 return True
             if (candidate.get("entity_type") == "verification"
                     and candidate.get("authority") == "verifier_authoritative"
@@ -306,6 +320,8 @@ class Memory:
                     node_id, tenant_id=tenant_id, project_id=project_id)
                 if node["status"] == "quarantined":
                     continue
+                if tier == "L0" and not self._l0_is_binding(node):
+                    continue
             except KeyError:
                 # A dangling or foreign-scope assignment cannot become
                 # packet control state merely because project ids collide.
@@ -317,7 +333,7 @@ class Memory:
     def l0(
             self, project_id: str, *,
             tenant_id: str | None = None) -> list[dict]:
-        """Pinned control state; never dropped from packets (TM-002, MIG-002)."""
+        """Pinned control whose current authority permits binding use."""
         tenant_id = self._effective_tenant(tenant_id)
         self._require_project(project_id)
         out = []

@@ -133,14 +133,17 @@ class InvalidationEngine:
         return self._default_restored_status(node)
 
     def _restore_node(self, node: dict, receipt: dict | None,
-                      event_id: str | None) -> str:
+                      event_id: str | None) -> str | None:
         """Retract an applied impact and restore its recorded predecessor.
 
         This is deliberately not an assumption lifecycle transition: it
         removes a justification that temporarily overlaid the status. Treating
         restoration as a new ``invalidated -> active`` assertion would either
         violate the lifecycle or force every entity into generic ``active``.
+        Removing an impact cannot reinstate independently withdrawn authority.
         """
+        if not self.graph.may_mandate(node):
+            return None
         status = self._restored_status(node, receipt)
         self.graph.put_node(
             entity_type=node["entity_type"], tenant_id=node["tenant_id"],
@@ -331,7 +334,8 @@ class InvalidationEngine:
             raise ResolutionInputError(
                 "superseding_decision requires an accepted decision")
         if (mode == "superseding_decision"
-                and replacement.get("authority") != "human_decision"):
+                and (replacement.get("authority") != "human_decision"
+                     or not self.graph.may_mandate(replacement))):
             raise ResolutionInputError(
                 "superseding_decision requires human-decision authority")
         binding_field = (
@@ -679,7 +683,8 @@ class InvalidationEngine:
             "dependency_drift": "Re-validate assumptions against the new dependency version.",
             "failed_check": "Fix the failing check before relying on dependent work.",
             "environment_mismatch": "Reconcile the environment fingerprint before resuming.",
-            "expired_approval": "Request a fresh approval; autonomy is downgraded meanwhile.",
+            "expired_approval": (
+                "Request a fresh approval before relying on the affected authority."),
         }.get(trigger_type, "Review affected nodes.")
         if severity in ("high", "critical"):
             base += " Blocked nodes must not drive actions until resolved."
@@ -858,7 +863,11 @@ class InvalidationEngine:
                 )
 
             target_before = target.get("status")
-            if target_id in still_held:
+            if not self.graph.may_mandate(target):
+                # A resolved invalidation is not a new confirmation. In
+                # particular, narrowing cannot clear canonical withdrawal.
+                held.append(target_id)
+            elif target_id in still_held:
                 held.append(target_id)
                 if mode == "narrowed_scope":
                     # Scope can be narrowed while another invalidation keeps
@@ -902,8 +911,10 @@ class InvalidationEngine:
                 if receipt["node_id"] in still_held:
                     held.append(receipt["node_id"])
                     continue
-                self._restore_node(node, receipt, event_id)
-                released.append(receipt["node_id"])
+                if self._restore_node(node, receipt, event_id) is None:
+                    held.append(receipt["node_id"])
+                else:
+                    released.append(receipt["node_id"])
 
             target_after = self.graph.get(
                 target_id, tenant_id=inv["tenant_id"],
@@ -920,7 +931,7 @@ class InvalidationEngine:
                 } if replacement is not None else None),
                 "target_result": {
                     "node_id": target_id, "from_status": target_before,
-                    "to_status": target_after, "still_held": target_id in still_held,
+                    "to_status": target_after, "still_held": target_id in held,
                 },
                 "released_nodes": sorted(set(released)),
                 "still_held_nodes": sorted(set(held)),
@@ -935,8 +946,8 @@ class InvalidationEngine:
             )
             self.store.audit(
                 actor=actor, action="invalidation.resolve", object_id=invalidation_id,
-                detail=f"{mode}; released {len(set(released))}, still held by other open"
-                       f" invalidations: {len(set(held))}")
+                detail=f"{mode}; released {len(set(released))}, still held by unresolved"
+                       f" controls: {len(set(held))}")
         return self.graph.get(
             invalidation_id, tenant_id=inv["tenant_id"],
             project_id=inv["project_id"], entity_type="invalidation")
@@ -997,8 +1008,8 @@ class InvalidationEngine:
                         "release receipt is not bound to this invalidation "
                         "tenant and project") from None
             if node.get("status") in ("uncertain", "blocked"):
-                self._restore_node(node, receipt, event_id)
-                released.append(node_id)
+                if self._restore_node(node, receipt, event_id) is not None:
+                    released.append(node_id)
         return released
 
     # ----------------------------------------------------------------- query

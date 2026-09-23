@@ -48,12 +48,12 @@ match a configured installation id. See GitHub's [webhook payload reference]
 | GET | `/v1/health` | Public health check | No body. | Object with status=ok. This is the only unauthenticated route. | 200 |
 | POST | `/v1/events:ingest` | GitHub HMAC | Raw GitHub JSON payload; HMAC is checked before JSON parsing. | Ingestion report, duplicate status, or ping health response. | 202 |
 | POST | `/v1/traces:ingest` | Bearer token | Object: span_id; optional project_id, session_id, payload object. | Ingestion report or duplicate status. | 202 |
-| POST | `/v1/projects/{project_id}/resume-packets:compose` | Bearer token | Object: optional token_budget integer and target object. | cce.resume.v1 object. | 200 |
+| POST | `/v1/projects/{project_id}/resume-packets:compose` | Bearer token | Object: optional token_budget integer, target object, task_id, and max_response_bytes integer (1..1048576; default 131072). | Complete cce.resume.v2 project/task-scoped object, bounded by the exact UTF-8 response body; fixed packet_budget_exceeded error at 422. | 200 |
 | POST | `/v1/assumptions/{assumption_id}:resolve` | Bearer token | Object selecting direct resolution or a typed invalidation that targets/affects the path resource. | Resolved node or invalidation summary. | 200 |
-| POST | `/v1/actions:attest` | Bearer token | Object: intent_type plus optional statement, actor, action_type, verifications, continuity. | cce.proof.v1 object. | 200 |
-| POST | `/v1/verifications:run` | Bearer token | Object: optional intent fields and continuity; executable definitions are forbidden. | cce.proof.v1 object. | 200 |
+| POST | `/v1/actions:attest` | Bearer token | Object: intent_type plus optional statement, actor, action_type, verifications, continuity. | cce.proof.v2 object. | 200 |
+| POST | `/v1/verifications:run` | Bearer token | Object: optional intent fields and continuity; executable definitions are forbidden. | cce.proof.v2 object. | 200 |
 | POST | `/v1/projects/{project_id}/continuity-receipts:verify` | Bearer token | Object containing receipt object. | CURRENT, AUTHENTIC_HISTORICAL, or INVALID verdict object. | 200 |
-| POST | `/v1/migrations:prepare` | Bearer token | Object with optional scoped session and non-empty source/target strings. | cce.capsule.v1 object. | 200 |
+| POST | `/v1/migrations:prepare` | Bearer token | Object with optional scoped session and non-empty source/target strings. | cce.capsule.v2 project-scoped object. | 200 |
 | POST | `/v1/migrations:validate` | Bearer token | Object containing capsule plus optional non-empty target model/runtime. | Imported session, challenge, and validation object. | 200 |
 | POST | `/v1/replays` | Bearer token | Object: from_event_id plus optional project_id and object-valued captured_inputs, mocks, fork. | Replay node and fidelity object. | 201 |
 
@@ -71,7 +71,20 @@ missing/invalid bearer credentials are 401 with `WWW-Authenticate: Bearer`;
 project-scope denial is 403; an explicitly scoped missing resource is 404; a
 known route with the wrong method is 405 with exact `Allow`; idempotency-key
 payload conflict is 409; oversized input is 413; wrong media type is 415; and an
-authenticated unsupported GitHub event is 422. Unexpected implementation errors
+authenticated unsupported GitHub event is 422. A complete Resume Packet that
+cannot fit max_response_bytes also returns 422, before signing or recording
+a success watermark, with exactly:
+
+```json
+{"error":{"code":"packet_budget_exceeded","message":"Complete packet exceeds max_response_bytes."}}
+```
+
+This fixed error is exempt from the success cap and is at most 1024 bytes.
+The resume limit measures the complete UTF-8 JSON body, not HTTP headers.
+token_budget is advisory and cannot remove mandatory control or work.
+Absent, foreign, unconfirmed, and non-live task selectors uniformly return
+404 not_found with the message 'task is unavailable'; no target ID is disclosed.
+Unexpected implementation errors
 are generic 500 responses and disclose no exception detail.
 
 Unknown paths return JSON 404. GET, POST, HEAD, PUT, PATCH, DELETE, OPTIONS,
