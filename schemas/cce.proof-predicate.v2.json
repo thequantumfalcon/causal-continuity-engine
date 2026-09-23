@@ -81,5 +81,5 @@
       "$ref": "cce.proof.v2.json#/properties/signature"
     }
   },
-  "$comment": "Candidate v0.2.0 predicate contract; this URL is not a publication claim. SPEC's obligation input/task coverage rules also apply."
+  "$comment": "v0.2.0 predicate contract. SPEC's obligation input/task coverage rules also apply."
 }

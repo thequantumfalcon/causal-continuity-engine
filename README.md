@@ -101,10 +101,9 @@ than the official SDK, which would pull in more than twenty packages.
 
 ## Quickstart
 
-This checkout documents the local **0.2.0 candidate, not yet released**. The
-released-package installation commands below do not install this candidate.
-For the authority and v2 packet examples in this checkout, use the editable
-checkout installation below; no 0.2.0 publication is implied.
+The installation commands below install the package PyPI currently serves; to
+run this exact checkout, including its authority and v2 packet examples, use
+the editable installation that follows.
 
 Python 3.11 or newer is required; the engine has no third-party runtime
 dependencies. Choose the block for your platform and run it in a new working
@@ -131,7 +130,7 @@ with `.\.venv\Scripts\python.exe -m pip install causal-continuity-engine`
 and invoke the environment's `cce-engine.exe` by its absolute path in the
 commands below. After activation, `cce-engine --help` checks the installation.
 
-**Upgrading an existing project:** this candidate uses processor 1.9.0 and
+**Upgrading an existing project:** this release uses processor 1.9.0 and
 extractor 1.4.0; projections written by 0.1.6's processor 1.8.0 or earlier
 processors are refused. There is no in-place projection or authority upgrade. Stop writers,
 preserve the complete old project state (including its database and any SQLite
@@ -139,13 +138,13 @@ sidecars), and re-ingest retained sources into a separate new project/store.
 Review and explicitly confirm the new proposals there; old prose is not approval.
 Do not remove markers or sidecars to bypass refusal. Payloads already removed
 by retention cannot be reconstructed from their digests. New users can simply
-start a fresh project. See [the candidate upgrade notes](CHANGELOG.md#020--not-yet-released);
+start a fresh project. See [the upgrade notes for this release](CHANGELOG.md#020--2026-09-23);
 the [0.1.6 notes](CHANGELOG.md#016--2026-09-20) remain historical.
 
-To run this candidate, start from the **existing local checkout containing
-these changes**, not a presumed published tag or a fresh upstream clone.
-Replace the path below with that checkout's path and install it editable — see
-[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the development toolchain:
+To run this exact checkout instead of the published package, or to work on the
+engine, replace the path below with the checkout's path and install it
+editable — see [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the
+development toolchain:
 
 ```bash
 cd /absolute/path/to/this/local/checkout
@@ -670,8 +669,8 @@ so agreement between the two is evidence rather than the same code run twice.
 [vectors/](vectors/) is a committed conformance corpus, including honest
 negatives and adversarial forgeries, that pins both implementations in CI.
 Published v1 schemas remain historical contracts; v1 proofs are not current
-completion evidence. The local v2 schema URLs name candidate artifacts, not
-evidence that 0.2.0 has been published.
+completion evidence. The v2 schema URLs are bound to the `v0.2.0` release tag,
+and the release workflow verifies that each serves the checked-out bytes.
 
 ```bash
 # The complete configured verifier set must already be pinned in project policy.

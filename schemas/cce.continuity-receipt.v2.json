@@ -783,5 +783,5 @@
       }
     }
   },
-  "$comment": "Unpublished intermediate contract; project-only expected scope is checked by the live receipt verifier."
+  "$comment": "v0.2.0 contract; project-only expected scope is checked by the live receipt verifier."
 }

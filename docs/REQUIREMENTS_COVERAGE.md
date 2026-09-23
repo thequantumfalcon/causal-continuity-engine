@@ -1,7 +1,7 @@
 # Requirement Coverage — CCE reference implementation
 
-This matrix describes the local 0.2.0 candidate, not a published release or a
-claim that its artifact/platform gates have run. Processor 1.9.0 refuses older
+This matrix describes version 0.2.0. It is a narrative status record, not a
+claim that artifact or platform gates have run. Processor 1.9.0 refuses older
 projections: preserve those stores, re-ingest retained inputs into a distinct
 current store/project, then review and explicitly confirm new proposals.
 Payloads already removed by retention cannot be reconstructed (ADR-114, ADR-126).

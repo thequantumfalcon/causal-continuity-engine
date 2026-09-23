@@ -860,5 +860,5 @@
       ]
     }
   },
-  "$comment": "Unpublished candidate contract. This schema validates the byte-limit declaration, not the length of an external response. Runtime validation additionally checks canonical member ordering, unique node identities, task applicability, and authority-set digest equality."
+  "$comment": "v0.2.0 contract. This schema validates the byte-limit declaration, not the length of an external response. Runtime validation additionally checks canonical member ordering, unique node identities, task applicability, and authority-set digest equality."
 }

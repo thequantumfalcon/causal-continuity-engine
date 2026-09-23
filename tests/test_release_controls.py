@@ -90,15 +90,14 @@ def _release_tag_bytes(
     ).encode("utf-8")
 
 
-def test_current_metadata_is_consistent_and_unreleased():
+def test_current_metadata_is_consistent_and_dated():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT) == ("0.2.0", None)
+    assert metadata.check(ROOT) == ("0.2.0", "2026-09-23")
 
 
-def test_current_metadata_cannot_be_tagged():
+def test_current_metadata_is_tag_ready():
     metadata = _load_release_script("check_release_metadata")
-    with pytest.raises(SystemExit, match="release mode rejects a not yet released"):
-        metadata.check(ROOT, release_tag="v0.2.0")
+    assert metadata.check(ROOT, release_tag="v0.2.0") == ("0.2.0", "2026-09-23")
 
 
 def test_the_processor_and_extractor_versions_are_pinned():

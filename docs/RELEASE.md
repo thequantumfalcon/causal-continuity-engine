@@ -5,10 +5,9 @@ run is necessary but not sufficient: the published files must be derivable
 twice from the tagged tree, retain the project's independent audit surface,
 and remain bound to the reviewed tag.
 
-The current 0.2.0 work is local preparation, not a dated release or permission
-to tag, push, or publish. The release-date, tag, network-write and publication
-steps below are conditional instructions for a future separately authorized
-release after its prerequisites pass. No 0.2.0 publication is asserted here.
+A dated changelog entry is not a release. The tag, network-write and
+publication steps below each require separate owner authorization after every
+prerequisite passes.
 
 ## One-time repository settings
 
@@ -72,7 +71,8 @@ explicit procedure. A recovered older projection still refuses; re-ingest retain
 inputs into a separate current project instead of editing markers (ADR-121).
 
 The following numbered steps apply only when preparing an authorized release;
-local 0.2.0 preparation keeps `not yet released` and omits `date-released`.
+between releases the next heading keeps `not yet released` and `CITATION.cff`
+omits `date-released`.
 
 1. Set `__version__` in `causal_continuity_engine/__init__.py`. Change the
    matching `CHANGELOG.md` heading from `not yet released` to the real ISO
@@ -87,10 +87,9 @@ local 0.2.0 preparation keeps `not yet released` and omits `date-released`.
    and its negative fixtures; the test gate fails otherwise.
 2. Regenerate `docs/CAPABILITIES.md` only with
    `python -m causal_continuity_engine.capabilities --write`.
-3. For the future 0.2.0 release, run
-   `python .github/scripts/check_release_metadata.py --release v0.2.0`,
+3. Run `python .github/scripts/check_release_metadata.py --release v0.2.0`,
    then `just setup` and `just release` from a clean checkout.
-   Release-mode metadata checking must refuse while the candidate is undated.
+   Release-mode metadata checking refuses while the heading is undated.
 4. Drive the MCP server by hand from the built wheel with a real client, and
    read the responses. Install the wheel into an empty virtual environment,
    `cce-engine --dir <project> init`, then connect with the reference MCP SDK
@@ -152,9 +151,8 @@ These are failure ceilings, not performance targets.
 
 ## Sign and publish
 
-This section is a future release procedure, not an instruction to execute it
-during local 0.2.0 preparation. It requires separate owner authorization for
-tag creation and network writes in addition to every check above.
+This section requires separate owner authorization for tag creation and
+network writes in addition to every check above.
 
 On the owner's Mac, use a dedicated clean checkout whose exact origin is
 `ssh://git@github.com/thequantumfalcon/causal-continuity-engine.git`. Verify the
@@ -322,8 +320,8 @@ publishes anything:
   bytes are exactly equal to the files in the checked-out release tree; those
   v1 URLs remain bound to `v0.1.0` on later package releases rather than being
   derived from the later package tag. New v2 contracts declare separate
-  `v0.2.0` identities; those candidate URLs are not evidence that the tag or
-  publication exists, and this remote byte check remains a future release gate;
+  `v0.2.0` identities, which stay bound to that tag on later package releases
+  in the same way;
 - every release gate passes again from the tag and the second build is
   byte-identical;
 - the three-file candidate is uploaded before any artifact-carried code runs;
@@ -594,7 +592,7 @@ post-publication substitution. None alone replaces the others.
 ## Proposed differentiator: continuity-bound release receipts
 
 The engine now emits signed `cce.continuity-receipt.v2` operator receipts
-in this local candidate, with explicit project-only scope. They distinguish a
+with explicit project-only scope. They distinguish a
 current project frontier from an authentic historical one. They are useful
 source material, but they are tenant-key, local-state receipts—not public
 release attestations. Archived v1 schemas remain for historical interpretation;
