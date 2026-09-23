@@ -3,7 +3,7 @@
     "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
   },
   "envelope": {
-    "action_id": "act_7524aa5cfc2ced75cc61f4fe",
+    "action_id": "act_2c5bc63150fa482d9f9d0907",
     "action_intent": {
       "requirement_ids": [],
       "statement": "the exporter is done",
@@ -13,17 +13,17 @@
       "agent": "generator"
     },
     "continuity_links": {
-      "proof_node_id": "act_62937d385deab049d4777a25",
+      "proof_node_id": "act_42aaeec43661fd396bb1ecb8",
       "task_ids": [
-        "tsk_790324f268d456a7ddcaed02"
+        "tsk_e64b97609f564a25f85943b2"
       ]
     },
-    "created_at": "2026-08-10T01:14:35.842561Z",
+    "created_at": "2026-09-23T04:13:12.431973Z",
     "environment": {},
     "evidence_context": {
       "determinism": {
         "unit-tests": {
-          "checked_at": "2026-08-10T01:14:36.462524Z",
+          "checked_at": "2026-09-23T04:13:13.098040Z",
           "note": "check repeated a non-passing verdict; consistency of failure does not establish usable evidence",
           "results": [
             "failed",
@@ -52,7 +52,7 @@
             "why": "required checks must pass before mutation detection can be measured"
           }
         ],
-        "ran_at": "2026-08-10T01:14:36.001894Z",
+        "ran_at": "2026-09-23T04:13:12.592389Z",
         "undetected": []
       },
       "policy_pinned": [
@@ -62,18 +62,23 @@
     },
     "execution": [
       {
-        "command_digest": "sha256:6a0313aad2e7f9ee316a7d2ae93e075ce4ee20c5ff0d1e2401a063a2d0afb5de",
+        "command_digest": "sha256:ee0b2b9401cffa2b752e3eab6d3500fb71ddef1d1b575fc7b50b08f0dc18e0e3",
         "exit_code": 1,
         "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
-        "started_at": "2026-08-10T01:14:35.844904Z",
+        "started_at": "2026-09-23T04:13:12.434926Z",
         "tool": "verifier:unit-tests"
       }
     ],
     "inputs": [
       {
-        "digest": "sha256:90bf0d07cd8e235a85e5c7dbd16f25c2928d8b48d5d60876b7c6da16ae93f658",
+        "digest": "sha256:f6f28949c8babe7e45620d17c65b819f432ffe07257919dc0590c301297f7333",
         "kind": "continuity",
-        "name": "continuity:task_ids:tsk_790324f268d456a7ddcaed02"
+        "name": "continuity:task_ids:tsk_e64b97609f564a25f85943b2"
+      },
+      {
+        "digest": "sha256:4eafd88927b086420d2b6a2a13b750230d610e508615627f44f3f6f5e47f16a4",
+        "kind": "continuity",
+        "name": "continuity:obligations:tsk_e64b97609f564a25f85943b2"
       },
       {
         "digest": "sha256:c773bb8b335e654bcfde86abbfb483a947b5728d0b7fedafb422e1332d5a34ec",
@@ -88,9 +93,9 @@
       ],
       "action_type": "run_verifier",
       "applicable_grant_ids": [
-        "grt_b6c38b00ba25b32cdb0dc3ad"
+        "grt_77a28bc1fd7ec924dc702c1f"
       ],
-      "decided_at": "2026-08-10T01:14:35.844379Z",
+      "decided_at": "2026-09-23T04:13:12.434367Z",
       "decision": "allow",
       "effective_level": 2,
       "policy_config": {
@@ -111,13 +116,13 @@
       ]
     },
     "project_id": "prj_vectors",
-    "proof_digest": "sha256:b17d89c29148b0c6e78cd7cc55b46ebdedeccda3233eebf29e9d228329383d53",
-    "proof_id": "prf_8d18bb704eb85effcc8755ff",
-    "schema_version": "cce.proof.v1",
+    "proof_digest": "sha256:c18241a7dac2ff55bf0f8853590df37c0d84a124b84f929018f457c6ae63debb",
+    "proof_id": "prf_8e4091288017e4fb092d6432",
+    "schema_version": "cce.proof.v2",
     "signature": {
       "algorithm": "hmac-sha256",
       "key_id": "vectors",
-      "value": "25158cef2ec522e11c7c7a100c54216c5e90d107ae48bf0dfadd4292c1a2d5f3"
+      "value": "6e38ed2fa1ae6367772a4a100a46f5ec03e0e11e455b5406ab33537ffe16c51f"
     },
     "status": "failed",
     "subject": [],
@@ -137,7 +142,7 @@
     },
     "verifications": [
       {
-        "command_digest": "sha256:6a0313aad2e7f9ee316a7d2ae93e075ce4ee20c5ff0d1e2401a063a2d0afb5de",
+        "command_digest": "sha256:ee0b2b9401cffa2b752e3eab6d3500fb71ddef1d1b575fc7b50b08f0dc18e0e3",
         "control": {
           "command_present": true,
           "details": "control failed as required",
@@ -145,7 +150,7 @@
           "status": "held"
         },
         "coverage": null,
-        "definition_digest": "sha256:6de68ad0011c2b84cac90351a2cb36bd86d35df956601e9bfea8fb093242e64c",
+        "definition_digest": "sha256:cf799aec869c71ed746b52a14762954473e436f5e8eba31d6343653cc992efba",
         "details": "exit 1",
         "duration_seconds": 0.077,
         "evidence_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
@@ -157,7 +162,7 @@
         "pinned": true,
         "result": "failed",
         "source": "executed",
-        "started_at": "2026-08-10T01:14:35.844904Z",
+        "started_at": "2026-09-23T04:13:12.434926Z",
         "verifier": "unit-tests"
       }
     ]

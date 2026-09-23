@@ -3,7 +3,7 @@
 A verifier that only ever reports PASS is not evidence of anything. This file
 therefore exercises negative controls at the completion boundary.
 
-CCE's completion gate has accumulated twenty independent rejection paths
+CCE's completion gate has accumulated twenty-two independent rejection paths
 across repeated adversarial review rounds. Every one is exercised by a test that
 proves it CAN fire. Nothing until now proved that each fires **for the
 reason it exists** and that the others stay quiet — which matters here more
@@ -51,6 +51,8 @@ FAIL_COMMAND = _python_command("raise SystemExit(1)")
 #: Each gate's identifying phrase, taken from the message it raises. Keyed by
 #: the ADR that introduced it so a renamed message fails loudly here.
 GATES = {
+    "authority":       "task lacks current authority",             # owner-local confirmation
+    "authority_conflict": "unresolved applicable authority conflict",  # obligation boundary
     "wrong_target":     "is not a task in the requested project",     # ADR-068
     "open_invalidation": "unresolved invalidation control state",       # CI-005
     "already_complete": "is already verified",                       # ADR-074
@@ -63,7 +65,7 @@ GATES = {
     "wrong_project":    "was issued for",                       # ADR-018
     "wrong_intent":     "proof intent is",                       # ADR-068
     "unbound_task":     "does not name task",                   # ADR-018
-    "already_spent":    f"already used to complete {PRECHECK_SPENDER}",
+    "already_spent":    "already used to complete {precheck_spender}",
     "claim_race":       f"already used to complete {RACING_SPENDER}",
     "not_current":      "no longer describes",                  # ADR-043
     "no_verifiers":     "no required verifiers",                # ADR-045
@@ -78,6 +80,23 @@ def _reads_deliverable() -> str:
     return _python_command(
         "import pathlib,sys; "
         "sys.exit(0 if pathlib.Path('deliverable.py').read_text() else 1)")
+
+
+def _confirmed(engine, project_id, kind, text, key):
+    report = engine.ingest_human_decision(
+        project_id, actor="source-" + key, decision=text, request_id="source-" + key)
+    proposal_id, = [item["node_id"] for item in report["created"]
+                    if item["kind"] == "claim" and not item.get("quarantined")]
+    proposal = engine.authority_proposal(project_id, proposal_id)
+    assert proposal["proposed_kind"] == kind
+    receipt = engine.record_authority_decision(project_id, {
+        "operation": "confirm", "request_id": "confirm-" + key,
+        "tenant_id": engine.tenant_id, "project_id": project_id, **proposal,
+    })
+    node = engine.graph.get(receipt["confirmation_id"], tenant_id=engine.tenant_id,
+                            project_id=project_id)
+    assert engine.graph.may_mandate(node)
+    return node
 
 
 def _good(tmp_path, **overrides):
@@ -95,12 +114,10 @@ def _good(tmp_path, **overrides):
     }
     engine = Engine(workdir=tmp_path)
     engine.create_project(
-        "p", project_id=PRJ, repository_id=REPOSITORY_ID, config=cfg)
+        "p", project_id=PRJ, repository_id=REPOSITORY_ID, config=cfg, capture_mode="full")
     engine.policy.grant(project_id=PRJ, level=2, granted_by="lead")
     engine.policy.set_project_config(PRJ, cfg)
-    task = engine.graph.put_node(
-        entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-        data={"title": "ship the exporter"}, status="open")
+    task = _confirmed(engine, PRJ, "task", "- [ ] ship the exporter", "target")
     proof = engine.attest_action(
         PRJ, intent_type="task_complete", intent_statement="exporter done",
         actor={"agent": "test"}, action_type="run_verifier",
@@ -115,14 +132,15 @@ def _good(tmp_path, **overrides):
 REJECTION_TYPES = (PermissionError, ValueError)
 
 
-def _attempt(engine, task_id, proof):
+def _attempt(engine, task_id, proof, *, precheck_spender=PRECHECK_SPENDER):
     """Try the completion. Returns the gate name that fired, or None."""
     try:
         engine.complete_task(PRJ, task_id, proof=proof)
         return None
     except REJECTION_TYPES as exc:
         message = str(exc)
-        fired = [name for name, phrase in GATES.items() if phrase in message]
+        fired = [name for name, phrase in GATES.items()
+                 if phrase.format(precheck_spender=precheck_spender) in message]
         if not fired:
             pytest.fail(f"a {type(exc).__name__} rejection fired with an "
                         f"unrecognised message: {message}")
@@ -175,6 +193,46 @@ class TestBaselineCompletesCleanly:
 
 
 class TestEachDefectTripsItsOwnGate:
+    def test_extraction_label_is_not_a_canonical_authority_witness(self, tmp_path):
+        engine, task, proof, _ = _good(tmp_path)
+        unconfirmed = engine.graph.put_node(
+            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
+            data={"title": "unconfirmed work", "needs_confirmation": True}, status="open",
+            extractor="cce-deterministic", extractor_version="1.4.0")
+        assert _attempt(engine, unconfirmed.id, proof) == "authority"
+        engine.close()
+
+    def test_runtime_task_is_not_a_confirmed_completion_target(self, tmp_path):
+        engine, task, proof, _ = _good(tmp_path)
+        unconfirmed = engine.graph.put_node(
+            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
+            data={"title": "privileged runtime work"}, status="open")
+        assert _attempt(engine, unconfirmed.id, proof) == "authority"
+        engine.close()
+
+    @pytest.mark.parametrize("proof_required", [True, False])
+    def test_unresolved_applicable_authority_conflict(self, tmp_path, proof_required):
+        engine, task, proof, _ = _good(
+            tmp_path, require_proof_for=["task_complete"] if proof_required else [])
+        _confirmed(engine, PRJ, "requirement", "The pipeline must write to production.",
+                   "conflicting-requirement")
+        _confirmed(engine, PRJ, "constraint", "The pipeline must not write to production.",
+                   "conflicting-constraint")
+        if proof_required:
+            # A freshly collected commitment is not resolution of a known conflict.
+            proof = engine.attest_action(
+                PRJ, intent_type="task_complete", intent_statement="fresh conflict proof",
+                actor={"agent": "test"}, action_type="run_verifier",
+                continuity={"task_ids": [task.id]})
+            assert proof["status"] == "verified"
+            assert engine.proof_currency(PRJ, task.id, proof)["current"] is True
+        assert _attempt(engine, task.id, proof if proof_required else None) == "authority_conflict"
+        assert engine.graph.get(task.id)["status"] == "open"
+        assert engine.store._conn.execute(
+            "SELECT COUNT(*) FROM spent_proofs WHERE tenant_id=? AND project_id=?",
+            (engine.tenant_id, PRJ)).fetchone()[0] == 0
+        engine.close()
+
     def test_target_is_not_a_task_in_the_requested_project(self, tmp_path):
         engine, task, proof, _ = _good(tmp_path)
         assumption = engine.graph.put_node(
@@ -266,13 +324,11 @@ class TestEachDefectTripsItsOwnGate:
         """
         engine, task, proof, cfg = _good(tmp_path)
         other = Engine(workdir=tmp_path, signer=engine.signer)   # same key
-        other.create_project("o", project_id="prj_elsewhere", config=cfg)
+        other.create_project("o", project_id="prj_elsewhere", config=cfg, capture_mode="full")
         other.policy.grant(project_id="prj_elsewhere", level=2, granted_by="l")
         other.policy.set_project_config("prj_elsewhere", cfg)
-        foreign_task = other.graph.put_node(
-            entity_type="task", tenant_id=other.tenant_id,
-            project_id="prj_elsewhere", data={"title": "their task"},
-            status="open")
+        foreign_task = _confirmed(
+            other, "prj_elsewhere", "task", "- [ ] prepare their release", "foreign")
         foreign = other.attest_action(
             "prj_elsewhere", intent_type="task_complete",
             intent_statement="theirs", actor={"agent": "test"},
@@ -292,26 +348,27 @@ class TestEachDefectTripsItsOwnGate:
         assert _attempt(engine, task.id, wrong_intent) == "wrong_intent"
         engine.close()
 
-    def test_proof_that_names_no_task(self, tmp_path):
+    def test_proof_that_names_a_different_task(self, tmp_path):
         engine, task, proof, _ = _good(tmp_path)
+        other_task = _confirmed(engine, PRJ, "task", "- [ ] prepare another archive", "other")
+        # A producer-issued proof for another confirmed task satisfies v2 shape,
+        # including exact obligation commitments, but not this completion's scope.
         unbound = engine.attest_action(
             PRJ, intent_type="task_complete", intent_statement="unbound",
-            actor={"agent": "test"}, action_type="run_verifier")
+            actor={"agent": "test"}, action_type="run_verifier",
+            continuity={"task_ids": [other_task.id]})
         assert _attempt(engine, task.id, unbound) == "unbound_task"
         engine.close()
 
     def test_proof_replayed_onto_a_second_task(self, tmp_path):
         engine, task, proof, _ = _good(tmp_path)
-        second = engine.graph.put_node(
-            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-            node_id=PRECHECK_SPENDER, data={"title": "another"},
-            status="open")
+        second = _confirmed(engine, PRJ, "task", "- [ ] prepare another archive", "second")
         both = engine.attest_action(
             PRJ, intent_type="task_complete", intent_statement="both",
             actor={"agent": "test"}, action_type="run_verifier",
             continuity={"task_ids": [task.id, second.id]})
         assert _attempt(engine, second.id, both) is None
-        assert _attempt(engine, task.id, both) == "already_spent"
+        assert _attempt(engine, task.id, both, precheck_spender=second.id) == "already_spent"
         engine.close()
 
     def test_proof_is_claimed_by_a_peer_after_the_precheck(

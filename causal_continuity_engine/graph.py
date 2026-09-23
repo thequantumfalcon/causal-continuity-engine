@@ -120,12 +120,22 @@ class TraversalBudgetExceeded(Exception):
 class Graph:
     """Projection layer over a Store's SQLite connection."""
 
-    def __init__(self, store):
+    def __init__(self, store, *, authority_check=None):
         self.store = store
+        self._authority_check = authority_check
         self._conn = store._conn
         self._lock = store._lock
         with self._lock, self._conn:
             self._conn.executescript(_GRAPH_SCHEMA)
+
+    @serialized_access
+    def may_mandate(self, node: dict) -> bool:
+        """Use the owning Engine's current witness at binding consumer exits.
+
+        A standalone Graph remains a privileged local interface. This callback
+        does not authenticate arbitrary code with direct graph or Store access.
+        """
+        return self._authority_check(node) if self._authority_check is not None else True
 
     # ------------------------------------------------------------------ write
 

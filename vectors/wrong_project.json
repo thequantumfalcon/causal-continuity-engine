@@ -4,7 +4,7 @@
     "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
   },
   "envelope": {
-    "action_id": "act_580663b2a5038e01d32f99be",
+    "action_id": "act_745a512f8e6e5fa20378c177",
     "action_intent": {
       "requirement_ids": [],
       "statement": "the exporter is done",
@@ -14,17 +14,17 @@
       "agent": "generator"
     },
     "continuity_links": {
-      "proof_node_id": "act_ae883b2b14ff0744957d0f91",
+      "proof_node_id": "act_24110d038e0ea6d1e8125b82",
       "task_ids": [
-        "tsk_eece038141441101234395f0"
+        "tsk_e219892598d7df995adc3a42"
       ]
     },
-    "created_at": "2026-08-10T01:14:33.848027Z",
+    "created_at": "2026-09-23T04:13:10.350517Z",
     "environment": {},
     "evidence_context": {
       "determinism": {
         "unit-tests": {
-          "checked_at": "2026-08-10T01:14:34.839230Z",
+          "checked_at": "2026-09-23T04:13:11.381328Z",
           "note": "",
           "results": [
             "passed",
@@ -55,7 +55,7 @@
         ],
         "error": null,
         "inconclusive": [],
-        "ran_at": "2026-08-10T01:14:34.007054Z",
+        "ran_at": "2026-09-23T04:13:10.529216Z",
         "undetected": []
       },
       "policy_pinned": [
@@ -65,18 +65,23 @@
     },
     "execution": [
       {
-        "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
+        "command_digest": "sha256:2a8e226af3f4afc74f1c2826fa51fecfdb8d36aa42fb05c1fc2f100ad9f862f0",
         "exit_code": 0,
         "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
-        "started_at": "2026-08-10T01:14:33.851323Z",
+        "started_at": "2026-09-23T04:13:10.358401Z",
         "tool": "verifier:unit-tests"
       }
     ],
     "inputs": [
       {
-        "digest": "sha256:75c58642e8cc68781bfbe732603f7346b76db7bb19b0ac7e5cddcbd58941bd0d",
+        "digest": "sha256:bab9c0f94b14dc116081890cf073b053b7c64d03dc8665bdbd6f2003c4edee39",
         "kind": "continuity",
-        "name": "continuity:task_ids:tsk_eece038141441101234395f0"
+        "name": "continuity:task_ids:tsk_e219892598d7df995adc3a42"
+      },
+      {
+        "digest": "sha256:a4b31be44179247298ccdaaada9cb1a221cc4d25bdc63c5e8d200cc5b4c8e1e6",
+        "kind": "continuity",
+        "name": "continuity:obligations:tsk_e219892598d7df995adc3a42"
       },
       {
         "digest": "sha256:c773bb8b335e654bcfde86abbfb483a947b5728d0b7fedafb422e1332d5a34ec",
@@ -91,9 +96,9 @@
       ],
       "action_type": "run_verifier",
       "applicable_grant_ids": [
-        "grt_2255d23f11c19f0b378d0e38"
+        "grt_33e10bc1957ee7494e2e825d"
       ],
-      "decided_at": "2026-08-10T01:14:33.850780Z",
+      "decided_at": "2026-09-23T04:13:10.357820Z",
       "decision": "allow",
       "effective_level": 2,
       "policy_config": {
@@ -114,13 +119,13 @@
       ]
     },
     "project_id": "prj_vectors",
-    "proof_digest": "sha256:f77ae739fe3040604589166f787d1bf886d03ebd14808d5c8e314c1b5413f87b",
-    "proof_id": "prf_5837c1a9ba7e1c2c8554b73e",
-    "schema_version": "cce.proof.v1",
+    "proof_digest": "sha256:f1844ab83e981450e01757916a4f9a357d43b199bd922b5f0062d4b34e0e24c5",
+    "proof_id": "prf_0e096fc3968c355a8c12a543",
+    "schema_version": "cce.proof.v2",
     "signature": {
       "algorithm": "hmac-sha256",
       "key_id": "vectors",
-      "value": "99d6c72dc23ebec9ee63b9a36262dc62c53bdc36cdc0323c8c2d4c072c76b22f"
+      "value": "5a098e9f82a37db7d3d9faacb1a7622a2c5b77c760aece4a56ac716f7e4a2f48"
     },
     "status": "verified",
     "subject": [],
@@ -140,7 +145,7 @@
     },
     "verifications": [
       {
-        "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
+        "command_digest": "sha256:2a8e226af3f4afc74f1c2826fa51fecfdb8d36aa42fb05c1fc2f100ad9f862f0",
         "control": {
           "command_present": true,
           "details": "control failed as required",
@@ -148,9 +153,9 @@
           "status": "held"
         },
         "coverage": null,
-        "definition_digest": "sha256:11fb07ac56dd4570966a08b5e81193be8ef3ea9bbd24e8acdc90784c820661de",
+        "definition_digest": "sha256:a5ada6537f1d329f3fc01d856f6801255dc32813930ae813119331db70462d49",
         "details": "exit 0",
-        "duration_seconds": 0.076,
+        "duration_seconds": 0.08,
         "evidence_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
         "exit_code": 0,
         "kind": "command",
@@ -160,7 +165,7 @@
         "pinned": true,
         "result": "passed",
         "source": "executed",
-        "started_at": "2026-08-10T01:14:33.851323Z",
+        "started_at": "2026-09-23T04:13:10.358401Z",
         "verifier": "unit-tests"
       }
     ]

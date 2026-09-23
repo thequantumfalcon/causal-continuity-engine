@@ -31,6 +31,7 @@ from causal_continuity_engine.store import (
     PayloadMismatchError,
     Store,
 )
+from tests.authority_helpers import confirmed_task
 
 TEN = "ten_round9"
 PRJ = "prj_round9"
@@ -430,9 +431,7 @@ def test_capsule_import_gates_changed_declared_artifact_bytes(tmp_path):
     engine.graph.put_node(
         entity_type="artifact", tenant_id=TEN, project_id=PRJ,
         status="recorded", data={"kind": "environment", "python": "3.13"})
-    task = engine.graph.put_node(
-        entity_type="task", tenant_id=TEN, project_id=PRJ,
-        status="open", data={"title": "ship"})
+    task = confirmed_task(engine, PRJ)
     proof = engine.attest_action(
         PRJ, intent_type="task_complete", intent_statement="ship",
         actor={"agent": "worker"}, action_type="run_verifier",

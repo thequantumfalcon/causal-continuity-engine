@@ -5,6 +5,9 @@ state (tenant config, grants, downgrades, evidence) and the action request.
 Nothing in the request can force an allow — deny by default, and agent
 output cannot override a deny (AUT-003).
 
+Free prose always requires recorded confirmation before it becomes binding
+control state. The legacy permissive prose setting is refused before writes.
+
 Levels: 0 observe, 1 recommend, 2 reversible execution, 3 guarded repository
 action, 4 irreversible/external (prohibited in MVP, ADR-009).
 """
@@ -112,14 +115,10 @@ DEFAULT_CONFIG = {
     # security frontier. Set None only to leave revision continuity explicitly
     # undecidable until a ref is configured or a legacy pinned ref exists.
     "tracked_ref": "refs/heads/main",
-    # Whether prose may mandate. AD-006 already refuses a mandate from an
-    # untrusted source; this extends the same refusal to every source when a
-    # project would rather its authority be declared than inferred. Published
-    # measurements put rule-based requirements extraction near F1 0.14, so a
-    # statement pulled out of an issue body is a proposal about intent, and a
-    # project may reasonably decline to let one bind anything. Default True
-    # preserves existing behaviour exactly; a project opts in.
-    "prose_may_mandate": True,
+    # Source standing cannot substitute for a recorded confirmation. Retain
+    # the field to reject old permissive configuration explicitly, not as an
+    # opt-out from the new authority boundary.
+    "prose_may_mandate": False,
 }
 
 # Stable trust-state marker for a policy that demands proof but defines no
@@ -391,6 +390,8 @@ class PolicyEngine:
         prose_mandate = merged["prose_may_mandate"]
         if not isinstance(prose_mandate, bool):
             raise ValueError("prose_may_mandate must be a boolean")
+        if prose_mandate:
+            raise ValueError("prose_may_mandate must be false; prose requires confirmation")
 
         minimum = merged["min_evidence_grade"]
         if (minimum is not None

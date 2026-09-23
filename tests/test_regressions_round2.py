@@ -12,9 +12,10 @@ import sys
 
 import pytest
 
-from causal_continuity_engine.engine import Engine, stable_node_id
+from causal_continuity_engine.engine import Engine
 from causal_continuity_engine.proof import ProofEnvelope, verify_envelope
 from causal_continuity_engine.verifiers import VerifierSpec
+from tests.authority_helpers import confirm_proposal, confirmed_task
 
 PRJ = "prj_r2"
 REPOSITORY_ID = 2002
@@ -67,9 +68,7 @@ class TestR1RealTrustPipeline:
     def test_attest_then_complete_task_succeeds(self, engine):
         """The end-to-end path the product exists to support."""
         _allow(engine)
-        task = engine.graph.put_node(
-            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-            data={"title": "ship the exporter"}, status="open")
+        task = confirmed_task(engine, PRJ, text="ship the exporter")
         proof = engine.attest_action(
             PRJ, intent_type="task_complete", intent_statement="exporter done",
             actor={"agent": "test"}, action_type="run_verifier",
@@ -98,9 +97,7 @@ class TestR1RealTrustPipeline:
     def test_failed_attest_still_verifies_and_is_still_rejected(self, engine):
         """A failed proof must be authentic (verifiable) AND refused."""
         _allow(engine, command=FAIL_COMMAND)
-        task = engine.graph.put_node(
-            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-            data={"title": "broken work"}, status="open")
+        task = confirmed_task(engine, PRJ, text="repair the broken work")
         proof = engine.attest_action(
             PRJ, intent_type="task_complete", intent_statement="claimed done",
             actor={"agent": "test"}, action_type="run_verifier",
@@ -114,9 +111,7 @@ class TestR1RealTrustPipeline:
 
     def test_tampering_with_a_real_proof_is_still_caught(self, engine):
         _allow(engine, command=FAIL_COMMAND)
-        task = engine.graph.put_node(
-            entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-            data={"title": "t"}, status="open")
+        task = confirmed_task(engine, PRJ)
         proof = engine.attest_action(
             PRJ, intent_type="task_complete", intent_statement="done",
             actor={"agent": "test"}, action_type="run_verifier",
@@ -259,7 +254,7 @@ class TestR3RedactionBeforeExtraction:
 
 
 class TestR4AliasedSourceRefs:
-    """One statement in two issues is one node held by two sources."""
+    """Identical prose cannot transfer approval between independent sources."""
 
     def _issue(self, number, body, action="opened"):
         return {"action": action,
@@ -273,43 +268,45 @@ class TestR4AliasedSourceRefs:
 
     def test_edit_of_one_source_does_not_invalidate_a_still_stated_requirement(
             self, engine):
-        engine.ingest_github(PRJ, "issues", "d1", self._issue(1, self.REQ))
-        engine.ingest_github(PRJ, "issues", "d2", self._issue(3, self.REQ))
-        node_id = stable_node_id(PRJ, "requirement",
-                                 "The exporter must write CSV output")
-        assert len(engine.graph.get(node_id)["data"]["source_refs"]) == 2
+        first = engine.ingest_github(PRJ, "issues", "d1", self._issue(1, self.REQ))
+        second = engine.ingest_github(PRJ, "issues", "d2", self._issue(3, self.REQ))
+        kept = confirm_proposal(engine, PRJ, first["created"][0]["node_id"])
+        withdrawn = confirm_proposal(engine, PRJ, second["created"][0]["node_id"])
+        assert kept.id != withdrawn.id
         # issue 3 is edited to drop it; issue 1 still states it
         r = engine.ingest_github(PRJ, "issues", "d3", self._issue(
             3, "The exporter must write JSON output.", action="edited"))
-        node = engine.graph.get(node_id)
+        node = engine.graph.get(kept.id)
         assert node["status"] not in ("invalidated", "superseded"), \
             "requirement retired though another issue still states it"
-        assert node["data"]["source_refs"] == ["issue:1:body"]
-        # it survives as a contested requirement awaiting human resolution
-        assert node["status"] == "uncertain"
-        assert node["data"].get("conflict_requires_resolution") is True
-        assert any(c.get("requires_resolution") for c in r["conflicts"])
+        assert engine.graph.may_mandate(node)
+        assert not engine.graph.may_mandate(engine.graph.get(withdrawn.id))
+        assert engine.graph.get(withdrawn.id)["status"] == "invalidated"
+        # Replacement prose is only a proposal, not a new conflicting mandate.
+        assert r["conflicts"] == []
         pkt = engine.resume_packet(PRJ)
         assert any("CSV" in req["summary"]
                    for req in pkt["authority"]["active_requirements"])
 
     def test_last_source_dropping_it_does_invalidate(self, engine):
-        engine.ingest_github(PRJ, "issues", "d1", self._issue(1, self.REQ))
-        engine.ingest_github(PRJ, "issues", "d2", self._issue(3, self.REQ))
-        node_id = stable_node_id(PRJ, "requirement",
-                                 "The exporter must write CSV output")
+        first = engine.ingest_github(PRJ, "issues", "d1", self._issue(1, self.REQ))
+        second = engine.ingest_github(PRJ, "issues", "d2", self._issue(3, self.REQ))
+        confirmations = [confirm_proposal(engine, PRJ, r["created"][0]["node_id"])
+                         for r in (first, second)]
         engine.ingest_github(PRJ, "issues", "d3", self._issue(
             3, "The exporter must write JSON output.", action="edited"))
         engine.ingest_github(PRJ, "issues", "d4", self._issue(
             1, "The exporter must write JSON output.", action="edited"))
-        assert engine.graph.get(node_id)["status"] == "invalidated"
-        assert any(i["data"]["trigger_type"] == "changed_requirement"
-                   for i in engine.invalidation.open_invalidations(PRJ))
+        for node in confirmations:
+            assert engine.graph.get(node.id)["status"] == "invalidated"
+            assert not engine.graph.may_mandate(engine.graph.get(node.id))
+        assert {(i["data"]["target_node_id"], i["data"]["trigger_type"])
+                for i in engine.invalidation.open_invalidations(PRJ)} == {
+                    (node.id, "changed_requirement") for node in confirmations}
 
     def test_single_source_edit_still_invalidates(self, engine):
-        engine.ingest_github(PRJ, "issues", "d1", self._issue(1, self.REQ))
-        node_id = stable_node_id(PRJ, "requirement",
-                                 "The exporter must write CSV output")
+        report = engine.ingest_github(PRJ, "issues", "d1", self._issue(1, self.REQ))
+        node_id = confirm_proposal(engine, PRJ, report["created"][0]["node_id"]).id
         engine.ingest_github(PRJ, "issues", "d2", self._issue(
             1, "The exporter must write JSON output.", action="edited"))
         assert engine.graph.get(node_id)["status"] == "invalidated"
@@ -321,14 +318,12 @@ class TestR5ProofBinding:
     """
 
     def _task(self, engine, title, project_id=PRJ):
-        return engine.graph.put_node(
-            entity_type="task", tenant_id=engine.tenant_id, project_id=project_id,
-            data={"title": title}, status="open")
+        return confirmed_task(engine, project_id, text=f"Complete the {title} deliverable")
 
     def _proof_for(self, engine, task, project_id=PRJ):
         return engine.attest_action(
             project_id, intent_type="task_complete",
-            intent_statement=f"{task['data']['title']} done",
+            intent_statement=f"{task['data']['statement']} done",
             actor={"agent": "a"}, action_type="run_verifier",
             verifier_specs=[VerifierSpec(name="unit-tests", command=PASS_COMMAND)],
             continuity={"task_ids": [task["node_id"]]})

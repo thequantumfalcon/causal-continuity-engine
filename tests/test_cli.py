@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ import causal_continuity_engine.cli as cli_module
 from causal_continuity_engine.cli import cmd_check, main
 from causal_continuity_engine.policy import PolicyEngine
 from causal_continuity_engine.store import Store
+from tests.test_readme_contract import PACKET_EXCERPT, REVIEW_REQUEST_SCRIPT
 
 
 def _init(tmp_path: Path, capsys) -> str:
@@ -308,6 +310,12 @@ def test_check_json_and_exported_receipt_agree_on_unprojected_event(
     })
     engine, _ = cli_module._engine(SimpleNamespace(dir=str(tmp_path)))
     request.addfinalizer(engine.close)
+    packet = engine.resume_packet(project_id)
+    assert packet["complete"] is True
+    assert engine.packet_is_stale(project_id) is False
+    previous_watermark = dict(engine.store._conn.execute(
+        "SELECT * FROM packet_watermark WHERE project_id=? AND scope_key='project'",
+        (project_id,)).fetchone())
     original = engine._process_prepared_event
 
     def interrupted(*args, **kwargs):
@@ -320,7 +328,15 @@ def test_check_json_and_exported_receipt_agree_on_unprojected_event(
                 project_id, actor="owner", decision="Ship the release")
     finally:
         engine._process_prepared_event = original
-    engine.resume_packet(project_id)
+    assert len(engine.store.unprocessed_event_ids(
+        project_id, tenant_id=engine.tenant_id)) == 1
+    before_refusal = tuple(engine.store._conn.iterdump())
+    with pytest.raises(ValueError, match="^complete packet unavailable: unprocessed events$"):
+        engine.resume_packet(project_id)
+    assert tuple(engine.store._conn.iterdump()) == before_refusal
+    assert dict(engine.store._conn.execute(
+        "SELECT * FROM packet_watermark WHERE project_id=? AND scope_key='project'",
+        (project_id,)).fetchone()) == previous_watermark
     engine.close()
     capsys.readouterr()
 
@@ -375,7 +391,9 @@ def test_documented_bound_repository_quickstart_reaches_success(
         "--event", "issues", "--delivery-id", "d1",
         "--file", str(issue_file),
     ])
-    capsys.readouterr()
+    issue_report = json.loads(capsys.readouterr().out)
+    assert len(issue_report["created"]) == 3
+    assert {item["kind"] for item in issue_report["created"]} == {"claim"}
 
     push_file = tmp_path / "push.json"
     push_file.write_text(json.dumps({
@@ -406,6 +424,73 @@ def test_documented_bound_repository_quickstart_reaches_success(
     assert initial_packet["trust"]["gaps"] == [
         "policy:proof-required-without-required-verifiers"]
     assert 0 < initial_packet["token_estimate"] <= 1500
+    assert initial_packet["mandatory_control"] == []
+    assert initial_packet["assumptions"]["active"] == []
+
+    engine, meta = cli_module._engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        before_prepare = tuple(engine.store._conn.iterdump())
+    finally:
+        engine.close()
+    secrets_before = _snapshot_files(tmp_path / ".cce" / "secrets")
+    prepared = subprocess.run(
+        [sys.executable, "-c", REVIEW_REQUEST_SCRIPT], cwd=tmp_path,
+        capture_output=True, text=True, check=True)
+    assert prepared.stdout == prepared.stderr == ""
+    assert _snapshot_files(tmp_path / ".cce" / "secrets") == secrets_before
+    engine, _ = cli_module._engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        assert tuple(engine.store._conn.iterdump()) == before_prepare
+    finally:
+        engine.close()
+
+    reviewed = {
+        "requirement": "Exporter must stream rows instead of buffering",
+        "constraint": "The exporter must not hold the whole result set in memory",
+        "assumption": "the upstream feed is ordered by timestamp",
+    }
+    confirmed = {}
+    for kind, text in reviewed.items():
+        request_file = tmp_path / f"review-{kind}.json"
+        request = json.loads(request_file.read_text(encoding="utf-8"))
+        assert request["proposed_kind"] == kind
+        assert request["text"] == text
+        assert request["authority_scope"] == {"kind": "global"}
+        assert request["tenant_id"] == meta["tenant_id"]
+        assert request["project_id"] == project_id
+        assert request["proposal_id"] in {item["node_id"] for item in issue_report["created"]}
+        main([
+            "--dir", str(tmp_path), "--json", "authority", "--request", str(request_file),
+        ])
+        confirmation = json.loads(capsys.readouterr().out)
+        assert confirmation["operation"] == "confirm"
+        confirmed[kind] = confirmation["confirmation_id"]
+
+    main([
+        "--dir", str(tmp_path), "resume", "--format", "json", "--token-budget", "1500",
+    ])
+    confirmed_packet_output = capsys.readouterr().out
+    confirmed_packet = json.loads(confirmed_packet_output)
+    assert confirmed_packet["schema_version"] == "cce.resume.v2"
+    assert confirmed_packet["scope"] == {"kind": "project"}
+    assert confirmed_packet["complete"] is True
+    assert confirmed_packet["response_format"] == "cli-json"
+    assert len(confirmed_packet_output.encode("utf-8")) <= (
+        confirmed_packet["max_response_bytes"]) == 131072
+    members = {item["entity_type"]: item for item in confirmed_packet["mandatory_control"]}
+    assert set(members) == set(reviewed)
+    for kind, member in members.items():
+        assert member["node_id"] == confirmed[kind]
+        assert member["content"]["statement"] == reviewed[kind]
+        assert member["origin"] == "confirmed"
+    assert {item["node_id"] for item in confirmed_packet["assumptions"]["active"]} == {
+        confirmed["assumption"]}
+    main(["--dir", str(tmp_path), "resume", "--token-budget", "1500"])
+    markdown = capsys.readouterr().out
+    assert len(markdown.encode("utf-8")) <= 131072
+    for line in PACKET_EXCERPT.splitlines():
+        if line and line != "...":
+            assert line in markdown.splitlines()
 
     main([
         "--dir", str(tmp_path), "--json", "policy", "grant",
@@ -437,6 +522,11 @@ def test_documented_bound_repository_quickstart_reaches_success(
 
     # Policy, grant, and verification records all stale the earlier packet.
     # The documented second resume is therefore a required gate step.
+    engine, _ = cli_module._engine(SimpleNamespace(dir=str(tmp_path)))
+    try:
+        assert engine.packet_is_stale(project_id)
+    finally:
+        engine.close()
     main([
         "--dir", str(tmp_path), "--json", "resume",
         "--token-budget", "1500", "--format", "json",

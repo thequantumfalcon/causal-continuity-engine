@@ -210,11 +210,16 @@ def test_public_schema_inventory_exactly_matches_shipped_contracts():
         "anchor": "cce.anchor.v1",
         "recovery_packet": "cce.recovery.v1",
         "event": "cce.event.v1",
-        "resume_packet": "cce.resume.v1",
-        "proof": "cce.proof.v1",
-        "proof_predicate": "cce.proof-predicate.v1",
-        "capsule": "cce.capsule.v1",
-        "continuity_receipt": "cce.continuity-receipt.v1",
+        "resume_packet": "cce.resume.v2",
+        "historical_resume_packet": "cce.resume.v1",
+        "proof": "cce.proof.v2",
+        "proof_predicate": "cce.proof-predicate.v2",
+        "historical_proof": "cce.proof.v1",
+        "historical_proof_predicate": "cce.proof-predicate.v1",
+        "capsule": "cce.capsule.v2",
+        "historical_capsule": "cce.capsule.v1",
+        "continuity_receipt": "cce.continuity-receipt.v2",
+        "historical_continuity_receipt": "cce.continuity-receipt.v1",
     }
     assert set(runtime_package.SCHEMA_VERSIONS.values()) == {
         path.name.removesuffix(".json") for path in SCHEMA_PATHS
@@ -231,7 +236,12 @@ def test_schema_ids_are_release_tagged_and_runtime_has_no_legacy_type_uri():
     assert {
         name: schema["$id"] for name, schema in schemas.items()
     } == {
-        name: SCHEMA_URI_BASE + name for name in schemas
+        name: (SCHEMA_URI_BASE.replace("/v0.1.0/", "/v0.2.0/")
+               if name in {"cce.proof.v2.json", "cce.proof-predicate.v2.json",
+                           "cce.resume.v2.json", "cce.capsule.v2.json",
+                           "cce.continuity-receipt.v2.json"}
+               else SCHEMA_URI_BASE) + name
+        for name in schemas
     }
     legacy_host = "https://cce" + ".dev/"
     shipped_contract_files = [
@@ -245,9 +255,10 @@ def test_schema_ids_are_release_tagged_and_runtime_has_no_legacy_type_uri():
     }
 
 
-def test_capsule_external_refs_are_release_tagged_schema_ids():
+@pytest.mark.parametrize("version,release", [("v1", "v0.1.0"), ("v2", "v0.2.0")])
+def test_capsule_external_refs_are_release_tagged_schema_ids(version, release):
     capsule = json.loads(
-        (ROOT / "schemas" / "cce.capsule.v1.json").read_text(encoding="utf-8"))
+        (ROOT / "schemas" / f"cce.capsule.{version}.json").read_text(encoding="utf-8"))
 
     refs = set()
 
@@ -263,17 +274,17 @@ def test_capsule_external_refs_are_release_tagged_schema_ids():
 
     collect(capsule)
     assert {ref for ref in refs if not ref.startswith("#")} == {
-        SCHEMA_URI_BASE + "cce.resume.v1.json",
-        SCHEMA_URI_BASE + "cce.resume.v1.json#/$defs/signature",
+        SCHEMA_URI_BASE.replace("v0.1.0", release) + f"cce.resume.{version}.json",
+        SCHEMA_URI_BASE.replace("v0.1.0", release) + f"cce.resume.{version}.json#/$defs/signature",
     }
 
 
 def test_runtime_type_uris_equal_their_release_tagged_schema_ids():
     predicate_schema = json.loads(
-        (ROOT / "schemas" / "cce.proof-predicate.v1.json").read_text(
+        (ROOT / "schemas" / "cce.proof-predicate.v2.json").read_text(
             encoding="utf-8"))
     receipt_schema = json.loads(
-        (ROOT / "schemas" / "cce.continuity-receipt.v1.json").read_text(
+        (ROOT / "schemas" / "cce.continuity-receipt.v2.json").read_text(
             encoding="utf-8"))
 
     assert proof_module.PREDICATE_TYPE == predicate_schema["$id"]
@@ -286,9 +297,9 @@ def test_runtime_type_uris_equal_their_release_tagged_schema_ids():
 
 def test_intoto_predicate_validates_with_resolved_proof_schema():
     proof_schema = json.loads(
-        (ROOT / "schemas" / "cce.proof.v1.json").read_text(encoding="utf-8"))
+        (ROOT / "schemas" / "cce.proof.v2.json").read_text(encoding="utf-8"))
     predicate_schema = json.loads(
-        (ROOT / "schemas" / "cce.proof-predicate.v1.json").read_text(
+        (ROOT / "schemas" / "cce.proof-predicate.v2.json").read_text(
             encoding="utf-8"))
     vector = json.loads(
         (ROOT / "vectors" / "valid_hmac.json").read_text(encoding="utf-8"))
@@ -303,7 +314,7 @@ def test_intoto_predicate_validates_with_resolved_proof_schema():
 
 def test_emitted_continuity_receipt_matches_closed_world_schema(tmp_path):
     schema = json.loads(
-        (ROOT / "schemas" / "cce.continuity-receipt.v1.json").read_text(
+        (ROOT / "schemas" / "cce.continuity-receipt.v2.json").read_text(
             encoding="utf-8"))
     validator = draft202012_validator(schema)
 
@@ -338,7 +349,7 @@ def _reseal_receipt(engine, receipt):
 def test_resigned_continuity_receipt_rejects_noncanonical_time(
         tmp_path, timestamp):
     schema = json.loads(
-        (ROOT / "schemas" / "cce.continuity-receipt.v1.json").read_text(
+        (ROOT / "schemas" / "cce.continuity-receipt.v2.json").read_text(
             encoding="utf-8"))
     validator = draft202012_validator(schema)
     engine = Engine(tmp_path / "receipt.db", workdir=tmp_path)
@@ -451,10 +462,10 @@ def test_emitted_anchor_and_recovery_match_published_schemas(tmp_path):
 
 def test_emitted_capsule_matches_closed_field_level_schema(tmp_path):
     resume_schema = json.loads(
-        (ROOT / "schemas" / "cce.resume.v1.json").read_text(
+        (ROOT / "schemas" / "cce.resume.v2.json").read_text(
             encoding="utf-8"))
     capsule_schema = json.loads(
-        (ROOT / "schemas" / "cce.capsule.v1.json").read_text(
+        (ROOT / "schemas" / "cce.capsule.v2.json").read_text(
             encoding="utf-8"))
     registry = Registry().with_resource(
         resume_schema["$id"], Resource.from_contents(resume_schema))

@@ -5,10 +5,14 @@
          invalidation detection -> active-state/packet recompute flag
          -> policy/check publication -> metrics.
 
-Extracted nodes use deterministic content-derived ids (stable_key) so a
-clean-database replay of the event log rebuilds an equivalent projection
-(CCG-006); runtime nodes (sessions, checkpoints) keep random ids and are
-compared by type/status counts.
+Extracted prose is a revision-bound proposal, never binding authority. Only
+an explicit owner-local structured decision produces an authoritative node;
+its identity and observation time come from the canonical event. Direct local
+Graph/Store access remains privileged, not a hostile-process sandbox.
+
+Task proofs bind the complete currently applicable control set, including
+unlinked confirmed obligations and conservative runtime controls. These are
+freshness commitments, not evidence that a verifier tests semantic truth.
 
 Requirements co-asserted in one complete source block are preserved without
 ranking their write order as freshness (ADR-117). An otherwise identical
@@ -91,7 +95,7 @@ from .redaction import (
     _capture_payload_is_current,
     apply_capture_mode,
 )
-from .resume import ResumeComposer
+from .resume import DEFAULT_MAX_RESPONSE_BYTES, ResumeComposer
 from .store import (
     DuplicateEventError,
     EventPayloadIntegrityError,
@@ -100,7 +104,12 @@ from .store import (
 )
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
-PROCESSOR_VERSION = "cce-processor/1.8.0"
+PROCESSOR_VERSION = "cce-processor/1.9.0"
+_AUTHORITY_SCHEMA = "cce.authority-decision.v1"
+_AUTHORITY_SOURCE = "cce:authority-decision:v1"
+_AUTHORITY_EXTRACTOR = "cce.authority-decision"
+_PROPOSAL_SCHEMA = "cce.proposal-id.v1"
+_AUTHORITY_KINDS = frozenset({"requirement", "constraint", "decision", "assumption", "task"})
 # Version of the statement normalization contract that feeds stable_node_id.
 # It is deliberately separate from the extractor version: pattern behavior can
 # change without changing identity, while an identity change survives forever
@@ -141,10 +150,84 @@ _INTERNAL_RANDOM_ID = re.compile(
     r"out|pln|prf|req|rpl|rsp|ses|skl|tsk|ver)_[0-9a-f]{24}$")
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+
+def _authority_request(request: dict) -> dict:
+    """Closed, content-independent grammar shared by production and replay."""
+    if not isinstance(request, dict):
+        raise ValueError("authority request must be an object")
+    supplied = request
+    request = strict_json_loads(canonical_json(request))
+    common = {"operation", "request_id", "tenant_id", "project_id"}
+    operation = request.get("operation")
+    if operation == "confirm":
+        required = common | {"proposal_id", "expected_proposal_version",
+                             "expected_proposal_digest", "proposed_kind", "text"}
+        optional = {"note", "authority_scope"}
+        binding = "proposal"
+    elif operation in ("revoke", "replace_scope"):
+        required = common | {"confirmation_id", "expected_confirmation_version",
+                             "expected_confirmation_digest"}
+        if operation == "replace_scope":
+            required.add("authority_scope")
+        optional = {"note"}
+        binding = "confirmation"
+    else:
+        raise ValueError("unknown authority operation")
+    if not required <= request.keys() or request.keys() - required - optional:
+        raise ValueError("authority request fields do not match its operation")
+    for field in ("request_id", "tenant_id", "project_id", f"{binding}_id"):
+        validate_public_identifier(request[field], field=field)
+    # Canonical JSON renders 1.0 as 1. Validate the caller's exact JSON type
+    # before using normalized bytes as the request identity.
+    version = supplied[f"expected_{binding}_version"]
+    if type(version) is not int or version < 1:
+        raise ValueError("authority version must be a positive integer")
+    digest = request[f"expected_{binding}_digest"]
+    if not isinstance(digest, str) or not _SHA256_DIGEST.fullmatch(digest):
+        raise ValueError("authority binding must be a SHA-256 digest")
+    request.setdefault("note", None)
+    if request["note"] is not None:
+        validate_human_text(request["note"], field="note", max_length=1024)
+    if operation == "confirm":
+        if (not isinstance(request["proposed_kind"], str)
+                or request["proposed_kind"] not in _AUTHORITY_KINDS):
+            raise ValueError("unsupported proposal kind")
+        validate_human_text(request["text"], field="text", max_length=4096)
+        if not request["text"].strip():
+            raise ValueError("authority text must not be blank")
+        request.setdefault("authority_scope", {"kind": "global"})
+    if "authority_scope" in request:
+        scope = request["authority_scope"]
+        if scope != {"kind": "global"}:
+            if (not isinstance(scope, dict) or set(scope) != {"kind", "task_ids"}
+                    or scope["kind"] != "tasks" or not isinstance(scope["task_ids"], list)
+                    or not 1 <= len(scope["task_ids"]) <= 128):
+                raise ValueError("invalid authority scope")
+            for task_id in scope["task_ids"]:
+                validate_public_identifier(task_id, field="task_id")
+            if len(set(scope["task_ids"])) != len(scope["task_ids"]):
+                raise ValueError("authority scope tasks must be distinct")
+            scope["task_ids"] = sorted(scope["task_ids"])
+    return request
+
+
+def _confirmation_id(event: dict, request: dict) -> str:
+    if request["operation"] != "confirm":
+        return request["confirmation_id"]
+    basis = [_AUTHORITY_SCHEMA, event["tenant_id"], event["project_id"], event["event_id"]]
+    return _KIND_PREFIX[request["proposed_kind"]] + "_" + digest_obj(basis)[7:31]
+
+
+def _proposal_descriptor(event: dict, ref: str, kind: str, text: str) -> dict:
+    return {"schema_version": _PROPOSAL_SCHEMA, "tenant_id": event["tenant_id"],
+            "project_id": event["project_id"], "source_type": event["source_type"],
+            "source_id": event["source_id"], "source_ref": ref,
+            "source_event_id": event["event_id"], "proposed_kind": kind, "text": text}
+
 _CONTINUITY_PAYLOAD_TYPE = (
     "https://raw.githubusercontent.com/thequantumfalcon/"
-    "causal-continuity-engine/v0.1.0/schemas/"
-    "cce.continuity-receipt.v1.json")
+    "causal-continuity-engine/v0.2.0/schemas/"
+    "cce.continuity-receipt.v2.json")
 _CONTINUITY_PREDICATE_NAMES = frozenset({
     "critical_invalidations_empty",
     "human_approvals_complete",
@@ -279,6 +362,10 @@ class AttestationInputError(ValueError):
 
 class GitHubDeliveryError(PermissionError):
     """A GitHub delivery failed the configured project identity boundary."""
+
+
+class ResumeTaskScopeError(ValueError):
+    """The resume selector does not name a current, live confirmed task."""
 
 
 class UnsafeArtifactError(ValueError):
@@ -841,7 +928,7 @@ def _preflight_proof_body(body: dict, verifications: list[dict]) -> None:
         "algorithm": "hmac-sha256",
         "value": "preflight",
     }
-    errors = validate_envelope_shape(candidate)
+    errors = validate_envelope_shape(candidate, require_obligation_coverage=False)
     if errors:
         raise AttestationInputError(
             "invalid attestation input: " + "; ".join(errors))
@@ -852,13 +939,15 @@ def _preflight_proof_body(body: dict, verifications: list[dict]) -> None:
 # that no packet has ever reflected.
 _ENGINE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS packet_watermark (
-    project_id          TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    scope_key           TEXT NOT NULL DEFAULT 'project',
     last_event_seq      INTEGER NOT NULL,
     composed_at         TEXT NOT NULL,
     packet_id           TEXT,
     packet_digest       TEXT,
     control_basis_digest TEXT,
-    audit_entry_hash    TEXT
+    audit_entry_hash    TEXT,
+    PRIMARY KEY (project_id, scope_key)
 );
 
 -- Single-use proofs (ADR-018) enforced by the database rather than by a
@@ -1667,7 +1756,7 @@ class Engine:
 
     def _initialize_components_and_schema(
             self, *, tenant_max_level: int, workdir: str) -> None:
-        self.graph = Graph(self.store)
+        self.graph = Graph(self.store, authority_check=self.authority_is_current)
         self.memory = Memory(
             self.store, self.graph, tenant_id=self.tenant_id)
         self.policy = PolicyEngine(
@@ -1678,10 +1767,11 @@ class Engine:
                                                tenant_id=self.tenant_id)
         self.composer = ResumeComposer(
             self.store, self.graph, self.memory, self.policy,
-            tenant_id=self.tenant_id)
+            tenant_id=self.tenant_id, control_provider=self._packet_selection)
         self.capsules = CapsuleManager(self.store, self.graph, self.composer,
                                        policy=self.policy, tenant_id=self.tenant_id,
-                                       state_basis_provider=self._packet_state_basis)
+                                       state_basis_provider=self._packet_state_basis,
+                                       packet_context_provider=self._packet_context)
         self.partial = PartialProgressManager(
             self.store, self.graph, self.memory, tenant_id=self.tenant_id)
         self.replay = ReplayManager(
@@ -1710,12 +1800,33 @@ class Engine:
                     row["name"] for row in conn.execute(
                         "PRAGMA table_info(packet_watermark)")
                 }
+                if self.store._read_only and "scope_key" not in watermark_columns:
+                    raise ValueError("read-only packet watermark schema is unsupported")
                 for name in (
                         "packet_digest", "control_basis_digest",
                         "audit_entry_hash"):
                     if name not in watermark_columns:
                         conn.execute(
                             f"ALTER TABLE packet_watermark ADD COLUMN {name} TEXT")
+                if "scope_key" not in watermark_columns:
+                    # Old authenticated records bound only the project. Preserve
+                    # their history but never reinterpret them as scoped evidence.
+                    conn.execute("CREATE TABLE packet_watermark_scope_upgrade ("
+                                 "project_id TEXT NOT NULL, "
+                                 "scope_key TEXT NOT NULL DEFAULT 'project', "
+                                 "last_event_seq INTEGER NOT NULL, "
+                                 "composed_at TEXT NOT NULL, packet_id TEXT, "
+                                 "packet_digest TEXT, control_basis_digest TEXT, "
+                                 "audit_entry_hash TEXT, "
+                                 "PRIMARY KEY (project_id, scope_key))")
+                    conn.execute(
+                        "INSERT INTO packet_watermark_scope_upgrade "
+                        "SELECT project_id, 'project', last_event_seq, composed_at, "
+                        "packet_id, packet_digest, control_basis_digest, NULL "
+                        "FROM packet_watermark")
+                    conn.execute("DROP TABLE packet_watermark")
+                    conn.execute("ALTER TABLE packet_watermark_scope_upgrade "
+                                 "RENAME TO packet_watermark")
             except BaseException:
                 if conn.in_transaction:
                     conn.rollback()
@@ -2169,6 +2280,485 @@ class Engine:
         }
         return self._ingest(project_id, envelope)
 
+    def _proposal_origin(self, project_id: str, proposal_id: str) -> tuple[dict, dict]:
+        history = self.graph.history(proposal_id, tenant_id=self.tenant_id,
+                                     project_id=project_id)
+        if not history:
+            raise ValueError("proposal has no retained producer witness")
+        original = history[0]
+        descriptor = original["data"].get("proposal")
+        if (original["entity_type"] != "claim" or not isinstance(descriptor, dict)
+                or descriptor.get("schema_version") != _PROPOSAL_SCHEMA
+                or original.get("extractor") != "cce-deterministic"):
+            raise ValueError("proposal has no retained producer witness")
+        try:
+            event = self.store.get_event(descriptor["source_event_id"],
+                                         tenant_id=self.tenant_id, project_id=project_id)
+        except KeyError:
+            raise ValueError("proposal source is unavailable") from None
+        expected = _proposal_descriptor(event, descriptor.get("source_ref"),
+                                        descriptor.get("proposed_kind"), descriptor.get("text"))
+        if (descriptor != expected or proposal_id != "clm_" + digest_obj(expected)[7:31]
+                or original.get("event_id") != event["event_id"]
+                or event["payload"] is None):
+            raise ValueError("proposal source binding is unavailable")
+        for block in self._re_envelope(event)["text_blocks"]:
+            if block["ref"] != descriptor["source_ref"]:
+                continue
+            result = self.extractor.extract(block.get("text") or "",
+                                            source_authority=block["authority"])
+            if any(item.suspected_injection for item in result.items):
+                break
+            for item in result.items:
+                if (item.meta.get("proposed_kind") == descriptor["proposed_kind"]
+                        and item.statement == descriptor["text"]):
+                    if original.get("criticality") != item.criticality:
+                        raise ValueError("proposal criticality differs from retained extraction")
+                    return original, event
+        raise ValueError("proposal is not a retained, unquarantined extraction")
+
+    def _proposal_supported(self, original: dict, source: dict) -> bool:
+        """A withdrawal is permanent for this revision, including after reappearance."""
+        descriptor = original["data"]["proposal"]
+        for row in self.graph.history(original["node_id"], tenant_id=self.tenant_id,
+                                      project_id=original["project_id"]):
+            if not row["data"].get("source_withdrawn") or not row.get("event_id"):
+                continue
+            event = self.store.get_event(row["event_id"], tenant_id=self.tenant_id,
+                                         project_id=original["project_id"])
+            if (event["source_type"] != source["source_type"]
+                    or event["source_id"] != source["source_id"]
+                    or event["seq"] <= source["seq"]):
+                continue
+            if event["payload"] is None:
+                # Retention cannot turn a recorded withdrawal into renewed
+                # support. Its deciding content is unavailable, not affirmative.
+                return False
+            for block in self._re_envelope(event)["text_blocks"]:
+                if (block["ref"] != descriptor["source_ref"]
+                        or authority_rank(block["authority"]) < authority_rank(
+                            original["authority"])):
+                    continue
+                result = self.extractor.extract(block.get("text") or "",
+                                                source_authority=block["authority"])
+                if (not any(item.suspected_injection for item in result.items)
+                        and not any(item.meta.get("proposed_kind") == descriptor["proposed_kind"]
+                                    and item.statement == descriptor["text"]
+                                    for item in result.items)):
+                    return False
+        return True
+
+    @serialized_access
+    def authority_proposal(self, project_id: str, proposal_id: str) -> dict:
+        """Return exact request operands; this is not an authorization operation."""
+        self._require_project(project_id)
+        original, source = self._proposal_origin(project_id, proposal_id)
+        current = self.graph.get(proposal_id, tenant_id=self.tenant_id, project_id=project_id)
+        if (current["version"] != original["version"] or current["data"] != original["data"]
+                or current["status"] == "quarantined"
+                or not self._proposal_supported(original, source)):
+            raise ValueError("proposal is stale, edited or withdrawn")
+        descriptor = original["data"]["proposal"]
+        return {"proposal_id": proposal_id, "expected_proposal_version": original["version"],
+                "expected_proposal_digest": digest_obj(descriptor),
+                "proposed_kind": descriptor["proposed_kind"], "text": descriptor["text"]}
+
+    def _authority_payload(self, event: dict) -> dict:
+        payload = event["payload"]
+        if (not isinstance(payload, dict) or set(payload) != {
+                "schema_version", "request", "request_digest", "authorization_basis",
+                "operator_label"} or payload["schema_version"] != _AUTHORITY_SCHEMA):
+            raise ValueError("invalid authority decision payload")
+        request = _authority_request(payload["request"])
+        if (request != payload["request"] or payload["request_digest"] != digest_obj(request)
+                or payload["authorization_basis"] != "local_store_capability"
+                or payload["operator_label"] != "owner-local"
+                or event["source_type"] != "human_decision"
+                or event["source_id"] != _AUTHORITY_SOURCE
+                or event["actor_type"] != "service" or event["actor_id"] != "owner-local"
+                or event["authority"] != "human_decision"
+                or event["idempotency_key"] != _AUTHORITY_SOURCE + ":" + request["request_id"]
+                or request["tenant_id"] != event["tenant_id"]
+                or request["project_id"] != event["project_id"]):
+            raise ValueError("invalid authority decision binding")
+        return request
+
+    def _authority_state(self, project_id: str, confirmation_id: str) -> dict:
+        """Derive semantic revision from successful canonical decisions, not node flags."""
+        history = self.graph.history(confirmation_id, tenant_id=self.tenant_id,
+                                     project_id=project_id)
+        origin = next((row for row in history
+                       if row.get("extractor") == _AUTHORITY_EXTRACTOR), None)
+        if origin is None:
+            raise ValueError("confirmation has no canonical origin")
+        first = self.store.get_event(origin["event_id"], tenant_id=self.tenant_id,
+                                     project_id=project_id)
+        initial = self._authority_payload(first)
+        if (initial["operation"] != "confirm"
+                or _confirmation_id(first, initial) != confirmation_id):
+            raise ValueError("confirmation origin does not bind this identity")
+        state = None
+        rows = self.store._conn.execute(
+            "SELECT e.event_id FROM events e JOIN processed_events p ON p.event_id=e.event_id"
+            " WHERE e.tenant_id=? AND e.project_id=? AND e.source_type='human_decision'"
+            " AND e.source_id=? AND e.seq>=? AND p.processor_version=?"
+            " AND p.status='ok' ORDER BY e.seq",
+            (self.tenant_id, project_id, _AUTHORITY_SOURCE, first["seq"],
+             PROCESSOR_VERSION)).fetchall()
+        for row in rows:
+            event = self.store.get_event(row[0], tenant_id=self.tenant_id, project_id=project_id)
+            request = self._authority_payload(event)
+            if _confirmation_id(event, request) != confirmation_id:
+                continue
+            if request["operation"] == "confirm":
+                if state is not None:
+                    raise ValueError("confirmation has duplicate origins")
+                original, _ = self._proposal_origin(project_id, request["proposal_id"])
+                descriptor = original["data"]["proposal"]
+                if (request["expected_proposal_digest"] != digest_obj(descriptor)
+                        or request["expected_proposal_version"] != original["version"]
+                        or request["text"] != descriptor["text"]
+                        or request["proposed_kind"] != descriptor["proposed_kind"]):
+                    raise ValueError("confirmation has no exact proposal witness")
+                state = {"confirmation_id": confirmation_id,
+                         "proposal_id": request["proposal_id"], "statement": request["text"],
+                         "proposed_kind": request["proposed_kind"],
+                         "authority_scope": request["authority_scope"],
+                         "confirmation_event_id": event["event_id"],
+                         "authority_version": 1, "revoked": False}
+            else:
+                if (state is None or state["revoked"]
+                        or request["expected_confirmation_version"] != state["authority_version"]
+                        or request["expected_confirmation_digest"] != digest_obj(state)):
+                    raise ValueError("confirmation revision does not match canonical history")
+                state = {**state, "authority_version": state["authority_version"] + 1}
+                if request["operation"] == "revoke":
+                    state["revoked"] = True
+                else:
+                    state["authority_scope"] = request["authority_scope"]
+            state["decision_event_id"] = event["event_id"]
+            state["decided_at"] = event["recorded_at"]
+        if state is None:
+            raise ValueError("confirmation has no canonical decision")
+        return state
+
+    @serialized_access
+    def authority_confirmation(self, project_id: str, confirmation_id: str) -> dict:
+        self._require_project(project_id)
+        state = self._authority_state(project_id, confirmation_id)
+        return {"confirmation_id": confirmation_id,
+                "expected_confirmation_version": state["authority_version"],
+                "expected_confirmation_digest": digest_obj(state),
+                "authority_scope": state["authority_scope"]}
+
+    def authority_is_current(self, node: dict) -> bool:
+        """Canonical authority witness, not human authentication or status resolution.
+
+        Graph-only local callers retain their privileged boundary. Historical
+        extraction prevents an HTTP status edit from laundering prose provenance.
+        """
+        if node.get("status") == "quarantined":
+            return False
+        history = self.graph.history(node["node_id"], tenant_id=self.tenant_id,
+                                     project_id=node["project_id"])
+        if not any(row.get("extractor") for row in history):
+            return True
+        try:
+            state = self._authority_state(node["project_id"], node["node_id"])
+        except (KeyError, ValueError):
+            return False
+        return self._matches_authority_state(node, state)
+
+    def _matches_authority_state(self, node: dict, state: dict) -> bool:
+        """Compare the actual projection with this read's internally derived witness."""
+        try:
+            original, source = self._proposal_origin(node["project_id"], state["proposal_id"])
+        except (KeyError, ValueError):
+            return False
+        return (not state["revoked"] and self._proposal_supported(original, source)
+                and node["entity_type"] == state["proposed_kind"]
+                and node.get("criticality") == original.get("criticality")
+                and all(node["data"].get(key) == value for key, value in state.items())
+                and node.get("scope") == state["authority_scope"])
+
+    def _validate_authority_operands(self, project_id: str, request: dict) -> dict | None:
+        if request["tenant_id"] != self.tenant_id or request["project_id"] != project_id:
+            raise PermissionError("authority request is outside the local project")
+        if request["operation"] == "confirm":
+            binding = self.authority_proposal(project_id, request["proposal_id"])
+            if any(request[key] != value for key, value in binding.items()):
+                raise ValueError("authority request does not bind the current proposal")
+            state = None
+            kind = request["proposed_kind"]
+        else:
+            state = self._authority_state(project_id, request["confirmation_id"])
+            if (state["revoked"]
+                    or request["expected_confirmation_version"] != state["authority_version"]
+                    or request["expected_confirmation_digest"] != digest_obj(state)):
+                raise ValueError("authority request does not bind the current confirmation")
+            kind = state["proposed_kind"]
+            if request["operation"] == "replace_scope" and not self.authority_is_current(
+                    self.graph.get(state["confirmation_id"], tenant_id=self.tenant_id,
+                                   project_id=project_id)):
+                raise ValueError("cannot rescope withdrawn or altered authority")
+        scope = request.get("authority_scope", {"kind": "global"})
+        if kind == "task" and scope != {"kind": "global"}:
+            raise ValueError("task confirmations must be global")
+        for task_id in scope.get("task_ids", []):
+            try:
+                task = self.graph.get(task_id, tenant_id=self.tenant_id,
+                                      project_id=project_id, entity_type="task")
+                task_state = self._authority_state(project_id, task_id)
+            except (KeyError, ValueError):
+                raise ValueError("scope requires confirmed same-project tasks") from None
+            if (task_state["revoked"] or not self.authority_is_current(task)
+                    or task["status"] not in ("open", "active", "in_progress",
+                                              "blocked", "review_required", "uncertain")):
+                raise ValueError("scope requires live confirmed tasks")
+        return state
+
+    @staticmethod
+    def _obligation_valid_at(node: dict, instant) -> bool:
+        # Graph accepts offset-bearing timestamps; SQL lexical comparisons do
+        # not describe those instants. Validity is a half-open interval.
+        return ((node.get("valid_from") is None
+                 or parse_ts(node["valid_from"]) <= instant)
+                and (node.get("valid_to") is None
+                     or instant < parse_ts(node["valid_to"])))
+
+    def _confirmed_task_state(self, project_id: str, task: dict, instant) -> dict:
+        state = self._authority_state(project_id, task["node_id"])
+        if (state["proposed_kind"] != "task"
+                or state["authority_scope"] != {"kind": "global"}
+                or not self.authority_is_current(task)
+                or not self._obligation_valid_at(task, instant)):
+            raise ValueError("obligation target requires a current confirmed task")
+        return state
+
+    def _obligation_scope(self, project_id: str, scope: dict, *,
+                          _validated_task_ids: set | None = None) -> dict:
+        if scope == {"kind": "global"}:
+            return scope
+        if (not isinstance(scope, dict) or set(scope) != {"kind", "task_ids"}
+                or scope["kind"] != "tasks" or not isinstance(scope["task_ids"], list)
+                or not 1 <= len(scope["task_ids"]) <= 128
+                or any(not isinstance(value, str) for value in scope["task_ids"])
+                or scope["task_ids"] != sorted(set(scope["task_ids"]))):
+            raise ValueError("invalid persisted obligation scope")
+        for task_id in scope["task_ids"]:
+            validate_public_identifier(task_id, field="task_id")
+            if _validated_task_ids is not None and task_id in _validated_task_ids:
+                continue
+            self.graph.get(task_id, tenant_id=self.tenant_id,
+                           project_id=project_id, entity_type="task")
+            state = self._authority_state(project_id, task_id)
+            # Scope admission already checked liveness. At consumption the
+            # canonical identity suffices: completing a sibling must not erase
+            # an obligation applying to the remaining task.
+            if (state["proposed_kind"] != "task"
+                    or state["authority_scope"] != {"kind": "global"}):
+                raise ValueError("obligation scope requires confirmed task identities")
+            if _validated_task_ids is not None:
+                _validated_task_ids.add(task_id)
+        return scope
+
+    def _obligation_basis(self, project_id: str, task_id: str, *, instant=None) -> dict:
+        """Closed semantic basis; deciding callers hold one snapshot or writer.
+
+        Runtime data is conservative privileged input, not confirmation. No
+        action, audit, graph clock or proof bookkeeping is a member. Complete
+        control data is committed because evidence-looking keys can themselves
+        be semantic inputs. This does not prove completeness of human intent.
+        """
+        instant = parse_ts(utcnow()) if instant is None else instant
+        task = self.graph.get(task_id, tenant_id=self.tenant_id,
+                              project_id=project_id, entity_type="task")
+        state = self._confirmed_task_state(project_id, task, instant)
+        target = {key: state[key] for key in (
+            "proposal_id", "confirmation_event_id", "decision_event_id",
+            "authority_version", "authority_scope")}
+        target.update(node_id=task_id, text_digest=digest_obj(state["statement"]))
+        obligations = self._applicable_obligations(project_id, task_id, instant=instant)
+        definitions = self.policy.required_verifier_defs(project_id)
+        return {
+            "schema_version": "cce.obligation-basis.v1", "tenant_id": self.tenant_id,
+            "project_id": project_id, "target": target,
+            "scope": {"kind": "tasks", "task_ids": [task_id]},
+            "obligations": obligations,
+            "proof_policy": {
+                "task_proof_required": self.policy.proof_required(project_id, "task_complete"),
+                "min_evidence_grade": self.policy.min_evidence_grade(project_id),
+                "required_verifiers": [{
+                    "name": definition["name"], "pinned": bool(definition.get("pinned")),
+                    "definition_digest": VerifierSpec.from_policy(definition).definition_digest,
+                } for definition in sorted(definitions, key=lambda definition: definition["name"])],
+            },
+        }
+
+    def _applicable_obligations(self, project_id: str, task_id: str | None, *, instant) -> list:
+        """One non-mutating membership read inside the deciding caller's snapshot.
+
+        Reuse only within this call, never across a writer's own changes or
+        initial/final proof phases (ADR-131). Distinct witnesses still traverse
+        retained decision history; this is not a bound on total history cost.
+        """
+        obligations = []
+        validated_task_ids = set()
+        for node in self.graph.current(project_id, tenant_id=self.tenant_id):
+            if (node["entity_type"] not in ("requirement", "constraint", "decision", "assumption")
+                    or node.get("status") in ("quarantined", "revoked", "withdrawn",
+                                              "superseded", "invalidated", "rejected")
+                    or not self._obligation_valid_at(node, instant)):
+                continue
+            history = self.graph.history(node["node_id"], tenant_id=self.tenant_id,
+                                         project_id=project_id)
+            extracted = any(row.get("extractor") for row in history)
+            data = node["data"]
+            witness = None
+            if any(row.get("extractor") == _AUTHORITY_EXTRACTOR for row in history):
+                witness = self._authority_state(project_id, node["node_id"])
+                # A damaged confirmation is not an empty obligation set.
+                # Only runtime records may default an absent scope to global.
+                if (data.get("authority_scope") != witness["authority_scope"]
+                        or node.get("scope") != witness["authority_scope"]):
+                    raise ValueError(
+                        "persisted obligation scope disagrees with canonical authority")
+            scope = self._obligation_scope(
+                project_id, data.get("authority_scope", {"kind": "global"}),
+                _validated_task_ids=validated_task_ids)
+            confirmation = None
+            if extracted:
+                if witness is None:
+                    if not self.authority_is_current(node):
+                        continue
+                    witness = self._authority_state(project_id, node["node_id"])
+                    scope = self._obligation_scope(
+                        project_id, witness["authority_scope"],
+                        _validated_task_ids=validated_task_ids)
+                elif not self._matches_authority_state(node, witness):
+                    continue
+                else:
+                    # Persisted and canonical scope already agreed above; its
+                    # identities were validated before checking source support.
+                    scope = witness["authority_scope"]
+                confirmation = {key: witness[key] for key in (
+                    "proposal_id", "confirmation_event_id", "decision_event_id",
+                    "authority_version")}
+            if (task_id is not None and scope["kind"] == "tasks"
+                    and task_id not in scope["task_ids"]):
+                continue
+            member = {key: node.get(key) for key in (
+                "node_id", "entity_type", "status", "criticality", "confidence",
+                "authority", "valid_from", "valid_to")}
+            member.update(
+                origin="confirmed" if extracted else "runtime", authority_scope=scope,
+                content={key: value for key, value in data.items()
+                         if not extracted or key != "decided_at"},
+                confirmation=confirmation)
+            obligations.append(member)
+        return sorted(obligations, key=lambda node: (node["entity_type"], node["node_id"]))
+
+    @staticmethod
+    def _authority_receipt(event: dict, request: dict) -> dict:
+        return {"operation": request["operation"], "event_id": event["event_id"],
+                "confirmation_id": _confirmation_id(event, request),
+                "recorded_at": event["recorded_at"], "request_digest": digest_obj(request)}
+
+    @serialized_access
+    def record_authority_decision(self, project_id: str, request: dict) -> dict:
+        """Owner-local capability: append, project, mark and audit under one writer.
+
+        No HTTP/MCP connector calls this API. It does not distinguish processes
+        sharing the OS account or authenticate the operator label as a person.
+        """
+        request = _authority_request(request)
+        with self.store.transaction():
+            self._require_project(project_id)
+            if request["tenant_id"] != self.tenant_id or request["project_id"] != project_id:
+                raise PermissionError("authority request is outside the local project")
+            identity = _AUTHORITY_SOURCE + ":" + request["request_id"]
+            old = self.store._conn.execute(
+                "SELECT event_id FROM events WHERE tenant_id=? AND project_id=?"
+                " AND idempotency_key=?", (self.tenant_id, project_id, identity)).fetchone()
+            if old is not None:
+                event = self.store.get_event(
+                    old[0], tenant_id=self.tenant_id, project_id=project_id)
+                if self._authority_payload(event) != request:
+                    raise ValueError("authority request identity conflicts with recorded operands")
+                _require_persisted_marker(self.store, event["event_id"], "ok", None)
+                return self._authority_receipt(event, request)
+            self._validate_authority_operands(project_id, request)
+            payload = {"schema_version": _AUTHORITY_SCHEMA, "request": request,
+                       "request_digest": digest_obj(request),
+                       "authorization_basis": "local_store_capability",
+                       "operator_label": "owner-local"}
+            mode = self.project_capture_mode(project_id)
+            captured, _ = apply_capture_mode(payload, mode)
+            if captured != payload:
+                raise ValueError("capture policy cannot retain the exact authority request")
+            event = self.store._append_event_in_transaction(
+                tenant_id=self.tenant_id, project_id=project_id, source_type="human_decision",
+                source_id=_AUTHORITY_SOURCE, idempotency_key=identity, payload=payload,
+                authority="human_decision", actor_type="service", actor_id="owner-local",
+                capture_mode=mode)
+            self.process_event(event)
+            _require_persisted_marker(self.store, event["event_id"], "ok", None)
+            self.store.audit(actor="owner-local", action="authority." + request["operation"],
+                             object_id=_confirmation_id(event, request), detail=digest_obj(request))
+            return self._authority_receipt(event, request)
+
+    def _process_authority_decision(self, event: dict, report: dict) -> None:
+        request = self._authority_payload(event)
+        project_id = event["project_id"]
+        state = self._validate_authority_operands(project_id, request)
+        node_id = _confirmation_id(event, request)
+        criticality = None
+        if state is None:
+            original, _ = self._proposal_origin(project_id, request["proposal_id"])
+            criticality = original["criticality"]
+            state = {"confirmation_id": node_id, "proposal_id": request["proposal_id"],
+                     "statement": request["text"], "proposed_kind": request["proposed_kind"],
+                     "authority_scope": request["authority_scope"],
+                     "confirmation_event_id": event["event_id"],
+                     "authority_version": 1, "revoked": False}
+            status = {"task": "open", "decision": "accepted"}.get(state["proposed_kind"], "active")
+        else:
+            state = {**state, "authority_version": state["authority_version"] + 1}
+            status = None
+            if request["operation"] == "revoke":
+                state["revoked"] = True
+                status = "revoked"
+            else:
+                state["authority_scope"] = request["authority_scope"]
+        state.update(decision_event_id=event["event_id"], decided_at=event["recorded_at"])
+        node = self.graph.put_node(
+            entity_type=state["proposed_kind"], tenant_id=self.tenant_id, project_id=project_id,
+            node_id=node_id, data=state, status=status, authority="human_decision", confidence=1.0,
+            criticality=criticality,
+            scope=state["authority_scope"], valid_from=event["recorded_at"],
+            valid_to=event["recorded_at"] if state["revoked"] else None,
+            event_id=event["event_id"], extractor=_AUTHORITY_EXTRACTOR, extractor_version="1.0.0")
+        if request["operation"] == "confirm":
+            self.graph.put_edge(edge_type="supports", src_id=event["event_id"], dst_id=node_id,
+                                tenant_id=self.tenant_id, project_id=project_id,
+                                event_id=event["event_id"])
+            self.graph.put_edge(edge_type="supports", src_id=state["proposal_id"], dst_id=node_id,
+                                tenant_id=self.tenant_id, project_id=project_id,
+                                event_id=event["event_id"])
+        if request["operation"] in ("confirm", "replace_scope"):
+            compatible = {n["node_id"] for n in self.graph.current(
+                project_id, tenant_id=self.tenant_id)
+                if n["entity_type"] in ("requirement", "constraint")}
+            self._detect_near_duplicate_conflict(
+                node, report, event["event_id"], compatible, "human_decision")
+        elif request["operation"] == "revoke":
+            inv = self.invalidation.fire(
+                tenant_id=self.tenant_id, project_id=project_id, target_node_id=node_id,
+                trigger_type="expired_approval", trigger_confidence=1.0,
+                reason="owner-local authority revoked", event_id=event["event_id"])
+            report["invalidations"].append(inv["node_id"])
+        report["created"].append({"node_id": node_id, "kind": state["proposed_kind"]})
+
     def _ingest(self, project_id: str, envelope: dict) -> dict | None:
         try:
             project = self.graph.get(
@@ -2424,6 +3014,9 @@ class Engine:
 
         source_type = envelope.get("source_type", event["source_type"])
 
+        if source_type == "human_decision" and event.get("source_id") == _AUTHORITY_SOURCE:
+            self._process_authority_decision(event, report)
+
         # Verifier-authoritative events become verification nodes (EV-003).
         if source_type in ("github:check_run", "github:workflow_run",
                            "github:check_suite"):
@@ -2528,6 +3121,11 @@ class Engine:
                     "stored GitHub event identity does not round-trip")
             return canonical
         if source_type == "human_decision":
+            if event.get("source_id") == _AUTHORITY_SOURCE or (
+                    isinstance(payload.get("schema_version"), str)
+                    and payload["schema_version"].startswith("cce.authority-decision.")):
+                self._authority_payload(event)
+                return {"source_type": source_type, "flags": {}, "text_blocks": []}
             return {
                 "source_type": source_type, "flags": {},
                 "text_blocks": [{"text": payload.get("decision", ""),
@@ -2552,148 +3150,85 @@ class Engine:
         text = block.get("text") or ""
         authority = block.get("authority", "untrusted_content")
         ref = block.get("ref", "")
-        # A project may declare that prose never mandates; the extractor then
-        # records requirements and constraints as claims, exactly as it
-        # already does for an untrusted source.
         result = self.extractor.extract(
             text, source_authority=authority, scope={"source_ref": ref},
-            prose_may_mandate=bool(
-                self.policy.project_config(project_id).get(
-                    "prose_may_mandate", True)))
-        # Identical statements from different sources converge on one node
-        # (AD-004), so a node tracks EVERY source that states it. An edit to
-        # one source may only retract that source's claim on the node.
-        prior_from_ref = {
-            n["node_id"]: n
-            for kind in ("requirement", "constraint", "assumption")
-            for n in self.graph.current(
-                project_id, kind, tenant_id=self.tenant_id)
-            if (ref in _source_refs(n)
-                and n["status"] != "superseded"
-                and (n["entity_type"] == "assumption" or n["status"] != "invalidated"))
-        }
-        seen_ids: set[str] = set()
-        # One observation boundary avoids overlapping old/new assumption
-        # intervals merely because extraction writes the successor first.
-        observed_at = utcnow()
+            prose_may_mandate=self.policy.project_config(project_id).get(
+                "prose_may_mandate", False))
         quarantined_block = any(item.suspected_injection for item in result.items)
-        # Restated items do not get rewritten below, but still belong to the
-        # complete snapshot. Their older event id cannot identify co-assertion.
-        block_assertion_ids = {
-            stable_node_id(project_id, item.kind, item.statement)
-            for item in result.items
-            if item.kind in ("requirement", "constraint") and not item.suspected_injection
-        }
-
+        stated = {(item.meta.get("proposed_kind"), item.statement) for item in result.items}
+        # Identity binds one admitted source revision, never a mutable label or
+        # a normalized statement shared with another source's approval.
         for item in result.items:
-            if item.suspected_injection:
-                node = self.graph.put_node(
-                    entity_type="claim", tenant_id=self.tenant_id,
-                    project_id=project_id, status="quarantined",
-                    criticality="high", authority="untrusted_content",
-                    confidence=item.confidence,
-                    data={"statement": item.statement, "span": item.span,
-                          "source_ref": ref, "suspected_injection": True},
-                    event_id=event_id,
-                    extractor=result.extractor,
-                    extractor_version=result.extractor_version,
-                )
-                report["created"].append({"node_id": node.id, "kind": "claim",
-                                          "quarantined": True})
-                self.store.audit(actor="extractor", action="injection.quarantined",
-                                 object_id=node.id, detail=item.statement[:200])
-                continue
-
-            kind = item.kind
-            node_id = stable_node_id(project_id, kind, item.statement)
-            seen_ids.add(node_id)
-            existing = None
-            try:
-                existing = self.graph.get(
-                    node_id, tenant_id=self.tenant_id,
-                    project_id=project_id)
-            except KeyError:
-                pass
-            entity_type = kind if kind in ("assumption", "requirement", "constraint",
-                                           "decision", "claim", "task") else "claim"
-            status = self._initial_status(entity_type, item, existing)
-            # A re-delivery that asserts nothing new is a no-op. Re-writing an
-            # unchanged node would re-stamp its transaction time, inflate its
-            # version, and re-enter it into conflict ranking, so an idempotent
-            # webhook retry could change project state (CCG-001).
-            if existing is not None and _restates(existing, item, ref, authority):
-                continue
-            if existing is not None and authority_rank(authority) < authority_rank(
-                    existing.get("authority") or "untrusted_content"):
-                # A weaker source cannot downgrade or overwrite; record occurrence.
-                self.graph.put_edge(
-                    edge_type="supports", src_id=event_id, dst_id=node_id,
-                    tenant_id=self.tenant_id, project_id=project_id,
-                    strength=0.3, event_id=event_id)
-                continue
+            descriptor = _proposal_descriptor(event, ref, item.meta.get("proposed_kind"),
+                                               item.statement)
+            node_id = "clm_" + digest_obj(descriptor)[7:31]
             node = self.graph.put_node(
-                entity_type=entity_type, tenant_id=self.tenant_id,
-                project_id=project_id, node_id=node_id, status=status,
+                entity_type="claim", tenant_id=self.tenant_id,
+                project_id=project_id, node_id=node_id,
+                status="quarantined" if quarantined_block else "recorded",
                 criticality=item.criticality, authority=authority,
-                confidence=item.confidence,
-                scope=item.scope,
-                valid_from=(observed_at if entity_type == "assumption"
-                            and existing is None else None),
+                confidence=item.confidence, scope=item.scope, valid_from=event["recorded_at"],
                 data={"statement": item.statement, "span": item.span,
-                      "source_ref": ref, "stable_key": node_id,
-                      "source_refs": sorted(_source_refs(existing) | {ref}),
-                      **item.meta},
-                event_id=event_id,
-                extractor=result.extractor,
+                      "source_ref": ref, "proposal": descriptor,
+                      "proposal_digest": digest_obj(descriptor), **item.meta,
+                      **({"suspected_injection": True} if quarantined_block else {})},
+                event_id=event_id, extractor=result.extractor,
                 extractor_version=result.extractor_version,
             )
-            report["created"].append({"node_id": node.id, "kind": entity_type,
-                                      "status": status, "new": existing is None})
-            self._detect_near_duplicate_conflict(
-                node, report, event_id, block_assertion_ids, authority)
-
-        # Source withdrawal (CI-001 / ADR-118): an assertion this source
-        # used to state and no longer does was edited away. It is invalidated
-        # only when NO other source still states it — otherwise the edit just
-        # drops this source's claim and the assertion stands on the others.
-        for old_id, old in prior_from_ref.items():
-            if old_id in seen_ids:
-                continue
-            assumption = old["entity_type"] == "assumption"
-            if assumption and (quarantined_block or authority_rank(authority) < authority_rank(
-                    old.get("authority") or "untrusted_content")):
-                continue
-            remaining = _source_refs(old) - {ref}
-            self.graph.put_node(
-                entity_type=old["entity_type"], tenant_id=self.tenant_id,
-                project_id=project_id, node_id=old_id,
-                data={"source_refs": sorted(remaining)}, event_id=event_id,
-            )
-            if remaining:
-                report["conflicts"].append({
-                    "a": old_id, "b": None, "winner": old_id,
-                    "explanation": f"{ref} no longer states this {old['entity_type']}, but"
-                                   f" {sorted(remaining)} still do; not invalidated",
-                })
-                continue
-            if assumption and old["data"].get("source_withdrawn") is True:
-                continue
-            inv = self.invalidation.fire(
-                tenant_id=self.tenant_id, project_id=project_id,
-                target_node_id=old_id,
-                trigger_type="dependency_drift" if assumption else "changed_requirement",
-                trigger_confidence=0.9,
-                reason=f"source {ref} was edited and no longer states this"
-                       f" {old['entity_type']}; no other source states it",
-                event_id=event_id,
-            )
-            if assumption and self.graph.get(old_id)["status"] == "invalidated":
+            report["created"].append({"node_id": node.id, "kind": "claim",
+                                      "status": node["status"], "quarantined": quarantined_block})
+            self.graph.put_edge(edge_type="supports", src_id=event_id, dst_id=node.id,
+                                tenant_id=self.tenant_id, project_id=project_id, event_id=event_id)
+            if quarantined_block:
+                self.store.audit(actor="extractor", action="injection.quarantined",
+                                 object_id=node.id, detail=item.statement[:200])
+        if not quarantined_block:
+            # Read producer history rather than current mutable metadata. An
+            # unrelated field edit or equal restatement does not withdraw this
+            # exact statement; a weaker or quarantined field has no such power.
+            rows = self.store._conn.execute(
+                "SELECT node_id, data, status, authority, extractor, extractor_version FROM nodes"
+                " WHERE tenant_id=? AND project_id=? AND entity_type='claim' AND version=1"
+                " AND extractor=?", (self.tenant_id, project_id, result.extractor)).fetchall()
+            for row in rows:
+                data = strict_json_loads(row["data"])
+                descriptor = data.get("proposal", {})
+                if (row["status"] == "quarantined" or data.get("suspected_injection")
+                        or descriptor.get("source_type") != event["source_type"]
+                        or descriptor.get("source_id") != event["source_id"]
+                        or descriptor.get("source_ref") != ref
+                        or descriptor.get("source_event_id") == event_id
+                        or (descriptor.get("proposed_kind"), descriptor.get("text")) in stated
+                        or authority_rank(authority) < authority_rank(row["authority"])):
+                    continue
+                current = self.graph.get(row["node_id"], tenant_id=self.tenant_id,
+                                         project_id=project_id)
+                # Withdrawal is not a quarantine release: replacing that
+                # terminal status would reopen retrieval and memory promotion.
+                if (current["status"] == "quarantined"
+                        or current["data"].get("suspected_injection")
+                        or current["data"].get("source_withdrawn")):
+                    continue
                 self.graph.put_node(
-                    entity_type="assumption", tenant_id=self.tenant_id,
-                    project_id=project_id, node_id=old_id,
-                    valid_to=old["valid_to"] or observed_at,
-                    data={"source_withdrawn": True}, event_id=event_id)
-            report["invalidations"].append(inv["node_id"])
+                    entity_type="claim", tenant_id=self.tenant_id, project_id=project_id,
+                    node_id=row["node_id"], status="withdrawn", valid_to=event["recorded_at"],
+                    data={"source_withdrawn": True}, event_id=event_id,
+                    extractor=row["extractor"], extractor_version=row["extractor_version"])
+                for confirmed in self.graph.current(project_id, tenant_id=self.tenant_id):
+                    if (confirmed["data"].get("proposal_id") == row["node_id"]
+                            and confirmed["entity_type"] in _AUTHORITY_KINDS):
+                        inv = self.invalidation.fire(
+                            tenant_id=self.tenant_id, project_id=project_id,
+                            target_node_id=confirmed["node_id"],
+                            trigger_type=("changed_requirement" if confirmed["entity_type"] in
+                                          ("requirement", "constraint") else "expired_approval"),
+                            trigger_confidence=1.0, reason="confirmed source statement withdrawn",
+                            event_id=event_id)
+                        report["invalidations"].append(inv["node_id"])
+                        self.graph.put_node(
+                            entity_type=confirmed["entity_type"], tenant_id=self.tenant_id,
+                            project_id=project_id, node_id=confirmed["node_id"], data={},
+                            valid_to=event["recorded_at"], event_id=event_id)
         return not quarantined_block
 
     @staticmethod
@@ -2737,6 +3272,12 @@ class Engine:
                 continue
             if other["status"] in ("superseded", "invalidated", "quarantined"):
                 continue
+            if not self.authority_is_current(other):
+                continue
+            mine, theirs = node.get("scope") or {}, other.get("scope") or {}
+            if (mine.get("kind") == theirs.get("kind") == "tasks"
+                    and not set(mine["task_ids"]).intersection(theirs["task_ids"])):
+                continue
             literal_negation = False
             if "constraint" in (node["entity_type"], other["entity_type"]):
                 # Admit constraints only for a closed, explicit opposite pair.
@@ -2779,7 +3320,8 @@ class Engine:
                 # a winner silently (ADR-008).
                 contested = bool(
                     loser is not None
-                    and (_source_refs(loser) - _source_refs(node)
+                    and (node.get("extractor") == _AUTHORITY_EXTRACTOR
+                         or _source_refs(loser) - _source_refs(node)
                          or (literal_negation
                              and node["node_id"] in block_assertion_ids
                              and other["node_id"] in block_assertion_ids))
@@ -3071,18 +3613,93 @@ class Engine:
 
     # ------------------------------------------------------------------ resume
 
+    def _packet_scope(self, project_id: str, task_id: str | None, *, instant=None) -> dict:
+        self._require_project(project_id)
+        if task_id is None:
+            return {"kind": "project"}
+        validate_public_identifier(task_id, field="task_id")
+        try:
+            task = self.graph.get(task_id, tenant_id=self.tenant_id,
+                                  project_id=project_id, entity_type="task")
+            self._confirmed_task_state(
+                project_id, task, parse_ts(utcnow()) if instant is None else instant)
+        except (KeyError, ValueError):
+            raise ResumeTaskScopeError(
+                "resume task scope requires a current confirmed task") from None
+        if task.get("status") not in (
+                "open", "active", "in_progress", "blocked", "review_required", "uncertain"):
+            raise ResumeTaskScopeError("resume task scope requires a live confirmed task")
+        return {"kind": "task", "task_id": task_id}
+
+    def _packet_selection(self, project_id: str, task_id: str | None = None) -> dict:
+        instant = parse_ts(utcnow())
+        scope = self._packet_scope(project_id, task_id, instant=instant)
+        if self.store.unprocessed_event_ids(project_id, tenant_id=self.tenant_id):
+            raise ValueError("complete packet unavailable: unprocessed events")
+        all_controls = self._applicable_obligations(project_id, None, instant=instant)
+        controls = [member for member in all_controls
+                    if task_id is None or member["authority_scope"]["kind"] == "global"
+                    or task_id in member["authority_scope"]["task_ids"]]
+        included = {member["node_id"] for member in controls}
+        excluded = {member["node_id"] for member in all_controls} - included
+        counts = {}
+        for member in all_controls:
+            if member["node_id"] in excluded:
+                kind = member["entity_type"]
+                counts[kind] = counts.get(kind, 0) + 1
+        tasks = self.graph.current(project_id, "task", tenant_id=self.tenant_id)
+        valid_task_ids = sorted(task["node_id"] for task in tasks
+                                if self._obligation_valid_at(task, instant)
+                                and self.authority_is_current(task))
+        if task_id is not None:
+            for task in tasks:
+                # Confirmed task authority is global for bootstrap, not an
+                # instruction to switch to a sibling in a targeted packet.
+                # Runtime work has no independent replay scope: keep it global.
+                history = self.graph.history(task["node_id"], tenant_id=self.tenant_id,
+                                             project_id=project_id)
+                if (task["node_id"] != task_id
+                        and any(row.get("extractor") == _AUTHORITY_EXTRACTOR for row in history)):
+                    excluded.add(task["node_id"])
+                    counts["task"] = counts.get("task", 0) + 1
+        return {"scope": scope, "controls": controls, "valid_task_ids": valid_task_ids,
+                "instant": instant,
+                "excluded_ids": sorted(excluded),
+                "excluded_counts": counts}
+
     def resume_packet(self, project_id: str, *, target: dict | None = None,
-                      token_budget: int = 4000, fmt: str = "json"):
+                      token_budget: int = 4000, fmt: str = "json",
+                      task_id: str | None = None,
+                      max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES):
         return self._resume_packet(
             project_id, target=target, token_budget=token_budget, fmt=fmt,
-            record_state=True)
+            task_id=task_id, record_state=True, max_response_bytes=max_response_bytes)
+
+    def _packet_context(self, project_id: str, *, task_id: str | None = None) -> dict:
+        """Pair exact membership and its commitment inside the caller's snapshot."""
+        selection = self._packet_selection(project_id, task_id)
+        return {"_selection": selection, "state_basis": self._packet_state_basis(
+            project_id, task_id=task_id, _selection=selection)}
 
     @serialized_access
     def _resume_packet(self, project_id: str, *, target: dict | None = None,
                        token_budget: int = 4000, fmt: str = "json",
-                       record_state: bool):
+                       record_state: bool, task_id: str | None = None,
+                       max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+                       _response_encoder=None, _response_format=None):
         if fmt not in ("json", "markdown"):
             raise ValueError("resume format must be 'json' or 'markdown'")
+        # Adapters supply their fixed pure encoder, including wrappers and LF.
+        # Keep the actual admitted bytes instead of serializing again after commit.
+        encode = _response_encoder or (
+            (lambda value: ResumeComposer.render_markdown(value).encode("utf-8"))
+            if fmt == "markdown" else (lambda value: canonical_json(value).encode("utf-8")))
+        encoded = None
+
+        def capture(value):
+            nonlocal encoded
+            encoded = encode(value)
+            return encoded
         # Compose and commit its exact state basis under one snapshot.  The
         # before-basis is deliberately persisted: if an internal callback
         # mutates state while composing, the returned packet fails closed as
@@ -3091,25 +3708,37 @@ class Engine:
                        else self.store.read_snapshot)
         with transaction():
             self._require_project(project_id)
-            state_basis = self._packet_state_basis(project_id)
+            context = self._packet_context(project_id, task_id=task_id)
+            state_basis = context["state_basis"]
             event_seq = state_basis["event_seq"]
             control_basis_digest = state_basis["control_basis_digest"]
             packet = self.composer.compose(
                 tenant_id=self.tenant_id, project_id=project_id, target=target,
                 token_budget=token_budget, signer=self.signer,
-                state_basis=state_basis, record_audit=record_state)
+                record_audit=record_state, task_id=task_id,
+                max_response_bytes=max_response_bytes,
+                response_format=_response_format or f"engine-{fmt}",
+                _response_encoder=capture, **context)
             if record_state:
                 self._record_watermark(
                     project_id, packet, last_event_seq=event_seq,
-                    control_basis_digest=control_basis_digest)
+                    control_basis_digest=control_basis_digest, task_id=task_id,
+                    _scope_instant=context["_selection"]["instant"])
+        if _response_encoder is not None:
+            return encoded
         if fmt == "markdown":
-            return ResumeComposer.render_markdown(packet)
+            return encoded.decode("utf-8")
         return packet
 
-    def _packet_state_basis(self, project_id: str) -> dict:
+    def _packet_state_basis(self, project_id: str, *, task_id: str | None = None,
+                            _selection: dict | None = None) -> dict:
         """The compact commitment embedded in packets and capsules."""
         self._require_project(project_id)
+        selection = (_selection if _selection is not None
+                     else self._packet_selection(project_id, task_id))
         control_basis = self._packet_control_basis(project_id)
+        control_basis.update(scope=selection["scope"], mandatory_control=selection["controls"])
+        control_basis["valid_task_ids"] = selection["valid_task_ids"]
         return {
             "event_seq": self._latest_event_seq(project_id),
             "control_basis_digest": digest_obj(control_basis),
@@ -3174,7 +3803,10 @@ class Engine:
             "WHERE assignment.project_id = ? ORDER BY assignment.seq",
             (self.tenant_id, project_id))]
         return {
-            "schema_version": "cce.packet-control-basis.v1",
+            # The composer now consults retained extraction origin (ADR-123).
+            # A watermark produced under current-version-only origin checks
+            # must stale even when no graph or policy row changed at upgrade.
+            "schema_version": "cce.packet-control-basis.v3",
             "tenant_id": self.tenant_id,
             "project_id": project_id,
             "event_seq": self._latest_event_seq(project_id),
@@ -3193,9 +3825,21 @@ class Engine:
 
     def _record_watermark(
             self, project_id: str, packet: dict, *, last_event_seq: int,
-            control_basis_digest: str):
+            control_basis_digest: str, task_id: str | None = None, _scope_instant=None):
+        # Revalidate canonical authority and live status, but at the membership
+        # instant: elapsed time alone must not reject an already signed as-of
+        # packet (ADR-130). Later freshness checks still sample the current time.
+        scope = self._packet_scope(project_id, task_id, instant=_scope_instant)
+        if (packet.get("scope") != scope or packet.get("tenant_id") != self.tenant_id
+                or packet.get("project_id") != project_id or packet.get("complete") is not True):
+            raise ValueError("packet watermark scope does not match expected scope")
+        scope_key = "project" if task_id is None else "task:" + task_id
+        audit_object = canonical_json({"tenant_id": self.tenant_id,
+                                       "project_id": project_id, "scope_key": scope_key})
         commitment = {
+            "tenant_id": self.tenant_id,
             "project_id": project_id,
+            "scope_key": scope_key,
             "packet_id": packet.get("packet_id"),
             "packet_digest": packet.get("packet_digest"),
             "last_event_seq": last_event_seq,
@@ -3204,26 +3848,26 @@ class Engine:
         with self.store.transaction():
             self.store._conn.execute(
                 "INSERT OR REPLACE INTO packet_watermark "
-                "(project_id, last_event_seq, composed_at, packet_id, "
+                "(project_id, scope_key, last_event_seq, composed_at, packet_id, "
                 "packet_digest, control_basis_digest, audit_entry_hash) "
-                "VALUES (?,?,?,?,?,?,NULL)",
-                (project_id, last_event_seq, utcnow(), packet.get("packet_id"),
+                "VALUES (?,?,?,?,?,?,?,NULL)",
+                (project_id, scope_key, last_event_seq, utcnow(), packet.get("packet_id"),
                  packet.get("packet_digest"), control_basis_digest))
             self.store.audit(
                 actor="resume", action="packet.watermark",
-                object_id=project_id, authority="verifier_authoritative",
+                object_id=audit_object, authority="verifier_authoritative",
                 detail=canonical_json(commitment))
             audit = self.store._conn.execute(
                 "SELECT entry_hash FROM audit_log WHERE action = ? AND "
                 "object_id = ? ORDER BY seq DESC LIMIT 1",
-                ("packet.watermark", project_id)).fetchone()
+                ("packet.watermark", audit_object)).fetchone()
             self.store._conn.execute(
                 "UPDATE packet_watermark SET audit_entry_hash = ? "
-                "WHERE project_id = ?",
-                (audit["entry_hash"] if audit else None, project_id))
+                "WHERE project_id = ? AND scope_key = ?",
+                (audit["entry_hash"] if audit else None, project_id, scope_key))
 
     @serialized_access
-    def packet_is_stale(self, project_id: str) -> bool:
+    def packet_is_stale(self, project_id: str, *, task_id: str | None = None) -> bool:
         """True when no packet reflects the current event watermark (CI-006).
 
         Never composed a packet counts as stale: the check must not claim a
@@ -3232,13 +3876,21 @@ class Engine:
         from a projection that never received that event cannot make the
         partial state current (ADR-070).
         """
+        with self.store.read_snapshot():
+            return self._packet_is_stale(project_id, task_id=task_id)
+
+    def _packet_is_stale(self, project_id: str, *, task_id: str | None) -> bool:
         self._require_project(project_id)
+        self._packet_scope(project_id, task_id)
+        scope_key = "project" if task_id is None else "task:" + task_id
+        audit_object = canonical_json({"tenant_id": self.tenant_id,
+                                       "project_id": project_id, "scope_key": scope_key})
         if self.store.unprocessed_event_ids(
                 project_id, tenant_id=self.tenant_id):
             return True
         row = self.store._conn.execute(
-            "SELECT * FROM packet_watermark WHERE project_id = ?",
-            (project_id,)).fetchone()
+            "SELECT * FROM packet_watermark WHERE project_id = ? AND scope_key = ?",
+            (project_id, scope_key)).fetchone()
         if row is None or any(
                 not row[field] for field in (
                     "packet_id", "packet_digest", "control_basis_digest",
@@ -3247,21 +3899,21 @@ class Engine:
         if self._latest_event_seq(project_id) != row["last_event_seq"]:
             return True
         try:
-            current_control_digest = digest_obj(
-                self._packet_control_basis(project_id))
-        except UnsafeArtifactError:
+            current_control_digest = self._packet_state_basis(
+                project_id, task_id=task_id)["control_basis_digest"]
+        except (UnsafeArtifactError, KeyError, ValueError):
             return True
         if current_control_digest != row["control_basis_digest"]:
             return True
         audit = self.store._conn.execute(
             "SELECT * FROM audit_log WHERE entry_hash = ? AND action = ? "
             "AND object_id = ?",
-            (row["audit_entry_hash"], "packet.watermark", project_id),
+            (row["audit_entry_hash"], "packet.watermark", audit_object),
         ).fetchone()
         latest_audit = self.store._conn.execute(
             "SELECT entry_hash FROM audit_log WHERE action = ? AND "
             "object_id = ? ORDER BY seq DESC LIMIT 1",
-            ("packet.watermark", project_id),
+            ("packet.watermark", audit_object),
         ).fetchone()
         if audit is None or not self.store.verify_chain("audit_log")["intact"]:
             return True
@@ -3269,7 +3921,9 @@ class Engine:
                 or latest_audit["entry_hash"] != row["audit_entry_hash"]):
             return True
         expected = {
+            "tenant_id": self.tenant_id,
             "project_id": project_id,
+            "scope_key": scope_key,
             "packet_id": row["packet_id"],
             "packet_digest": row["packet_digest"],
             "last_event_seq": row["last_event_seq"],
@@ -3321,6 +3975,7 @@ class Engine:
         verifier_specs = [] if verifier_specs is None else verifier_specs
         verification_outcomes = (
             [] if verification_outcomes is None else verification_outcomes)
+        requirement_ids_supplied = requirement_ids is not None
         requirement_ids = [] if requirement_ids is None else requirement_ids
 
         if not isinstance(continuity, dict) or any(
@@ -3392,7 +4047,7 @@ class Engine:
         initial_control_basis_digest = digest_obj(
             self._packet_control_basis(project_id))
         continuity = dict(continuity)
-        if requirement_ids:
+        if requirement_ids_supplied:
             normalized_requirements = sorted(requirement_ids)
             linked_requirements = continuity.get("requirement_ids")
             if (linked_requirements is not None
@@ -3421,7 +4076,7 @@ class Engine:
                     f"{relation} must not contain duplicate node ids")
             for target in targets:
                 try:
-                    self.graph.get(
+                    target_node = self.graph.get(
                         target, tenant_id=self.tenant_id,
                         project_id=project_id,
                         entity_type=_CONTINUITY_LINK_TYPES[relation])
@@ -3429,6 +4084,26 @@ class Engine:
                     raise AttestationInputError(
                         f"{relation} target {target!r} is not a same-project "
                         f"{_CONTINUITY_LINK_TYPES[relation]}") from exc
+                if (target_node["entity_type"] in _AUTHORITY_KINDS
+                        and not self.authority_is_current(target_node)):
+                    raise AttestationInputError("proof target lacks current authority")
+
+        with self.store.read_snapshot():
+            instant = parse_ts(utcnow())
+            try:
+                obligation_bases = {
+                    task_id: self._obligation_basis(project_id, task_id, instant=instant)
+                    for task_id in continuity.get("task_ids", [])}
+            except (KeyError, ValueError) as exc:
+                raise AttestationInputError(f"invalid proof obligation target: {exc}") from None
+        required_ids = {member["node_id"] for basis in obligation_bases.values()
+                        for member in basis["obligations"]
+                        if member["entity_type"] == "requirement"}
+        requirement_ids = sorted(required_ids | set(continuity.get("requirement_ids", [])))
+        if requirement_ids:
+            continuity["requirement_ids"] = requirement_ids
+        obligation_inputs = {f"continuity:obligations:{task_id}": digest_obj(basis)
+                             for task_id, basis in obligation_bases.items()}
 
         policy_defs = self.policy.required_verifier_defs(project_id)
         policy_strength = {
@@ -3462,7 +4137,7 @@ class Engine:
             name, digest, kind = (*entry, "declared")[:3]
             if (kind == "continuity"
                     or (isinstance(name, str)
-                        and name.startswith("artifact:"))):
+                        and name.startswith(("artifact:", "continuity:obligations:")))):
                 raise AttestationInputError(
                     "continuity inputs and the 'artifact:' name prefix are "
                     "reserved for engine-collected commitments")
@@ -3473,6 +4148,8 @@ class Engine:
         # proof even if its identifier remains stable.
         for name, digest in self._continuity_state_inputs(
                 project_id, continuity).items():
+            env.add_input(name, digest, kind="continuity")
+        for name, digest in obligation_inputs.items():
             env.add_input(name, digest, kind="continuity")
         env.set_environment(**environment)
         # Outcomes supplied by the caller are claims, never observations.
@@ -3676,6 +4353,15 @@ class Engine:
                 "attestation produced an invalid proof: "
                 + "; ".join(shape_errors))
         with self.store.transaction():
+            instant = parse_ts(utcnow())
+            current_obligation_inputs = {
+                f"continuity:obligations:{task_id}": digest_obj(
+                    self._obligation_basis(project_id, task_id, instant=instant))
+                for task_id in obligation_bases}
+            if current_obligation_inputs != obligation_inputs:
+                raise RuntimeError(
+                    "applicable obligations changed while verifiers were running; "
+                    "discarding the stale attestation")
             current_control_basis_digest = digest_obj(
                 self._packet_control_basis(project_id))
             if current_control_basis_digest != initial_control_basis_digest:
@@ -3809,6 +4495,11 @@ class Engine:
             raise PermissionError(
                 f"completion rejected: target {task_id} is not a task in the "
                 f"requested project {self.tenant_id}/{project_id}") from None
+        if task.get("status") != "quarantined":
+            try:
+                self._confirmed_task_state(project_id, task, parse_ts(utcnow()))
+            except (KeyError, ValueError):
+                raise PermissionError("completion rejected: task lacks current authority") from None
         blocking_invalidations = self.invalidation.blocking_invalidations(
             project_id, task_id)
         if blocking_invalidations:
@@ -3841,6 +4532,14 @@ class Engine:
                 f"completion rejected: {task_id} is quarantined "
                 f"({(task['data'] or {}).get('quarantine_reason', 'no reason recorded')}). "
                 f"Resolve the quarantine before claiming completion.")
+        obligation_basis = self._obligation_basis(project_id, task_id)
+        conflicts = [member["node_id"] for member in obligation_basis["obligations"]
+                     if member["status"] in ("uncertain", "blocked", "review_required")
+                     or member["content"].get("conflict_requires_resolution")]
+        if conflicts:
+            raise PermissionError(
+                "completion rejected: unresolved applicable authority conflict: "
+                + ", ".join(conflicts))
         proof_required = self.policy.proof_required(
             project_id, "task_complete")
         if proof_required and proof is None:
@@ -3908,12 +4607,6 @@ class Engine:
             # policy with nothing declared has no artifact surface, so a
             # staleness verdict derived from it would describe the config
             # error rather than the world (ADR-056).
-            currency = self.proof_currency(project_id, task_id, proof)
-            if not currency["current"]:
-                raise PermissionError(
-                    "completion rejected: the proof no longer describes the "
-                    "current state — " + "; ".join(currency["reasons"])
-                    + ". Re-attest against the world as it is now.")
             # Compare complete normalized DEFINITIONS, not names or commands.
             # Kind, oracle expectations, timeout, negative control, artifacts
             # and isolation all change what a pass means.  Command-only
@@ -3948,6 +4641,12 @@ class Engine:
                     f"completion rejected: the policy now requires {sorted(unmet)}, "
                     f"which this proof does not cover. It was minted under an "
                     f"earlier policy; re-attest against the current one.")
+            currency = self.proof_currency(project_id, task_id, proof)
+            if not currency["current"]:
+                raise PermissionError(
+                    "completion rejected: the proof no longer describes the "
+                    "current state — " + "; ".join(currency["reasons"])
+                    + ". Re-attest against the world as it is now.")
             minimum = self.policy.min_evidence_grade(project_id)
             if minimum:
                 grade = self.grade_proof(project_id, proof)
@@ -4105,6 +4804,9 @@ class Engine:
                     node = self.graph.get(
                         target, tenant_id=self.tenant_id,
                         project_id=project_id, entity_type=expected_type)
+                    if (node["entity_type"] in _AUTHORITY_KINDS
+                            and not self.authority_is_current(node)):
+                        raise KeyError(target)
                 except KeyError:
                     if not allow_missing:
                         raise ValueError(
@@ -4131,6 +4833,10 @@ class Engine:
 
     @serialized_access
     def proof_currency(self, project_id: str, task_id: str, proof: dict) -> dict:
+        with self.store.read_snapshot():
+            return self._proof_currency_snapshot(project_id, task_id, proof)
+
+    def _proof_currency_snapshot(self, project_id: str, task_id: str, proof: dict) -> dict:
         """Does this proof still describe the world it was taken in?
 
         A proof is a statement about a moment. Three things can make it stop
@@ -4171,6 +4877,15 @@ class Engine:
         except ValueError as exc:
             continuity_inputs = {}
             reasons.append(f"invalid continuity links: {exc}")
+
+        instant = parse_ts(utcnow())
+        for target in continuity.get("task_ids", []):
+            try:
+                basis = self._obligation_basis(project_id, target, instant=instant)
+            except (KeyError, ValueError) as exc:
+                reasons.append(f"invalid current obligation basis for {target}: {exc}")
+            else:
+                continuity_inputs[f"continuity:obligations:{target}"] = digest_obj(basis)
 
         recorded_artifacts: list[str] = []
         try:
@@ -4460,9 +5175,9 @@ class Engine:
                 })
 
             packet_row = self.store._conn.execute(
-                "SELECT * FROM packet_watermark WHERE project_id = ?",
+                "SELECT * FROM packet_watermark WHERE project_id = ? AND scope_key = 'project'",
                 (project_id,)).fetchone()
-            packet_current = not self.packet_is_stale(project_id)
+            packet_current = not self._packet_is_stale(project_id, task_id=None)
             packet_state = {
                 "packet_id": packet_row["packet_id"] if packet_row else None,
                 "last_event_seq": (
@@ -4589,7 +5304,8 @@ class Engine:
             else:
                 verification_mode = "unestablished_authenticity"
             receipt = {
-                "schema_version": "cce.continuity-receipt.v1",
+                "schema_version": "cce.continuity-receipt.v2",
+                "scope": {"kind": "project"},
                 "payload_type": _CONTINUITY_PAYLOAD_TYPE,
                 "receipt_id": new_id("proof"),
                 "generated_at": generated_at,
@@ -4749,7 +5465,9 @@ class Engine:
 
     def _receipt_semantics_valid(
             self, project_id: str, receipt: dict) -> tuple[bool, str]:
-        """Recompute v1 predicates, partition, flips, and conclusion."""
+        """Recompute project-only predicates, partition, flips, and conclusion."""
+        if receipt.get("scope") != {"kind": "project"}:
+            return False, "continuity receipts require project scope"
         basis = receipt.get("basis")
         state = receipt.get("decision_state")
         if not isinstance(basis, dict) or not isinstance(state, dict):
@@ -4942,10 +5660,13 @@ class Engine:
 
     @serialized_access
     def verify_continuity_receipt(
-            self, project_id: str, receipt: dict) -> dict:
+            self, project_id: str, receipt: dict, *, expected_scope: dict | None = None) -> dict:
         """Classify a receipt as invalid, authentic historical, or current."""
+        if expected_scope is not None and expected_scope != {"kind": "project"}:
+            return self._invalid_receipt("continuity receipts require expected project scope")
         required = {
             "schema_version", "payload_type", "receipt_id", "generated_at",
+            "scope",
             "decision", "audience", "privacy_notice", "issuer", "basis",
             "satisfied", "blockers", "flip_conditions", "decision_state",
             "trust_limit", "receipt_digest", "signature",
@@ -4966,7 +5687,7 @@ class Engine:
                     "public_key"}):
             return self._invalid_receipt(
                 "receipt issuer or signature has missing or unknown fields")
-        if (receipt.get("schema_version") != "cce.continuity-receipt.v1"
+        if (receipt.get("schema_version") != "cce.continuity-receipt.v2"
                 or receipt.get("payload_type") != _CONTINUITY_PAYLOAD_TYPE
                 or receipt.get("audience") != "operator"
                 or not isinstance(receipt.get("receipt_id"), str)

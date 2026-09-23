@@ -38,6 +38,27 @@ def public_engine(tmp_path):
     engine.close()
 
 
+@pytest.fixture
+def public_signing_calls(public_engine, monkeypatch):
+    calls = []
+    original = type(public_engine.signer).sign
+
+    def observe(signer, body):
+        calls.append(body)
+        return original(signer, body)
+
+    monkeypatch.setattr(type(public_engine.signer), "sign", observe)
+    return calls
+
+
+def _assert_complete_collision_refusal(engine, signing_calls, *, token_budget):
+    before = tuple(engine.store._conn.iterdump())
+    with pytest.raises(ValueError, match="mandatory content withheld"):
+        engine.resume_packet(PRJ, token_budget=token_budget, fmt="json")
+    assert signing_calls == []
+    assert tuple(engine.store._conn.iterdump()) == before
+
+
 def _chain(graph):
     """assumption <- (assumes) task <- (depends_on) decision."""
     a = graph.put_node(entity_type="assumption", tenant_id=TEN, project_id=PRJ,
@@ -232,31 +253,24 @@ class TestResume:
 
     def test_budgeted_next_action_always_names_a_retained_task(self, env):
         _, graph, _, _, composer = env
-        graph.put_node(
+        blocked = graph.put_node(
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": "blocked migration " + "x" * 80},
             status="blocked")
-        graph.put_node(
+        actionable = graph.put_node(
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": "run the actionable migration " + "y" * 80},
             status="open")
 
-        partial = None
-        for budget in range(1, 1000):
+        for budget in (1, 100, 1000):
             packet = composer.compose(
                 tenant_id=TEN, project_id=PRJ, token_budget=budget)
-            if len(packet["open_work"]["tasks"]) == 1:
-                partial = packet
-                break
-        assert partial is not None, "fixture never reached a one-task packet"
+            assert packet["complete"] is True
+            retained = {task["node_id"] for task in packet["open_work"]["tasks"]}
+            assert retained == {blocked.id, actionable.id}
+            assert packet["open_work"]["next_safe_action"]["node_id"] == actionable.id
 
-        retained = {task["node_id"] for task in partial["open_work"]["tasks"]}
-        action = partial["open_work"]["next_safe_action"]
-        assert "node_id" not in action or action["node_id"] in retained
-        if "node_id" not in action:
-            assert "withheld" in action["summary"].lower()
-
-    def test_budget_trimmed_blocker_still_visible_is_not_withheld(
+    def test_budget_preserves_blocker_in_every_mandatory_work_view(
             self, public_engine):
         blocked = public_engine.graph.put_node(
             entity_type="task", tenant_id=TEN, project_id=PRJ,
@@ -266,19 +280,16 @@ class TestResume:
         packet = public_engine.resume_packet(
             PRJ, token_budget=1, fmt="json")
 
-        assert packet["open_work"]["tasks"] == []
+        assert {item["node_id"] for item in packet["open_work"]["tasks"]} == {blocked.id}
         assert {item["node_id"] for item in packet["open_work"]["blockers"]} \
             == {blocked.id}
-        omission = next(
-            item for item in packet["omissions"]
-            if item.get("reason") == "token_budget"
-            and item.get("section") == "open work detail")
-        assert omission["count"] == 1
+        assert not any(item.get("section") == "open work detail" for item in packet["omissions"])
+        assert packet["complete"] is True
         summary = packet["open_work"]["next_safe_action"]["summary"]
         assert summary == (
             "All visible open work is blocked; resolve a blocker before continuing.")
 
-    def test_budget_counts_only_a_task_absent_from_every_visible_view(
+    def test_budget_keeps_blocked_and_actionable_work_complete(
             self, public_engine):
         blocked = public_engine.graph.put_node(
             entity_type="task", tenant_id=TEN, project_id=PRJ,
@@ -289,26 +300,19 @@ class TestResume:
             data={"title": "run the actionable migration " + "y" * 80},
             status="open")
 
-        partial = None
-        for budget in range(1, 1000):
+        for budget in (1, 100, 1000):
             packet = public_engine.resume_packet(
                 PRJ, token_budget=budget, fmt="json")
             task_ids = {
                 item["node_id"] for item in packet["open_work"]["tasks"]}
-            if task_ids == {blocked.id}:
-                partial = packet
-                break
+            assert task_ids == {blocked.id, actionable.id}
+            assert {item["node_id"] for item in packet["open_work"]["blockers"]} == {blocked.id}
+            assert packet["open_work"]["next_safe_action"]["node_id"] == actionable.id
+            assert packet["complete"] is True
 
-        assert partial is not None, "fixture never retained only the blocker"
-        assert actionable.id not in {
-            item["node_id"] for item in partial["open_work"]["tasks"]}
-        summary = partial["open_work"]["next_safe_action"]["summary"]
-        assert "1 additional open task" in summary
-        assert "2 additional open task" not in summary
-
-    def test_budget_only_hidden_task_keeps_budget_cause(
+    def test_budget_cannot_hide_the_only_actionable_task(
             self, public_engine):
-        public_engine.graph.put_node(
+        task = public_engine.graph.put_node(
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": "run the isolated migration " + "z" * 80},
             status="open")
@@ -316,12 +320,12 @@ class TestResume:
         packet = public_engine.resume_packet(
             PRJ, token_budget=1, fmt="json")
 
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert "1 open task" in summary
-        assert "token budget" in summary
+        assert {item["node_id"] for item in packet["open_work"]["tasks"]} == {task.id}
+        assert packet["open_work"]["next_safe_action"]["node_id"] == task.id
+        assert packet["complete"] is True
 
-    def test_budget_and_quarantine_overlap_counts_one_hidden_task(
-            self, public_engine):
+    def test_budget_and_quarantine_overlap_refuses_complete_packet(
+            self, public_engine, public_signing_calls):
         text = "review the shared deployment instruction " + "x" * 80
         public_engine.graph.put_node(
             entity_type="claim", tenant_id=TEN, project_id=PRJ,
@@ -330,15 +334,10 @@ class TestResume:
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": text}, status="open")
 
-        packet = public_engine.resume_packet(
-            PRJ, token_budget=1, fmt="json")
+        _assert_complete_collision_refusal(public_engine, public_signing_calls, token_budget=1)
 
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert "1 open task" in summary
-        assert "2 open task" not in summary
-
-    def test_collision_only_withholding_names_quarantine_cause(
-            self, public_engine):
+    def test_collision_without_budget_pressure_refuses_complete_packet(
+            self, public_engine, public_signing_calls):
         text = "review the shared deployment instruction " + "c" * 80
         public_engine.graph.put_node(
             entity_type="claim", tenant_id=TEN, project_id=PRJ,
@@ -347,19 +346,11 @@ class TestResume:
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": text}, status="open")
 
-        packet = public_engine.resume_packet(
-            PRJ, token_budget=100_000, fmt="json")
-
-        assert not any(
-            item.get("reason") == "token_budget"
-            for item in packet["omissions"])
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert "matches quarantined content" in summary
-        assert "human review is required" in summary
-        assert "token budget" not in summary
+        _assert_complete_collision_refusal(
+            public_engine, public_signing_calls, token_budget=100_000)
 
     def test_budget_overlap_uses_collision_as_the_deciding_cause(
-            self, public_engine):
+            self, public_engine, public_signing_calls):
         text = "review the shared deployment instruction " + "d" * 80
         public_engine.graph.put_node(
             entity_type="claim", tenant_id=TEN, project_id=PRJ,
@@ -368,16 +359,10 @@ class TestResume:
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": text}, status="open")
 
-        packet = public_engine.resume_packet(
-            PRJ, token_budget=1, fmt="json")
+        _assert_complete_collision_refusal(public_engine, public_signing_calls, token_budget=1)
 
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert "1 open task" in summary
-        assert "matches quarantined content" in summary
-        assert "token budget" not in summary
-
-    def test_distinct_collision_and_budget_causes_are_both_reported(
-            self, public_engine):
+    def test_independent_actionable_work_cannot_mask_mandatory_collision(
+            self, public_engine, public_signing_calls):
         text = "review the shared deployment instruction " + "e" * 80
         public_engine.graph.put_node(
             entity_type="claim", tenant_id=TEN, project_id=PRJ,
@@ -390,17 +375,10 @@ class TestResume:
             data={"title": "run the independent migration " + "f" * 80},
             status="open")
 
-        packet = public_engine.resume_packet(
-            PRJ, token_budget=1, fmt="json")
-
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert summary.count("1 open task") == 2
-        assert "matches quarantined content" in summary
-        assert "token budget" in summary
-        assert summary.index("quarantined content") < summary.index("token budget")
+        _assert_complete_collision_refusal(public_engine, public_signing_calls, token_budget=1)
 
     def test_blocked_collision_names_quarantine_instead_of_absence(
-            self, public_engine):
+            self, public_engine, public_signing_calls):
         text = "review the shared deployment instruction " + "g" * 80
         public_engine.graph.put_node(
             entity_type="claim", tenant_id=TEN, project_id=PRJ,
@@ -409,18 +387,11 @@ class TestResume:
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": text}, status="blocked")
 
-        packet = public_engine.resume_packet(
-            PRJ, token_budget=100_000, fmt="json")
+        _assert_complete_collision_refusal(
+            public_engine, public_signing_calls, token_budget=100_000)
 
-        assert packet["open_work"]["tasks"] == []
-        assert packet["open_work"]["blockers"] == []
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert "matches quarantined content" in summary
-        assert "No open tasks" not in summary
-        assert "token budget" not in summary
-
-    def test_visible_blocker_precedes_additional_collision_disclosure(
-            self, public_engine):
+    def test_visible_blocker_cannot_mask_an_additional_mandatory_collision(
+            self, public_engine, public_signing_calls):
         public_engine.graph.put_node(
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": "wait for the schema owner"}, status="blocked")
@@ -432,14 +403,8 @@ class TestResume:
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": text}, status="open")
 
-        packet = public_engine.resume_packet(
-            PRJ, token_budget=100_000, fmt="json")
-
-        summary = packet["open_work"]["next_safe_action"]["summary"]
-        assert summary.startswith("All visible open work is blocked")
-        assert "1 additional open task" in summary
-        assert "matches quarantined content" in summary
-        assert "token budget" not in summary
+        _assert_complete_collision_refusal(
+            public_engine, public_signing_calls, token_budget=100_000)
 
     def test_policy_demoted_collision_is_not_hidden_open_work(
             self, public_engine):
@@ -470,19 +435,15 @@ class TestResume:
             entity_type="task", tenant_id=TEN, project_id=PRJ,
             data={"title": text}, status="open")
 
-        packet = composer.compose(tenant_id=TEN, project_id=PRJ)
-
-        assert packet["open_work"]["tasks"] == []
-        action = packet["open_work"]["next_safe_action"]["summary"]
-        assert "withheld" in action.lower()
-        assert "No open tasks" not in action
+        with pytest.raises(ValueError, match="mandatory content withheld"):
+            composer.compose(tenant_id=TEN, project_id=PRJ)
 
     def test_markdown_contract_covers_every_packet_field(self, env):
         import json
         from pathlib import Path
 
         schema = json.loads((Path(__file__).resolve().parent.parent / "schemas" /
-                             "cce.resume.v1.json").read_text(encoding="utf-8"))
+                             "cce.resume.v2.json").read_text(encoding="utf-8"))
         covered = (ResumeComposer.MARKDOWN_RENDERED_TOP_LEVEL
                    | ResumeComposer.MARKDOWN_DECLARED_METADATA)
         assert covered == set(schema["properties"])

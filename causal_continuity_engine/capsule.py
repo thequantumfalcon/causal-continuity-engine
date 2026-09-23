@@ -8,6 +8,10 @@ export, and the capsule schema has no field for them.
 Import verifies schema version, content digests, and signature (tamper
 detection), then runs a deterministic challenge step (MIG-005) whose result
 gates autonomy above level 1.
+
+Version 2 capsules remain project-only. Shared packet shape validation also
+accepts task packets, but no capsule boundary may substitute one for a complete
+project snapshot. Shape checks do not establish live authority or byte limits.
 """
 
 from __future__ import annotations
@@ -20,12 +24,13 @@ from .core import (
     digest_obj,
     is_canonical_utc_timestamp,
     is_public_identifier,
+    is_rfc3339_datetime,
     new_id,
     utcnow,
     validate_human_text,
 )
 
-CAPSULE_SCHEMA = "cce.capsule.v1"
+CAPSULE_SCHEMA = "cce.capsule.v2"
 
 _HIDDEN_KEYS = {"chain_of_thought", "hidden_reasoning", "reasoning_trace",
                 "internal_monologue", "scratchpad", "thinking"}
@@ -42,6 +47,8 @@ _PACKET_REQUIRED = {
     "assumptions", "open_work", "environment", "trust",
     "continuity_lineage", "evidence_index", "evidence_coverage",
     "omissions", "recent_context", "token_estimate", "packet_digest",
+    "tenant_id", "project_id", "scope", "complete", "mandatory_control",
+    "authority_set_digest", "max_response_bytes", "response_format",
 }
 _PACKET_ALLOWED = _PACKET_REQUIRED | {"signature"}
 
@@ -67,8 +74,8 @@ def _finite_probability(value) -> bool:
     return (
         not isinstance(value, bool)
         and isinstance(value, (int, float))
-        and math.isfinite(value)
         and 0 <= value <= 1
+        and math.isfinite(value)
     )
 
 
@@ -82,6 +89,45 @@ def _finite_number(value) -> bool:
 
 def _string_or_none(value) -> bool:
     return value is None or isinstance(value, str)
+
+
+def _authority_scope(value) -> bool:
+    if value == {"kind": "global"}:
+        return True
+    if (not isinstance(value, dict) or set(value) != {"kind", "task_ids"}
+            or value["kind"] != "tasks" or not isinstance(value["task_ids"], list)):
+        return False
+    tasks = value["task_ids"]
+    return (1 <= len(tasks) <= 128 and all(is_public_identifier(task) for task in tasks)
+            and tasks == sorted(set(tasks)))
+
+
+def _mandatory_control_member(value) -> bool:
+    fields = {
+        "node_id", "entity_type", "origin", "status", "criticality", "confidence",
+        "authority", "valid_from", "valid_to", "authority_scope", "content", "confirmation",
+    }
+    if (not isinstance(value, dict) or set(value) != fields
+            or not is_public_identifier(value["node_id"])
+            or value["entity_type"] not in ("requirement", "constraint", "decision", "assumption")
+            or value["origin"] not in ("confirmed", "runtime")
+            or any(not _string_or_none(value[key])
+                   for key in ("status", "criticality", "authority"))
+            or value["confidence"] is not None and not _finite_probability(value["confidence"])
+            or any(value[key] is not None and not is_rfc3339_datetime(value[key])
+                   for key in ("valid_from", "valid_to"))
+            or not _authority_scope(value["authority_scope"])
+            or not isinstance(value["content"], dict)):
+        return False
+    confirmation = value["confirmation"]
+    if value["origin"] == "runtime":
+        return confirmation is None
+    return (isinstance(confirmation, dict) and set(confirmation) == {
+                "proposal_id", "confirmation_event_id", "decision_event_id", "authority_version"}
+            and all(is_public_identifier(confirmation[key]) for key in (
+                "proposal_id", "confirmation_event_id", "decision_event_id"))
+            and type(confirmation["authority_version"]) is int
+            and confirmation["authority_version"] > 0)
 
 
 def _string_list(value) -> bool:
@@ -191,13 +237,14 @@ class CapsuleError(Exception):
 class CapsuleManager:
     def __init__(
             self, store, graph, composer, policy=None, tenant_id=None,
-            state_basis_provider=None):
+            state_basis_provider=None, packet_context_provider=None):
         self.store = store
         self.graph = graph
         self.composer = composer
         self.policy = policy
         self.tenant_id = tenant_id
         self.state_basis_provider = state_basis_provider
+        self.packet_context_provider = packet_context_provider
 
     def _state_basis(self, project_id: str) -> dict | None:
         if self.state_basis_provider is None:
@@ -206,6 +253,13 @@ class CapsuleManager:
         if not isinstance(basis, dict):
             raise CapsuleError("capsule state-basis provider returned malformed state")
         return basis
+
+    def _packet_context(self, project_id: str) -> dict:
+        # A database snapshot does not freeze valid time. Engine membership
+        # and its basis must share one selection at both migration boundaries.
+        if self.packet_context_provider is not None:
+            return self.packet_context_provider(project_id)
+        return {"state_basis": self._state_basis(project_id)}
 
     def _require_project(self, tenant_id: str, project_id: str) -> dict:
         if self.tenant_id is not None and tenant_id != self.tenant_id:
@@ -301,8 +355,48 @@ class CapsuleManager:
             raise CapsuleError(
                 "capsule resume_packet has missing or unknown fields: "
                 f"missing={sorted(missing)}, unknown={sorted(unknown)}")
-        if packet.get("schema_version") != "cce.resume.v1":
+        if packet.get("schema_version") != "cce.resume.v2":
             raise CapsuleError("capsule resume_packet schema_version is unsupported")
+        if (not is_public_identifier(packet["tenant_id"])
+                or not is_public_identifier(packet["project_id"])):
+            raise CapsuleError("capsule resume_packet tenant/project identity is malformed")
+        scope = packet["scope"]
+        if not (scope == {"kind": "project"} or isinstance(scope, dict)
+                and set(scope) == {"kind", "task_id"} and scope["kind"] == "task"
+                and is_public_identifier(scope["task_id"])):
+            raise CapsuleError("capsule resume_packet scope is malformed")
+        if packet["complete"] is not True:
+            raise CapsuleError("capsule resume_packet complete must be true")
+        # The producer measures its final representation. A portable packet
+        # parser cannot reconstruct external wrappers or assert their byte size.
+        cap = packet["max_response_bytes"]
+        if type(cap) is not int or not 1 <= cap <= 1_048_576:
+            raise CapsuleError("capsule resume_packet max_response_bytes is malformed")
+        if (not isinstance(packet["response_format"], str)
+                or packet["response_format"] not in {
+                    "engine-json", "engine-markdown", "cli-json", "cli-markdown",
+                    "http-json", "mcp-json", "mcp-markdown"}):
+            raise CapsuleError("capsule resume_packet response_format is unsupported")
+        controls = packet["mandatory_control"]
+        if (not isinstance(controls, list)
+                or any(not _mandatory_control_member(member) for member in controls)):
+            raise CapsuleError("capsule resume_packet mandatory_control is malformed")
+        identities = [member["node_id"] for member in controls]
+        order = [(member["entity_type"], member["node_id"]) for member in controls]
+        if len(identities) != len(set(identities)) or order != sorted(order):
+            raise CapsuleError("capsule resume_packet mandatory_control is not unique and sorted")
+        if scope["kind"] == "task" and any(
+                member["authority_scope"]["kind"] == "tasks"
+                and scope["task_id"] not in member["authority_scope"]["task_ids"]
+                for member in controls):
+            raise CapsuleError("capsule resume_packet mandatory_control is outside task scope")
+        try:
+            authority_digest = digest_obj(controls)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise CapsuleError("capsule resume_packet mandatory_control is not canonical JSON") \
+                from None
+        if packet["authority_set_digest"] != authority_digest:
+            raise CapsuleError("capsule resume_packet authority_set_digest is inconsistent")
         packet_id = packet.get("packet_id")
         if not isinstance(packet_id, str) or _PACKET_ID.fullmatch(packet_id) is None:
             raise CapsuleError("capsule resume_packet packet_id is malformed")
@@ -419,8 +513,9 @@ class CapsuleManager:
         autonomy = trust.get("autonomy_level") if isinstance(trust, dict) else None
         if (not isinstance(trust, dict)
                 or set(trust) != {
-                    "autonomy_level", "required_verifiers", "completed_checks",
+                    "policy", "autonomy_level", "required_verifiers", "completed_checks",
                     "failed_or_stale_checks", "gaps"}
+                or not isinstance(trust.get("policy"), dict)
                 or autonomy is not None
                 and (
                     isinstance(autonomy, bool)
@@ -471,6 +566,15 @@ class CapsuleManager:
             CapsuleManager._validate_signature_shape(
                 packet["signature"], label="resume packet")
 
+    @staticmethod
+    def _validate_project_packet(packet, tenant_id, project_id) -> None:
+        CapsuleManager._validate_resume_packet(packet)
+        if packet["scope"] != {"kind": "project"}:
+            raise CapsuleError("capsules require a project-only resume packet")
+        if (not is_public_identifier(tenant_id) or not is_public_identifier(project_id)
+                or packet["tenant_id"] != tenant_id or packet["project_id"] != project_id):
+            raise CapsuleError("capsule resume_packet identity differs from outer tenant/project")
+
     # ----------------------------------------------------------------- export
 
     def _observable_state(self, tenant_id: str, project_id: str) -> dict:
@@ -484,6 +588,7 @@ class CapsuleManager:
                     project_id, "assumption",
                     status=["active", "supported", "uncertain"],
                     tenant_id=tenant_id)
+                if self.graph.may_mandate(n)
             ],
             "open_invalidations": [
                 n["node_id"] for n in self.graph.current(
@@ -547,8 +652,13 @@ class CapsuleManager:
         packet = self.composer.compose(
             tenant_id=tenant_id, project_id=project_id,
             token_budget=token_budget, session_id=session_id,
-            state_basis=self._state_basis(project_id),
+            **self._packet_context(project_id),
         )
+        self._validate_project_packet(packet, tenant_id, project_id)
+        if _contains_hidden(packet["mandatory_control"]):
+            # Mandatory content is an exact commitment, not trimmable context.
+            # The capsule's separate no-hidden-fields boundary cannot erase it.
+            raise CapsuleError("capsule mandatory control contains forbidden hidden fields")
         body = {
             "schema_version": CAPSULE_SCHEMA,
             "capsule_id": new_id("capsule"),
@@ -570,6 +680,7 @@ class CapsuleManager:
             },
         }
         body = _strip_hidden(body)
+        self._validate_project_packet(body["resume_packet"], tenant_id, project_id)
         body["content_digest"] = digest_obj(
             {k: v for k, v in body.items() if k not in ("content_digest", "signature")})
         body["signature"] = signer.sign(body)
@@ -645,7 +756,7 @@ class CapsuleManager:
                 or lineage.get("exported_from_session") !=
                 source.get("session_id")):
             raise CapsuleError("capsule portable-state shape is malformed")
-        self._validate_resume_packet(capsule.get("resume_packet"))
+        self._validate_project_packet(capsule.get("resume_packet"), tenant_id, project_id)
         if (lineage.get("event_watermark") is not None
                 and not _nonempty(lineage.get("event_watermark"))):
             raise CapsuleError("capsule lineage event_watermark is malformed")
@@ -716,7 +827,8 @@ class CapsuleManager:
             raise CapsuleError("capsule challenge input must be an object")
         packet = capsule.get("resume_packet")
         state = capsule.get("observable_state")
-        self._validate_resume_packet(packet)
+        self._validate_project_packet(
+            packet, capsule.get("tenant_id"), capsule.get("project_id"))
         if (not isinstance(state, dict)
                 or set(state) != {
                     "active_assumptions", "open_invalidations"}
@@ -833,7 +945,7 @@ class CapsuleManager:
             tenant_id=tenant_id, project_id=project_id,
             token_budget=8000,
             session_id=source_session,
-            state_basis=self._state_basis(project_id))
+            **self._packet_context(project_id))
         source_packet = capsule.get("resume_packet") or {}
         # Presentation is budget-dependent: verified/open-work detail and
         # environment lists may be shortened without the project changing.
@@ -871,6 +983,7 @@ class CapsuleManager:
             item["node_id"]: item
             for item in live_state["active_assumptions"]})
         challenge_input = {
+            "tenant_id": tenant_id, "project_id": project_id,
             "resume_packet": live_packet,
             "observable_state": {
                 "active_assumptions": [

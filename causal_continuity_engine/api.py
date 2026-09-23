@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .capsule import CapsuleError
 from .core import strict_json_loads, validate_public_identifier
-from .engine import AttestationInputError, GitHubDeliveryError
+from .engine import AttestationInputError, GitHubDeliveryError, ResumeTaskScopeError
 from .github import (
     WebhookError,
     WebhookPayloadError,
@@ -36,6 +36,7 @@ from .github import (
     verify_signature,
 )
 from .invalidation import ResolutionInputError
+from .resume import DEFAULT_MAX_RESPONSE_BYTES, PACKET_BUDGET_ERROR, PacketBudgetExceeded
 from .store import PayloadMismatchError
 
 _MAX_BODY_BYTES = 1024 * 1024
@@ -135,8 +136,10 @@ API_ROUTES = (
            "Ingestion report or duplicate status.", 202),
     _route("POST", "/v1/projects/{project_id}/resume-packets:compose",
            r"^/v1/projects/([^/]+)/resume-packets:compose$", "compose", "bearer",
-           "Object: optional token_budget integer and target object.",
-           "cce.resume.v1 object.", 200),
+           "Object: optional token_budget integer, target object, task_id, and "
+           "max_response_bytes integer (1..1048576; default 131072).",
+           "Complete cce.resume.v2 project/task-scoped object, bounded by the "
+           "exact UTF-8 response body; fixed packet_budget_exceeded error at 422.", 200),
     _route("POST", "/v1/assumptions/{assumption_id}:resolve",
            r"^/v1/assumptions/([^/]+):resolve$", "resolve", "bearer",
            "Object selecting direct resolution or a typed invalidation that "
@@ -145,11 +148,11 @@ API_ROUTES = (
     _route("POST", "/v1/actions:attest", r"^/v1/actions:attest$", "attest", "bearer",
            "Object: intent_type plus optional statement, actor, action_type, "
            "verifications, continuity.",
-           "cce.proof.v1 object.", 200),
+           "cce.proof.v2 object.", 200),
     _route("POST", "/v1/verifications:run", r"^/v1/verifications:run$",
            "verifications_run", "bearer",
            "Object: optional intent fields and continuity; executable definitions are forbidden.",
-           "cce.proof.v1 object.", 200),
+           "cce.proof.v2 object.", 200),
     _route("POST", "/v1/projects/{project_id}/continuity-receipts:verify",
            r"^/v1/projects/([^/]+)/continuity-receipts:verify$",
            "continuity_receipt_verify", "bearer", "Object containing receipt object.",
@@ -157,7 +160,7 @@ API_ROUTES = (
     _route("POST", "/v1/migrations:prepare", r"^/v1/migrations:prepare$",
            "migrations_prepare", "bearer",
            "Object with optional scoped session and non-empty source/target strings.",
-           "cce.capsule.v1 object.", 200),
+           "cce.capsule.v2 project-scoped object.", 200),
     _route("POST", "/v1/migrations:validate", r"^/v1/migrations:validate$",
            "migrations_validate", "bearer",
            "Object containing capsule plus optional non-empty target model/runtime.",
@@ -242,7 +245,20 @@ def render_api_document() -> str:
         "project-scope denial is 403; an explicitly scoped missing resource is 404; a",
         "known route with the wrong method is 405 with exact `Allow`; idempotency-key",
         "payload conflict is 409; oversized input is 413; wrong media type is 415; and an",
-        "authenticated unsupported GitHub event is 422. Unexpected implementation errors",
+        "authenticated unsupported GitHub event is 422. A complete Resume Packet that",
+        "cannot fit max_response_bytes also returns 422, before signing or recording",
+        "a success watermark, with exactly:",
+        "",
+        "```json",
+        PACKET_BUDGET_ERROR,
+        "```",
+        "",
+        "This fixed error is exempt from the success cap and is at most 1024 bytes.",
+        "The resume limit measures the complete UTF-8 JSON body, not HTTP headers.",
+        "token_budget is advisory and cannot remove mandatory control or work.",
+        "Absent, foreign, unconfirmed, and non-live task selectors uniformly return",
+        "404 not_found with the message 'task is unavailable'; no target ID is disclosed.",
+        "Unexpected implementation errors",
         "are generic 500 responses and disclose no exception detail.",
         "",
         "Unknown paths return JSON 404. GET, POST, HEAD, PUT, PATCH, DELETE, OPTIONS,",
@@ -558,6 +574,9 @@ def make_handler(
             body = json.dumps(
                 obj, allow_nan=False, ensure_ascii=False,
                 separators=(",", ":")).encode("utf-8")
+            self._send_bytes(code, body, headers=headers)
+
+        def _send_bytes(self, code: int, body: bytes, *, headers: dict | None = None):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -782,6 +801,8 @@ def make_handler(
             except APIResourceNotFound as exc:
                 return self._send_error(
                     404, "not_found", f"{exc.resource} was not found")
+            except ResumeTaskScopeError:
+                return self._send_error(404, "not_found", "task is unavailable")
             except PayloadMismatchError:
                 return self._send_error(
                     409, "idempotency_conflict",
@@ -801,6 +822,8 @@ def make_handler(
             except ResolutionInputError as exc:
                 return self._send_error(
                     400, "invalid_resolution", str(exc), field="resolution")
+            except PacketBudgetExceeded:
+                return self._send_bytes(422, PACKET_BUDGET_ERROR.encode("utf-8"))
             except (APIForbidden, GitHubDeliveryError):
                 return self._send_error(
                     403, "forbidden", "request is outside the authorized project scope")
@@ -874,7 +897,8 @@ def make_handler(
             self._send(200, [
                 {"node_id": n["node_id"], "status": n["status"],
                  "criticality": n["criticality"], "confidence": n["confidence"],
-                 "statement": n["data"].get("statement")} for n in nodes])
+                 "statement": n["data"].get("statement")} for n in nodes
+                if engine.graph.may_mandate(n)])
 
         def invalidations(self, pid):
             pid = self._project(pid)
@@ -999,14 +1023,27 @@ def make_handler(
             self._send(202, report or {"status": "duplicate"})
 
         def compose(self, body, pid):
-            _reject_unknown(body, {"token_budget", "target"})
+            _reject_unknown(body, {"token_budget", "target", "task_id", "max_response_bytes"})
             pid = self._project(pid)
             budget = _optional_int(
                 body, "token_budget", 4000,
                 minimum=1, maximum=_MAX_TOKEN_BUDGET)
             target = _optional_object(body, "target")
-            self._send(200, engine.resume_packet(
-                pid, target=target, token_budget=budget))
+            task_id = _optional_identifier(body, "task_id")
+            byte_limit = _optional_int(
+                body, "max_response_bytes", DEFAULT_MAX_RESPONSE_BYTES,
+                minimum=1, maximum=1048576)
+
+            def encode(packet):
+                return json.dumps(
+                    packet, allow_nan=False, ensure_ascii=False,
+                    separators=(",", ":")).encode("utf-8")
+
+            result = engine._resume_packet(
+                pid, target=target, token_budget=budget, task_id=task_id, record_state=True,
+                max_response_bytes=byte_limit, _response_encoder=encode,
+                _response_format="http-json")
+            self._send_bytes(200, result)
 
         def resolve(self, body, assumption_id):
             assumption_id = _identifier(assumption_id, "assumption_id")
@@ -1043,6 +1080,9 @@ def make_handler(
                     body, "replacement_node_id", allow_none=True)
                 narrowed_scope = _optional_object(
                     body, "narrowed_scope", allow_none=True)
+                if narrowed_scope:
+                    raise RequestValidationError(
+                        "narrowed_scope", "authority scope cannot be edited through resolve")
                 note = _optional_string(
                     body, "note", "", allow_empty=True)
                 try:
@@ -1089,14 +1129,13 @@ def make_handler(
                     "action must be accept, reject, narrow, or supersede")
             status = statuses[action]
             patch = _optional_object(body, "data")
-            data = dict(node["data"])
-            if patch is not None:
-                data.update(patch)
+            if patch:
+                raise RequestValidationError(
+                    "data", "authority and proposal content cannot be edited through resolve")
             out = engine.graph.put_node(
                 entity_type=node["entity_type"], tenant_id=node["tenant_id"],
                 project_id=node["project_id"], node_id=assumption_id,
-                data=data, status=status,
-                authority="human_decision")
+                data={}, status=status)
             self._send(200, {"node_id": out["node_id"], "status": out["status"]})
 
         def attest(self, body):

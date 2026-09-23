@@ -275,8 +275,8 @@ def test_backfill_reports_the_nodes_it_created(backfill, monkeypatch, capsys):
     assert created > 0, summary
 
 
-def test_backfill_does_not_report_an_existing_node_as_new(
-        backfill, monkeypatch, capsys):
+def test_backfill_counts_distinct_source_proposals_but_not_redelivery(
+        backfill, monkeypatch, capsys, tmp_path):
     issues = [
         {
             "number": number, "title": "Exporter", "state": "open",
@@ -292,12 +292,16 @@ def test_backfill_does_not_report_an_existing_node_as_new(
         lambda path, token, **_kwargs: issues
         if path.endswith("/issues?state=all") else [])
 
-    assert backfill.main([REPOSITORY]) == 0
+    assert backfill.main([REPOSITORY, "--dir", str(tmp_path)]) == 0
 
     summary = next(line for line in capsys.readouterr().out.splitlines()
                    if "ingested" in line)
     created = int(summary.split("->")[1].split("node(s)")[0])
-    assert created == 1, summary
+    assert created == 2, summary
+    assert backfill.main([REPOSITORY, "--dir", str(tmp_path)]) == 0
+    repeated = next(line for line in capsys.readouterr().out.splitlines()
+                    if "ingested" in line)
+    assert int(repeated.split("->")[1].split("node(s)")[0]) == 0, repeated
 
 
 def test_backfill_still_reports_a_new_quarantined_node(

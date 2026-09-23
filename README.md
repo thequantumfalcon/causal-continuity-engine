@@ -38,8 +38,8 @@ assumptions, requirements and evidence become nodes in a bi-temporal causal
 graph over an application-enforced append-only, hash-chained event log, so
 *why* is a queryable edge and not a memory. When a requirement changes or evidence contradicts an assumption, the
 blast radius is computed over typed edges, bounded, and classified
-deterministically. And a task cannot be marked complete without a signed proof
-envelope whose required verifiers actually ran — the rejection gates are
+deterministically. When policy requires proof, a task cannot be marked complete
+without a signed envelope whose required verifiers actually ran — the rejection gates are
 mechanically enumerated and mutation-tested below.
 
 Event integrity separates two facts that are easy to conflate:
@@ -101,6 +101,11 @@ than the official SDK, which would pull in more than twenty packages.
 
 ## Quickstart
 
+This checkout documents the local **0.2.0 candidate, not yet released**. The
+released-package installation commands below do not install this candidate.
+For the authority and v2 packet examples in this checkout, use the editable
+checkout installation below; no 0.2.0 publication is implied.
+
 Python 3.11 or newer is required; the engine has no third-party runtime
 dependencies. Choose the block for your platform and run it in a new working
 directory.
@@ -126,20 +131,24 @@ with `.\.venv\Scripts\python.exe -m pip install causal-continuity-engine`
 and invoke the environment's `cce-engine.exe` by its absolute path in the
 commands below. After activation, `cce-engine --help` checks the installation.
 
-**Upgrading an existing project:** 0.1.6 refuses projections written by older
-processor versions; there is no in-place projection upgrade. Stop writers,
+**Upgrading an existing project:** this candidate uses processor 1.9.0 and
+extractor 1.4.0; projections written by 0.1.6's processor 1.8.0 or earlier
+processors are refused. There is no in-place projection or authority upgrade. Stop writers,
 preserve the complete old project state (including its database and any SQLite
 sidecars), and re-ingest retained sources into a separate new project/store.
+Review and explicitly confirm the new proposals there; old prose is not approval.
 Do not remove markers or sidecars to bypass refusal. Payloads already removed
 by retention cannot be reconstructed from their digests. New users can simply
-start a fresh project. See [the 0.1.6 upgrade notes](CHANGELOG.md#016--2026-09-20).
+start a fresh project. See [the candidate upgrade notes](CHANGELOG.md#020--not-yet-released);
+the [0.1.6 notes](CHANGELOG.md#016--2026-09-20) remain historical.
 
-To work on the engine instead of using it, install the checkout editable — see
-[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the full toolchain:
+To run this candidate, start from the **existing local checkout containing
+these changes**, not a presumed published tag or a fresh upstream clone.
+Replace the path below with that checkout's path and install it editable — see
+[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for the development toolchain:
 
 ```bash
-git clone https://github.com/thequantumfalcon/causal-continuity-engine
-cd causal-continuity-engine
+cd /absolute/path/to/this/local/checkout
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
@@ -216,110 +225,138 @@ cce-engine --dir . ingest --event push --delivery-id d2 --file push.json
 # ingested push: 0 node(s), 0 invalidation(s), 0 conflict(s)
 ```
 
-The extractor typed that prose by authority and pulled out what is now
-control state:
+The extractor proposed three claims: a requirement, a constraint and an
+assumption. Even an `OWNER` source does not approve them. At this point:
 
 ```bash
 cce-engine --dir . assumptions --status active
-# [active/medium] the upstream feed is ordered by timestamp  (asm_...)
+# no assumptions
 ```
 
-A Resume Packet is what an agent picking up the work receives instead of a
-summary — token-budgeted, with omissions stated rather than silent:
+Only for this **fresh, initialized demo directory that you control**, save the
+following as `prepare_reviews.py`. It prepares review operands for the three
+exact statements above; it does not approve them or read signing keys. This is
+an owner-local Python example, not a general secure filesystem opener or a
+read-only guarantee: `Engine` normally opens writable, schema-capable storage.
 
-The budget is a trimming target, not a hard ceiling. Essential authority and
-other non-trimmable state are preserved even when they exceed it. Integrations
-should compare the JSON packet's `token_estimate` with their context limit;
-it is an estimate, not a model-specific tokenizer count. Do not silently
-truncate authority to fit a client window. Budget-trimmed material is recorded
-in `omissions`; an oversized packet is not itself an omission.
+<!-- quickstart-review-requests -->
+
+```python
+import json
+from pathlib import Path
+
+from causal_continuity_engine.engine import Engine
+
+root = Path.cwd()
+meta = json.loads((root / ".cce" / "meta.json").read_text(encoding="utf-8"))
+engine = Engine(root / ".cce" / "cce.db", tenant_id=meta["tenant_id"], workdir=root)
+try:
+    def prepare(kind, text):
+        matches = [node for node in engine.graph.current(
+            meta["project_id"], "claim", tenant_id=meta["tenant_id"])
+            if node["data"].get("proposed_kind") == kind
+            and node["data"].get("statement") == text]
+        if len(matches) != 1:
+            raise ValueError("expected exactly one matching retained proposal")
+        proposal = engine.authority_proposal(meta["project_id"], matches[0]["node_id"])
+        request = {
+            "operation": "confirm", "request_id": "quickstart-" + kind,
+            "tenant_id": meta["tenant_id"], "project_id": meta["project_id"],
+            **proposal, "authority_scope": {"kind": "global"},
+        }
+        (root / ("review-" + kind + ".json")).write_text(
+            json.dumps(request, indent=2) + "\n", encoding="utf-8")
+
+    prepare("requirement", "Exporter must stream rows instead of buffering")
+    prepare("constraint", "The exporter must not hold the whole result set in memory")
+    prepare("assumption", "the upstream feed is ordered by timestamp")
+finally:
+    engine.close()
+```
+
+```bash
+python prepare_reviews.py
+```
+
+Inspect the complete source in `issue.json`, the exact retained proposal text,
+and **each complete request file**, including its tenant/project and global
+scope. Stop if they do not match what you intend to authorize. Preparing these
+files is not approval. Submit each only if you approve that individual statement:
+
+```bash
+# Only after approving the requirement:
+cce-engine --dir . --json authority --request review-requirement.json
+# Only after approving the constraint:
+cce-engine --dir . --json authority --request review-constraint.json
+# Only after approving the assumption:
+cce-engine --dir . --json authority --request review-assumption.json
+```
+
+Each command returns a receipt naming the confirmation and canonical event.
+Now `cce-engine --dir . assumptions --status active` lists the confirmed
+assumption. Owner-local authority means possession of the local OS/store
+capability, not independent authentication of a human. Neither HTTP nor MCP
+exposes this confirmation operation. Revocation and scope replacement also use
+explicit structured decisions; editing a source does not silently approve new text.
+
+A Resume Packet is what an agent picking up the work receives instead of a
+summary. A project packet includes all applicable mandatory control, work,
+policy and trust state. `resume --task-id <confirmed-task-id>` explicitly selects
+a live confirmed task and its applicable controls; descriptive `--issue` or
+target metadata does not select authority. Task and project freshness records
+are separate, while broad project safety changes can stale both. Capsules and
+continuity receipts remain project-only, not task-specific verdicts.
+
+The token budget is an advisory trimming target, not a hard ceiling; mandatory
+state is not dropped to meet it. `token_estimate` is not a model-specific
+tokenizer count. Separately, `--max-response-bytes` is a hard bound on the final
+UTF-8 response (default `131072`, allowed `1`–`1048576`). For CLI output that
+includes JSON formatting or terminal sanitization and the final newline. HTTP
+measures its JSON body; MCP measures the complete result frame including its
+request ID and newline. Re-encoding elsewhere is not covered by this bound.
+
+Only optional context may be trimmed, with omissions disclosed. If complete
+mandatory state cannot fit, CCE refuses before packet signing or a new success
+watermark. The CLI returns exit 2 with the fixed `packet_budget_exceeded` error
+on stderr, not a partial packet; the small error frame has its own bound.
+Use an adequate limit or legitimate narrower task scope, never truncate authority.
 
 ```bash
 cce-engine --dir . resume --token-budget 1500
 ```
 
+Selected lines from that real Markdown output follow. `...` marks excerpted
+content here, not a packet omission; the actual output includes the complete
+mandatory members, configured policy and other sections.
+
+<!-- quickstart-packet-excerpt -->
+
 ```markdown
-# CCE Resume Packet
-Packet `rsp_...` | generated ... | state at event:evt_...
+Scope: {"kind": "project"} | complete: True
+Response: cli-markdown | max bytes: 131072
 
-## Mission
-**Project:** octo/demo
-**Objective:** No explicit mission pinned; see open work.
-**Target:** {}
-
-## Mission control state
-### Pinned
-- none pinned
-### Retired
-- none retired
-
+## Mandatory control
+...
 ## Authority
-- instruction precedence: tenant_policy > human_decision > repository_authoritative > agent_inference > untrusted_content
-### Active constraints
-- The exporter must not hold the whole result set in memory (high)
+...
 ### Active requirements
 - Exporter must stream rows instead of buffering
-
-## Accepted decisions
-- none
-
-## Invalidated state
-- none open
-
-## Assumptions
-### Active
-- [active] the upstream feed is ordered by timestamp (asm_...)
-### Uncertain
-- none
-
-## Verified progress
-- none
-
-## Open work
-- none visible
-### Blockers
-- none
-
-**Next safe action:** No open tasks; verify project state and await instruction.
-
-## Environment
-- {"note": "no environment fingerprint recorded"}
-
+...
 ## Trust
 - autonomy level: 0
 - required verifiers: none
 - verification gaps: policy:proof-required-without-required-verifiers
-### Completed checks
-- none
-### Failed or stale checks
-- none
-
-## Evidence index
-- asm_...: evt_...
-
-## Recent context
-- none
-
-## Continuity lineage
-- source session: none
-- checkpoints: []
-- packet generation time: ...
-
-## Omissions
-- none
-
+...
 ## Transport and cryptographic metadata
-- Full canonical values are retained in the JSON packet; the human view does not reproduce signatures, digests, or the complete state-basis object.
-- schema: cce.resume.v1
+...
+- schema: cce.resume.v2
 - packet digest present: True
 - signature present: True
-
-Evidence coverage: 100% | ~... tokens
 ```
 
-That is the whole human-view shape, with generated identifiers and timestamps
-abbreviated. Every schema field is either rendered or named as metadata kept
-in canonical JSON; empty decision sections are literal rather than silent.
+The full human view renders each schema field or declares it as metadata kept
+in canonical JSON. Use `resume --format json` for those complete canonical
+field values, including signatures, digests and the state-basis object.
 
 The named verification gap is expected on a fresh project: proof is required
 by default, but CCE cannot safely invent a project-specific verifier
@@ -450,9 +487,10 @@ contract is generated from the live route registry in [docs/API.md](docs/API.md)
 
 ## How it decides a task is done
 
-`complete_task` is the false-completion gate. When policy requires proof for
-`task_complete`, a completion attempt passes through twenty independently
-instrumented rejection paths:
+`complete_task` is the false-completion gate, with twenty-two independently
+instrumented rejection paths. Authority and state guards apply even when proof
+is optional. For a new completion, any supplied proof is validated; missing
+proof is rejected when policy requires it:
 
 1. **The target is a task in this project.** Another entity type, tenant, or
    project cannot be completed through a borrowed identifier.
@@ -489,7 +527,10 @@ instrumented rejection paths:
 15. **The proof is current.** If a named deliverable or any linked task,
     requirement, decision, assumption, artifact, evidence or action changed
     its signed semantic/version digest since attestation, the proof describes
-    a world that no longer exists.
+    a world that no longer exists. It also binds the complete applicable
+    requirement, constraint, decision and assumption set and verifier policy:
+    newly applicable controls, withdrawals and scope changes cannot hide behind
+    an unchanged caller-selected list of links.
 16. **The policy declares required verifiers.** Demanding proof without saying
     what must be proven lets the claimant set its own pass mark. This is a
     configuration error and refusing it names the fix.
@@ -506,6 +547,12 @@ instrumented rejection paths:
 20. **The task state did not race validation.** Its version is re-read before
     the proof is claimed and completion is written; a concurrent change forces
     a retry against the new state.
+21. **The task has current authority.** Its owner-local confirmation must still
+    have the required canonical decision and retained source witnesses; mutable
+    graph labels or an old approval receipt cannot substitute for them.
+22. **Applicable authority is not conflicted.** An applicable blocked, uncertain,
+    review-required or explicitly conflicted control prevents completion, even
+    under proof-optional policy.
 
 The instrument-validation suite plants exactly one defect for each path and
 asserts that the intended gate, rather than a neighboring one, rejects it.
@@ -613,7 +660,7 @@ determinism`; both exit non-zero on failure.
 
 ## Verifying a proof without trusting the engine
 
-[SPEC.md](SPEC.md) is normative: it defines the `cce.proof.v1` envelope and
+[SPEC.md](SPEC.md) is normative: it defines the `cce.proof.v2` envelope and
 the five checks (digest, signature, authenticity, sufficiency, scope) well
 enough to reimplement from that text alone.
 [verifiers/verify_proof.py](verifiers/verify_proof.py) is such a
@@ -622,6 +669,9 @@ reimplementation — standard library only, and it imports nothing from
 so agreement between the two is evidence rather than the same code run twice.
 [vectors/](vectors/) is a committed conformance corpus, including honest
 negatives and adversarial forgeries, that pins both implementations in CI.
+Published v1 schemas remain historical contracts; v1 proofs are not current
+completion evidence. The local v2 schema URLs name candidate artifacts, not
+evidence that 0.2.0 has been published.
 
 ```bash
 # The complete configured verifier set must already be pinned in project policy.
@@ -694,7 +744,7 @@ outside the envelope — a fingerprint obtained out of band. SPEC §6 requires
 such a registry and says nothing about how it travels, because nothing here
 solves that. No amount of verifier code closes it.
 
-**There is no revocation.** A fingerprint in the registry is trusted for every
+**Signing-key revocation is not implemented.** A fingerprint in the registry is trusted for every
 envelope it ever signed. Withdrawing a key is not a mechanism this has.
 
 **A stranger cannot tell whether an envelope is still fresh.** An envelope is a

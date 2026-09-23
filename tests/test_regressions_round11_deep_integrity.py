@@ -16,6 +16,7 @@ from jsonschema import ValidationError
 from causal_continuity_engine.core import canonical_json, sha256_hex
 from causal_continuity_engine.engine import PROCESSOR_VERSION, Engine
 from causal_continuity_engine.verifiers import VerifierRunner
+from tests.authority_helpers import confirmed_task
 from tests.schema_validation import draft202012_validator
 
 TENANT = "ten_round11"
@@ -54,9 +55,7 @@ def _attest(engine: Engine, task_id: str, *, continuity: dict | None = None):
 
 def test_proof_commits_the_task_version_it_verified(tmp_path):
     engine = _proof_engine(tmp_path)
-    task = engine.graph.put_node(
-        entity_type="task", tenant_id=TENANT, project_id=PROJECT,
-        status="open", data={"title": "ship version one"})
+    task = confirmed_task(engine, PROJECT, text="Ship version one")
     proof = _attest(engine, task.id)
     assert engine.proof_currency(PROJECT, task.id, proof)["current"]
 
@@ -77,9 +76,7 @@ def test_proof_commits_the_task_version_it_verified(tmp_path):
 
 def test_proof_commits_every_linked_requirement_and_assumption(tmp_path):
     engine = _proof_engine(tmp_path)
-    task = engine.graph.put_node(
-        entity_type="task", tenant_id=TENANT, project_id=PROJECT,
-        status="open", data={"title": "ship"})
+    task = confirmed_task(engine, PROJECT)
     requirement = engine.graph.put_node(
         entity_type="requirement", tenant_id=TENANT, project_id=PROJECT,
         status="active", data={"statement": "preserve output"})
@@ -606,9 +603,7 @@ def test_mid_verifier_peer_mutation_discards_every_staged_record(
     engine = _proof_engine(
         tmp_path, database=database,
         command=_command("import time; time.sleep(1)"))
-    task = engine.graph.put_node(
-        entity_type="task", tenant_id=TENANT, project_id=PROJECT,
-        status="open", data={"title": "version one"})
+    task = confirmed_task(engine, PROJECT, text="Ship version one")
     peer = Engine(database, tenant_id=TENANT, workdir=tmp_path)
     verifier_started = threading.Event()
     original_run = VerifierRunner.run

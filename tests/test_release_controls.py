@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_regressions_round10_release import _load_release_script
+from tests.test_schema_release_identities import RELEASES as SCHEMA_RELEASES
 
 ROOT = Path(__file__).resolve().parent.parent
 _POSIX_RELEASE_GIT = pytest.mark.skipif(
@@ -89,25 +90,30 @@ def _release_tag_bytes(
     ).encode("utf-8")
 
 
-def test_current_metadata_is_consistent_and_tag_ready():
+def test_current_metadata_is_consistent_and_unreleased():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT) == ("0.1.6", "2026-09-20")
-    assert metadata.check(ROOT, release_tag="v0.1.6") == ("0.1.6", "2026-09-20")
+    assert metadata.check(ROOT) == ("0.2.0", None)
+
+
+def test_current_metadata_cannot_be_tagged():
+    metadata = _load_release_script("check_release_metadata")
+    with pytest.raises(SystemExit, match="release mode rejects a not yet released"):
+        metadata.check(ROOT, release_tag="v0.2.0")
 
 
 def test_the_processor_and_extractor_versions_are_pinned():
-    """CHANGELOG states the compatibility contract by version string.
+    """ADR-126 pins the local next-version compatibility contract.
 
     Both constants decide whether a stored projection is admitted, and neither
     was pinned: raising or lowering either one left the whole suite green, so a
-    reverted or mistyped bump could ship while the changelog still named the
-    old version.
+    reverted or mistyped bump could silently read incompatible projections.
+    Public release metadata is migrated separately before publication.
     """
     from causal_continuity_engine import extraction as extraction_module
     from causal_continuity_engine.engine import PROCESSOR_VERSION
 
-    assert PROCESSOR_VERSION == "cce-processor/1.8.0"
-    assert extraction_module.EXTRACTOR_VERSION == "1.3.0"
+    assert PROCESSOR_VERSION == "cce-processor/1.9.0"
+    assert extraction_module.EXTRACTOR_VERSION == "1.4.0"
 
 
 def test_release_metadata_requires_matching_dates_and_reset_unreleased(tmp_path):
@@ -706,7 +712,7 @@ def test_required_check_time_overrides_cannot_weaken_safety_bounds(
         checker._verify_required_checks("4" * 40, **override)
 
 
-def _schema_fixture(root, module, tag="v0.1.0", versions=None):
+def _schema_fixture(root, module, versions=None):
     versions = versions or module._runtime_schema_versions(ROOT)
     package = root / "causal_continuity_engine"
     package.mkdir()
@@ -717,7 +723,7 @@ def _schema_fixture(root, module, tag="v0.1.0", versions=None):
     schema_dir.mkdir()
     served = {}
     for name in sorted(f"{value}.json" for value in versions.values()):
-        url = f"{module.RAW_ORIGIN}/{tag}/schemas/{name}"
+        url = f"{module.RAW_ORIGIN}/{SCHEMA_RELEASES[name]}/schemas/{name}"
         payload = {"$schema": "https://json-schema.org/draft/2020-12/schema",
                    "$id": url, "type": "object"}
         data = (json.dumps(payload, indent=2) + "\n").encode()
@@ -742,21 +748,17 @@ def test_public_schema_verifier_compares_all_exact_tagged_bytes(tmp_path):
     ]
 
 
-def test_public_schema_inventory_follows_runtime_registry_without_fixed_count(
+def test_public_schema_inventory_requires_reviewed_release_identity(
         tmp_path):
     verifier = _load_release_script("verify_public_schemas")
     versions = verifier._runtime_schema_versions(ROOT)
     versions["future_fixture"] = "cce.future-fixture.v1"
-    served = _schema_fixture(tmp_path, verifier, versions=versions)
-    requested = []
-
-    verifier.verify(
-        tmp_path, "v0.1.0",
-        fetch=lambda url: requested.append(url) or served[url])
-
-    assert requested == list(verifier._schema_public_urls(tmp_path).values())
-    assert len(requested) == len(versions)
-    assert any(url.endswith("/schemas/cce.future-fixture.v1.json") for url in requested)
+    package = tmp_path / "causal_continuity_engine"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        "SCHEMA_VERSIONS = " + repr(versions) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="unreviewed schema release identity"):
+        verifier._schema_public_urls(tmp_path)
 
 
 def test_public_schema_registry_rejects_duplicate_literal_keys(tmp_path):
@@ -774,18 +776,20 @@ def test_public_schema_registry_rejects_duplicate_literal_keys(tmp_path):
         verifier._runtime_schema_versions(tmp_path)
 
 
-def test_later_package_release_keeps_immutable_v1_schema_urls(tmp_path):
+def test_later_package_release_keeps_each_immutable_schema_url(tmp_path):
     verifier = _load_release_script("verify_public_schemas")
-    served = _schema_fixture(tmp_path, verifier, tag="v0.1.0")
+    served = _schema_fixture(tmp_path, verifier)
     requested = []
 
     def fetch(url):
         requested.append(url)
         return served[url]
 
-    verifier.verify(tmp_path, "v0.2.0", fetch=fetch)
+    verifier.verify(tmp_path, "v9.9.9", fetch=fetch)
     assert requested == list(verifier._schema_public_urls(tmp_path).values())
-    assert all("/v0.1.0/schemas/" in url for url in requested)
+    assert len(requested) == 13
+    assert sum("/v0.1.0/schemas/" in url for url in requested) == 8
+    assert sum("/v0.2.0/schemas/" in url for url in requested) == 5
 
 
 @pytest.mark.parametrize("failure", ["malformed", "mismatch"])
@@ -3279,7 +3283,9 @@ def test_public_schema_registry_matches_the_directory(tmp_path):
     schemas = _load_release_script("verify_public_schemas")
     assert set(schemas.verify_registry(ROOT)) == {
         "anchor", "recovery_packet", "event", "resume_packet", "proof",
-        "proof_predicate", "capsule", "continuity_receipt"}
+        "proof_predicate", "capsule", "continuity_receipt",
+        "historical_proof", "historical_proof_predicate", "historical_resume_packet",
+        "historical_capsule", "historical_continuity_receipt"}
 
     copy = tmp_path / "tree"
     (copy / "schemas").mkdir(parents=True)

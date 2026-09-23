@@ -61,6 +61,16 @@ def _requirement_blocks(text):
     return blocks
 
 
+def test_wheel_behavior_gate_selects_current_contract_regressions():
+    verifier = _load_release_script("verify_distributions")
+    selected = verifier.WHEEL_BEHAVIOR_TESTS
+    assert len(selected) == len(set(selected)), "duplicate installed test selection"
+    assert {
+        "tests/test_installed_contracts.py",
+        "tests/test_installed_packet_bounds.py",
+    } <= set(selected), "installed behavior omits current authority/packet contract tests"
+
+
 def test_release_tool_closure_is_exactly_pinned_and_sha256_locked():
     lock = (ROOT / "requirements-dev.lock").read_text(encoding="utf-8")
     blocks = _requirement_blocks(lock)

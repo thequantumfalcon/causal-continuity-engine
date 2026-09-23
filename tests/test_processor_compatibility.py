@@ -791,6 +791,13 @@ def test_quarantine_cannot_overwrite_concurrent_terminal_state(
     worker_errors = []
     original_diagnostic = engine_module._quarantine_diagnostic
 
+    def attributed_projection(event_id):
+        return {
+            table: [tuple(row) for row in succeeding.store._conn.execute(
+                f"SELECT * FROM {table} WHERE event_id=? ORDER BY row_id", (event_id,))]
+            for table in ("nodes", "edges")
+        }
+
     def fail_after_witness(_event, _block, _report):
         raise RuntimeError("forced post-witness projection failure")
 
@@ -831,6 +838,12 @@ def test_quarantine_cannot_overwrite_concurrent_terminal_state(
                     status="active", authority="agent_observed",
                     data={"statement": "concurrent attributed state"},
                     event_id=event["event_id"])
+            winning_projection = attributed_projection(event["event_id"])
+            assert winning_projection["nodes"]
+            if concurrent_state == "success":
+                assert winning_projection["edges"]
+            else:
+                assert winning_projection["edges"] == []
         finally:
             resume_quarantine.set()
             worker.join(10)
@@ -849,9 +862,7 @@ def test_quarantine_cannot_overwrite_concurrent_terminal_state(
         assert succeeding.store._conn.execute(
             "SELECT COUNT(*) FROM nodes WHERE event_id = ?",
             (event["event_id"],)).fetchone()[0] > 0
-        assert succeeding.store._conn.execute(
-            "SELECT COUNT(*) FROM edges WHERE event_id = ?",
-            (event["event_id"],)).fetchone()[0] == 0
+        assert attributed_projection(event["event_id"]) == winning_projection
     finally:
         resume_quarantine.set()
         if worker.is_alive():

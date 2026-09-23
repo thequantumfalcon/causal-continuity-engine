@@ -4,7 +4,7 @@
     "hmac_key_hex": "5cce0000000000000000000000000000000000000000000000000000000000ff"
   },
   "envelope": {
-    "action_id": "act_bf35cd867a6aac5c890184ab",
+    "action_id": "act_41cc00480e6f73144dde3086",
     "action_intent": {
       "requirement_ids": [],
       "statement": "the exporter is done",
@@ -14,14 +14,14 @@
       "agent": "generator"
     },
     "continuity_links": {
-      "proof_node_id": "act_88a33f14c3e96777b8a22e28"
+      "proof_node_id": "act_a6ed8f3c950da0eec5606d46"
     },
-    "created_at": "2026-08-10T01:14:36.471215Z",
+    "created_at": "2026-09-23T04:13:13.115410Z",
     "environment": {},
     "evidence_context": {
       "determinism": {
         "unit-tests": {
-          "checked_at": "2026-08-10T01:14:37.449886Z",
+          "checked_at": "2026-09-23T04:13:14.139869Z",
           "note": "",
           "results": [
             "passed",
@@ -52,7 +52,7 @@
         ],
         "error": null,
         "inconclusive": [],
-        "ran_at": "2026-08-10T01:14:36.629523Z",
+        "ran_at": "2026-09-23T04:13:13.293683Z",
         "undetected": []
       },
       "policy_pinned": [
@@ -62,10 +62,10 @@
     },
     "execution": [
       {
-        "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
+        "command_digest": "sha256:2a8e226af3f4afc74f1c2826fa51fecfdb8d36aa42fb05c1fc2f100ad9f862f0",
         "exit_code": 0,
         "output_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
-        "started_at": "2026-08-10T01:14:36.472850Z",
+        "started_at": "2026-09-23T04:13:13.117196Z",
         "tool": "verifier:unit-tests"
       }
     ],
@@ -83,9 +83,9 @@
       ],
       "action_type": "run_verifier",
       "applicable_grant_ids": [
-        "grt_e724b7a8a0c9956f48bcd77c"
+        "grt_d88acc9f5373439e92db57a4"
       ],
-      "decided_at": "2026-08-10T01:14:36.472374Z",
+      "decided_at": "2026-09-23T04:13:13.116687Z",
       "decision": "allow",
       "effective_level": 2,
       "policy_config": {
@@ -106,13 +106,13 @@
       ]
     },
     "project_id": "prj_vectors",
-    "proof_digest": "sha256:36b6001b5f9539c9d6a30e78412411a60efe392b2a81da70f63f3ce25a621420",
-    "proof_id": "prf_73d525f1aeb7f2a08562da10",
-    "schema_version": "cce.proof.v1",
+    "proof_digest": "sha256:c997cbd5ff3893b91c38d0c1992c4e3e8fa94a231faeebb09c2d02421c8a0781",
+    "proof_id": "prf_a15220ea486330094605f405",
+    "schema_version": "cce.proof.v2",
     "signature": {
       "algorithm": "hmac-sha256",
       "key_id": "vectors",
-      "value": "69c2420a1b6acff66239834efddf4d243371dd60c72d9e25135e45a94b3dd274"
+      "value": "f25cbe20a5f6be39ab1c2f3b91f8612e3d6e2f0cb8605e164698c13b7f780592"
     },
     "status": "verified",
     "subject": [],
@@ -132,7 +132,7 @@
     },
     "verifications": [
       {
-        "command_digest": "sha256:93555d107b51910fdd950eecce9f96e972d7e32195fd6ee4c61b317b2492a30e",
+        "command_digest": "sha256:2a8e226af3f4afc74f1c2826fa51fecfdb8d36aa42fb05c1fc2f100ad9f862f0",
         "control": {
           "command_present": true,
           "details": "control failed as required",
@@ -140,9 +140,9 @@
           "status": "held"
         },
         "coverage": null,
-        "definition_digest": "sha256:11fb07ac56dd4570966a08b5e81193be8ef3ea9bbd24e8acdc90784c820661de",
+        "definition_digest": "sha256:a5ada6537f1d329f3fc01d856f6801255dc32813930ae813119331db70462d49",
         "details": "exit 0",
-        "duration_seconds": 0.077,
+        "duration_seconds": 0.086,
         "evidence_digest": "sha256:d8760763be63067f00789fcf42648cb7e89259b37690e733415676ec0b8b6596",
         "exit_code": 0,
         "kind": "command",
@@ -152,7 +152,7 @@
         "pinned": true,
         "result": "passed",
         "source": "executed",
-        "started_at": "2026-08-10T01:14:36.472850Z",
+        "started_at": "2026-09-23T04:13:13.117196Z",
         "verifier": "unit-tests"
       }
     ]

@@ -1,6 +1,6 @@
-# CCE Proof Envelope — verification specification v1
+# CCE Proof Envelope — verification specification v2
 
-Normative. This document defines what a `cce.proof.v1` envelope is and how a
+Normative. This document defines what a `cce.proof.v2` envelope is and how a
 party who holds only the envelope decides whether to believe it. It is
 written so a second implementation can be produced from this text alone,
 without reading `causal_continuity_engine/`.
@@ -10,6 +10,12 @@ only, imports nothing from `causal_continuity_engine`. `vectors/` is a
 conformance corpus
 generated from the reference implementation, so the two cannot silently
 drift apart.
+
+This is the local candidate contract for v0.2.0, not a publication claim.
+The v2 proof and predicate schema URLs name candidate artifacts. Published v1
+schema bytes remain unchanged; v1 proofs are historical artifacts, not current
+completion evidence. A v1 consumer MUST reject v2 rather than interpret its
+new obligation commitments using v1 semantics.
 
 > **What a second implementation buys, and what it does not.** Two
 > implementations agreeing proves the *specification* is unambiguous enough
@@ -74,7 +80,7 @@ from the standards fails conformance rather than redefining C-JSON by accident.
 
 ```
 {
-  "schema_version":       "cce.proof.v1",      // exact string
+  "schema_version":       "cce.proof.v2",      // exact string
   "proof_id":             "prf_<24 hex>",
   "created_at":           <canonical RFC-3339 UTC; defined below>,
   "tenant_id":            <string>,
@@ -99,7 +105,7 @@ from the standards fails conformance rather than redefining C-JSON by accident.
 }
 ```
 
-`created_at` has exactly one v1 representation:
+`created_at` has exactly one proof representation:
 `YYYY-MM-DDTHH:MM:SS.ffffffZ`. The date and time MUST be a real Gregorian
 UTC instant with year 0001–9999, seconds 00–59, exactly six fractional digits,
 upper-case `T`, and a terminal upper-case `Z`. Leap seconds, numeric offsets,
@@ -126,7 +132,7 @@ A field absent where this document says it is present is a **structural
 failure** (§8, `E_SHAPE`). A verifier MUST NOT infer a default. The top-level
 object and every fixed-shape object below are **closed**: an unknown member is
 also `E_SHAPE`, even when a valid signature covers it. Unknown signed data has
-integrity but no v1 semantics and MUST NOT silently acquire them.
+integrity but no v2 semantics and MUST NOT silently acquire them.
 
 The intentionally open extension containers are `actor`, `environment`,
 `coverage`, `observed`, `policy_config`, each object inside
@@ -135,6 +141,37 @@ remain closed. `subject` items contain exactly `name,digest`; `action_intent`
 contains exactly `type,statement,requirement_ids`; and `inputs` items contain
 exactly `name,digest,kind`. Every digest has the exact lower-case form
 `sha256:` followed by 64 hexadecimal digits.
+
+For every distinct identifier in `continuity_links.task_ids`, `inputs` MUST
+contain exactly one record with `name = "continuity:obligations:" + task_id`,
+`kind = "continuity"`, and a SHA-256 `digest`. No other obligation target may
+appear. The suffix is one complete public identifier, not a path, prefix match,
+or encoded alias. Duplicate obligation targets, including records with different
+digests, missing targets, extra targets and a reserved name under another kind
+are `E_SHAPE`. The typed task array itself MUST contain distinct identifiers.
+The rule applies to every final envelope status, including `draft`;
+an intermediate builder may defer only exact input/task coverage until finalization.
+The reserved input's fields remain exactly `name,digest,kind`.
+
+The digest commits the engine-derived `cce.obligation-basis.v1` for that target,
+not a caller-selected requirement list. The basis binds tenant/project, the
+confirmed target, canonical task scope, all applicable live requirement,
+constraint, decision and assumption control, and required-proof/verifier policy.
+Creation and spending use the same closed semantic calculation. It excludes
+attestation-created action/proof/verification records, audit activity, watermark
+writes and observation times so attestation does not stale its own proof.
+Unchanged explicit confirmed tasks may have an empty applicable control set;
+this does not waive any verifier, artifact, policy or invalidation gate.
+The envelope-only verifier checks structure and scope, not the live calculation.
+JSON Schema constrains reserved input syntax but cannot express the cross-array
+identifier equality; a conforming consumer MUST perform that additional check.
+
+The in-toto Statement v1 projection uses predicateType
+`https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.2.0/schemas/cce.proof-predicate.v2.json`.
+Only `subject` moves to the Statement subject; the predicate carries every other
+envelope field except `schema_version`, whose exact v2 value is identified by
+predicateType. Import MUST reject another predicate type rather than silently
+relabel an older proof. This mapping preserves all signed proof fields.
 
 ### 3.1 execution and verification
 
@@ -342,11 +379,14 @@ without the context it MUST report each as `SKIPPED`, never as passed.
 |---|---|---|
 | `expected_project` | `project_id` equals it | `E_PROJECT` |
 | `expected_tenant` | `tenant_id` equals it | `E_TENANT` |
-| `expected_task` | the id is an exact element of the typed `continuity_links.task_ids` array | `E_UNBOUND` |
+| `expected_task` | the id is an exact element of typed `continuity_links.task_ids`, with its required obligation commitment | `E_UNBOUND` |
 
 An occurrence under any other field, a substring match, or a requirement or
 subject with the same text does not bind the proof to the task.  The array MUST
 contain only strings; an absent or malformed `task_ids` relation fails closed.
+The structural coverage rule in §3 runs first: missing or malformed obligation
+commitments are `E_SHAPE`, not a successful scope check. The standalone verifier
+cannot establish whether a named task currently has a canonical confirmation.
 
 ---
 
@@ -411,8 +451,8 @@ Stated so they are not discovered later and presented as findings.
    deliverables and typed continuity targets it names still have the artifact
    and versioned-semantic digests it records requires the project, not the
    envelope. Engine-issued proofs reserve input kind `continuity` for those
-   engine-collected graph-state commitments and check them at consumption
-   (ADR-043, ADR-080); a stranger holding only the envelope can verify that
+   engine-collected graph-state and complete task-obligation commitments and
+   check them at consumption (ADR-043, ADR-080); a stranger holding only the envelope can verify that
    the commitments were signed, but cannot reconstruct current state.
 2. **Adequacy.** C4 establishes that the declared checks passed. Whether
    those checks test anything worth testing is not decidable from the
@@ -428,20 +468,34 @@ Stated so they are not discovered later and presented as findings.
 
 ---
 
-## 12. Counterfactual continuity receipt v1
+## 12. Counterfactual continuity receipt v2
 
-`cce.continuity-receipt.v1` is a separate authenticated operator artifact. It
+`cce.continuity-receipt.v2` is a separate authenticated operator artifact. It
 binds one transaction-current causal/policy frontier to the decision CCE would
 publish and to a bidirectional Boolean explanation. Its domain separator is
 exactly
-`https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.1.0/schemas/cce.continuity-receipt.v1.json`;
+`https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/v0.2.0/schemas/cce.continuity-receipt.v2.json`;
 a verifier
 MUST reject another `payload_type` even when its signature is valid. The JSON
-shape is declared by `schemas/cce.continuity-receipt.v1.json`.
+shape is declared by `schemas/cce.continuity-receipt.v2.json`.
+
+The top-level `scope` MUST be exactly `{"kind": "project"}`. This profile has no
+task-scoped receipt. Verification MUST bind to the relying party's expected
+scope, tenant, and project, not derive that expectation from the receipt itself.
+The live verifier defaults to expected project scope; an explicitly supplied
+non-project scope is `INVALID`. `basis.tenant_id` and `basis.project_id` MUST
+match the verifier's tenant and requested project. A task packet's freshness
+watermark cannot satisfy the project receipt's `resume_packet_current` predicate.
+
+`cce.continuity-receipt.v1` is retained only for historical interpretation in
+`schemas/cce.continuity-receipt.v1.json`, with its original payload domain. The
+live v2 verifier MUST reject v1 as `INVALID`, not silently relabel or upgrade it.
+This archived format is distinct from the `AUTHENTIC_HISTORICAL` verdict for a
+valid v2 receipt whose project frontier has changed.
 
 ### 12.1 Decision predicates
 
-Version 1 has exactly these unique predicates:
+Version 2 has exactly these unique predicates:
 
 1. `critical_invalidations_empty`
 2. `human_approvals_complete`
@@ -452,7 +506,7 @@ Version 1 has exactly these unique predicates:
 7. `revision_frontier_decidable`
 8. `integrity_chains_intact`
 
-For v1, `satisfied` MUST equal `observed == required`. A verifier MUST derive
+For v2, `satisfied` MUST equal `observed == required`. A verifier MUST derive
 each observation and its `evidence_digest` from `decision_state`; trusting the
 recorded Boolean merely verifies that someone signed a claim, not that the
 claim follows from the signed state. Missing, unknown, or duplicate predicate
@@ -510,6 +564,6 @@ or policy TTLs require a later profile.
 Detailed receipts are operator output. They contain stable tenant, project,
 proof, invalidation, verifier, and log identifiers and MUST NOT be described as
 public or anonymous. A selective-disclosure publication profile is future
-work. Version 1 is an atomic transaction-current snapshot; although the graph
+work. Version 2 is an atomic transaction-current snapshot; although the graph
 stores bitemporal facts, this receipt does not claim a shared historical
 `valid_time`/`transaction_time` evaluation point.

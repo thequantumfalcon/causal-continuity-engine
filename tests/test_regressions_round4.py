@@ -31,6 +31,7 @@ from causal_continuity_engine.verifiers import (
     VerifierSpec,
     check_command_safety,
 )
+from tests.authority_helpers import confirmed_task
 
 PRJ = "prj_r4"
 
@@ -53,9 +54,7 @@ def _engine(tmp_path, **config):
 
 
 def _task(engine, title="work"):
-    return engine.graph.put_node(
-        entity_type="task", tenant_id=engine.tenant_id, project_id=PRJ,
-        data={"title": title}, status="open")
+    return confirmed_task(engine, PRJ, text="Complete the verified " + title)
 
 
 class TestS1PinnedVerifierCannotBeSubstituted:

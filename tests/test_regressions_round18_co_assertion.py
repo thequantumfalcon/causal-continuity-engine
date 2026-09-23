@@ -1,11 +1,11 @@
-"""One source snapshot does not rank its requirements by sentence order."""
+"""Explicit compatible confirmations survive; unconfirmed prose never ranks them."""
 
 import itertools
 
 import pytest
 
-from causal_continuity_engine.engine import Engine, stable_node_id
-from tests.test_engine_e2e import _issue
+from causal_continuity_engine.engine import Engine
+from tests.test_engine_e2e import _confirm_proposal, _issue
 
 PROJECT = "prj_co_assertion"
 CSV = "The exporter must write CSV output."
@@ -30,29 +30,45 @@ def _ingest(engine, statements, delivery="d1", number=1, association="OWNER"):
 
 
 def _requirements(engine):
-    return {n["data"]["statement"]: n["status"]
-            for n in engine.graph.current(PROJECT, "requirement")}
+    nodes = engine.graph.current(PROJECT, "requirement")
+    assert len(nodes) == len({node["data"]["statement"] for node in nodes})
+    return {n["data"]["statement"]: n["status"] for n in nodes}
+
+
+def _conflicts(engine):
+    return [edge for edge in engine.graph.current_edges(PROJECT)
+            if edge["edge_type"] in ("contradicts", "supersedes")]
 
 
 @pytest.mark.parametrize("statements", list(itertools.permutations((CSV, JSON, YAML))))
 def test_all_co_asserted_requirements_survive_every_sentence_order(engine, statements):
     report = _ingest(engine, statements)
+    assert _requirements(engine) == {}
+    receipts = [_confirm_proposal(engine, PROJECT, report, "requirement", text.rstrip("."),
+                                  f"approve-{index}") for index, text in enumerate(statements)]
     expected = {text.rstrip("."): "active" for text in statements}
     assert _requirements(engine) == expected
     assert report["conflicts"] == []
+    assert _conflicts(engine) == []
+    assert {n.id for n in engine.graph.current(PROJECT, "requirement")} == {
+        receipt["confirmation_id"] for receipt in receipts}
     packet = engine.resume_packet(PROJECT)
     assert {n["summary"] for n in packet["authority"]["active_requirements"]} == set(expected)
     rebuilt = engine.rebuild_projection(PROJECT)
     try:
         assert _requirements(rebuilt) == expected
+        assert rebuilt.projection_fingerprint(PROJECT) == engine.projection_fingerprint(PROJECT)
     finally:
         rebuilt.close()
 
 
 @pytest.mark.parametrize("statements", [(CSV, JSON), (JSON, CSV)])
 def test_restated_requirement_is_part_of_the_complete_block(engine, statements):
-    _ingest(engine, [CSV])
-    _ingest(engine, statements, "d2")
+    original = _ingest(engine, [CSV])
+    _confirm_proposal(engine, PROJECT, original, "requirement", CSV.rstrip("."), "approve-csv")
+    restated = _ingest(engine, statements, "d2")
+    assert _requirements(engine) == {CSV.rstrip("."): "active"}
+    _confirm_proposal(engine, PROJECT, restated, "requirement", JSON.rstrip("."), "approve-json")
     assert _requirements(engine) == {CSV.rstrip("."): "active", JSON.rstrip("."): "active"}
     assert _ingest(engine, statements, "d2") is None
     assert _ingest(engine, statements, "d3")["conflicts"] == []
@@ -61,27 +77,40 @@ def test_restated_requirement_is_part_of_the_complete_block(engine, statements):
         CSV.rstrip("."): "active", JSON.rstrip("."): "invalidated"}
 
 
-def test_cross_source_neighbor_does_not_skip_the_same_block_guard(engine):
-    _ingest(engine, [YAML], number=2)
-    _ingest(engine, [CSV, JSON], "d2")
+def test_compatible_cross_source_neighbor_survives_the_confirmed_block(engine):
+    neighbor = _ingest(engine, [YAML], number=2)
+    _confirm_proposal(engine, PROJECT, neighbor, "requirement", YAML.rstrip("."), "approve-yaml")
+    source = _ingest(engine, [CSV, JSON], "d2")
+    for index, text in enumerate((CSV, JSON)):
+        _confirm_proposal(engine, PROJECT, source, "requirement", text.rstrip("."),
+                          f"approve-{index}")
     states = _requirements(engine)
     assert states[CSV.rstrip(".")] == states[JSON.rstrip(".")] == "active"
-    assert states[YAML.rstrip(".")] == "uncertain"
+    assert states[YAML.rstrip(".")] == "active"
+    assert _conflicts(engine) == []
 
 
-def test_distinct_sources_still_require_conflict_resolution(engine):
-    _ingest(engine, [CSV])
+def test_distinct_sources_do_not_make_compatible_confirmations_conflict(engine):
+    first = _ingest(engine, [CSV])
+    _confirm_proposal(engine, PROJECT, first, "requirement", CSV.rstrip("."), "approve-csv")
     report = _ingest(engine, [JSON], "d2", number=2)
-    assert report["conflicts"]
-    assert all(conflict["requires_resolution"] for conflict in report["conflicts"])
-    assert _requirements(engine)[CSV.rstrip(".")] == "uncertain"
+    _confirm_proposal(engine, PROJECT, report, "requirement", JSON.rstrip("."), "approve-json")
+    assert _requirements(engine) == {CSV.rstrip("."): "active", JSON.rstrip("."): "active"}
+    assert _conflicts(engine) == []
 
 
-def test_weaker_block_does_not_protect_a_requirement_from_higher_authority(engine):
-    engine.ingest_human_decision(PROJECT, actor="owner", decision=CSV)
+def test_weaker_unconfirmed_block_cannot_replace_approved_authority(engine):
+    strong = engine.ingest_human_decision(PROJECT, actor="owner", decision=CSV)
+    receipt = _confirm_proposal(engine, PROJECT, strong, "requirement", CSV.rstrip("."),
+                                "approve-csv")
+    before = engine.graph.get(receipt["confirmation_id"])
     report = _ingest(engine, [CSV, JSON])
-    assert report["conflicts"]
-    assert _requirements(engine)[JSON.rstrip(".")] == "superseded"
+    assert len(report["created"]) == 2
+    assert all(not engine.graph.may_mandate(engine.graph.get(item["node_id"]))
+               for item in report["created"])
+    assert engine.graph.get(receipt["confirmation_id"]) == before
+    assert _requirements(engine) == {CSV.rstrip("."): "active"}
+    assert _conflicts(engine) == []
 
 
 @pytest.mark.parametrize("statements", [
@@ -90,16 +119,22 @@ def test_weaker_block_does_not_protect_a_requirement_from_higher_authority(engin
 ])
 def test_preservation_does_not_claim_to_detect_same_block_incompatibility(engine, statements):
     report = _ingest(engine, statements)
+    for index, text in enumerate(statements):
+        _confirm_proposal(engine, PROJECT, report, "requirement", text.rstrip("."),
+                          f"approve-{index}")
     assert _requirements(engine) == {text.rstrip("."): "active" for text in statements}
     assert report["conflicts"] == []
+    assert _conflicts(engine) == []
 
 
 def test_untrusted_claims_do_not_gain_the_requirement_preservation_rule(engine):
     report = _ingest(engine, [CSV, JSON], association="NONE")
     assert _requirements(engine) == {}
-    assert report["conflicts"]
-    assert all(n["authority"] == "untrusted_content"
-               for n in engine.graph.current(PROJECT, "claim"))
+    assert report["conflicts"] == []
+    claims = engine.graph.current(PROJECT, "claim")
+    assert len(claims) == 2
+    assert all(n["authority"] == "untrusted_content" for n in claims)
+    assert all(not engine.graph.may_mandate(n) for n in claims)
 
 
 def test_quarantined_block_still_emits_its_audit_and_no_requirements(engine):
@@ -111,9 +146,18 @@ def test_quarantined_block_still_emits_its_audit_and_no_requirements(engine):
 
 
 def test_shared_source_occurrence_survives_one_source_edit(engine):
-    _ingest(engine, [CSV])
-    _ingest(engine, [CSV], "d2", number=2)
+    first = _ingest(engine, [CSV])
+    first_id = _confirm_proposal(engine, PROJECT, first, "requirement", CSV.rstrip("."),
+                                 "approve-first")["confirmation_id"]
+    second = _ingest(engine, [CSV], "d2", number=2)
+    second_id = _confirm_proposal(engine, PROJECT, second, "requirement", CSV.rstrip("."),
+                                  "approve-second")["confirmation_id"]
+    assert first_id != second_id
+    before = engine.graph.get(second_id)
     _ingest(engine, [JSON], "d3")
-    node = engine.graph.get(stable_node_id(PROJECT, "requirement", CSV))
-    assert node["status"] == "uncertain"
-    assert node["data"]["source_refs"] == ["issue:2:body"]
+    assert engine.graph.get(first_id)["status"] == "invalidated"
+    assert not engine.graph.may_mandate(engine.graph.get(first_id))
+    node = engine.graph.get(second_id)
+    assert node == before and node["status"] == "active"
+    assert engine.graph.may_mandate(node)
+    assert engine.graph.get(node["data"]["proposal_id"])["data"]["source_ref"] == "issue:2:body"

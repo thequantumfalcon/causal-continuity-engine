@@ -18,6 +18,7 @@ from causal_continuity_engine.engine import PROCESSOR_VERSION, Engine
 from causal_continuity_engine.lamport import LamportSigner
 from causal_continuity_engine.proof import verify_envelope
 from causal_continuity_engine.verifiers import VerifierSpec
+from tests.authority_helpers import confirmed_task
 
 TENANT = "ten_round8_engine"
 PROJECT = "prj_round8_engine"
@@ -71,10 +72,8 @@ def _engine(tmp_path: Path, *, config: dict | None = None) -> Engine:
     return engine
 
 
-def _task(engine: Engine, project_id: str = PROJECT, node_id: str | None = None):
-    return engine.graph.put_node(
-        entity_type="task", tenant_id=TENANT, project_id=project_id,
-        node_id=node_id, status="open", data={"title": "ship"})
+def _task(engine: Engine, project_id: str = PROJECT):
+    return confirmed_task(engine, project_id)
 
 
 def _proof(engine: Engine, task_id: str, *, intent_type="task_complete") -> dict:
@@ -197,6 +196,10 @@ class TestCompletionSubjectAndShape:
         proof = _proof(engine, task.id)
         proof["continuity_links"]["task_ids"] = [
             f"prefix-{task.id}-suffix"]
+        # Keep v2 shape valid to isolate exact target binding, not coverage.
+        for item in proof["inputs"]:
+            if item["name"] == f"continuity:obligations:{task.id}":
+                item["name"] = f"continuity:obligations:prefix-{task.id}-suffix"
         proof = _reseal(engine, proof)
 
         with pytest.raises(PermissionError, match="name task|bound|subject"):
@@ -369,8 +372,12 @@ class TestPacketControlFreshness:
                 "require_proof_for": [], "required_verifiers": [],
                 "min_evidence_grade": None,
             })
-        engine.resume_packet(PROJECT)
+        packet = engine.resume_packet(PROJECT)
+        assert packet["complete"] is True
         assert engine.continuity_check(PROJECT)["conclusion"] == "success"
+        previous_watermark = dict(engine.store._conn.execute(
+            "SELECT * FROM packet_watermark WHERE project_id=? AND scope_key='project'",
+            (PROJECT,)).fetchone())
 
         original = engine._process_prepared_event
 
@@ -387,17 +394,25 @@ class TestPacketControlFreshness:
 
         assert len(engine.store.unprocessed_event_ids(
             PROJECT, tenant_id=TENANT)) == 1
-        engine.resume_packet(PROJECT)
+        before_refusal = tuple(engine.store._conn.iterdump())
+        with pytest.raises(ValueError, match="^complete packet unavailable: unprocessed events$"):
+            engine.resume_packet(PROJECT)
+        assert tuple(engine.store._conn.iterdump()) == before_refusal
+        assert dict(engine.store._conn.execute(
+            "SELECT * FROM packet_watermark WHERE project_id=? AND scope_key='project'",
+            (PROJECT,)).fetchone()) == previous_watermark
 
-        # Recreate the exact pre-fix receipt: packet currency looked only at
-        # the watermark, so this markerless event was signed as success.  A
-        # fixed verifier must compare it with the complete live frontier and
-        # refuse to call it current even though its signature is authentic.
-        packet_is_stale = engine.packet_is_stale
-        engine.packet_is_stale = lambda project_id: False
-        vulnerable_receipt = engine.continuity_check(
-            PROJECT)["continuity_receipt"]
-        engine.packet_is_stale = packet_is_stale
+        # Plant the former false-current predicate, not a v2 packet success:
+        # strict composition now refuses to refresh a partial projection. The
+        # authentic counterfactual receipt must still fail the live verifier's
+        # complete frontier comparison after the predicate is restored.
+        packet_is_stale = engine._packet_is_stale
+        engine._packet_is_stale = lambda project_id, *, task_id: False
+        try:
+            vulnerable_receipt = engine.continuity_check(
+                PROJECT)["continuity_receipt"]
+        finally:
+            engine._packet_is_stale = packet_is_stale
         assert vulnerable_receipt["decision"] == "success"
 
         report = engine.continuity_check(PROJECT)
@@ -711,7 +726,7 @@ class TestProjectionAndContinuityWitness:
 
         result = engine.continuity_check(PROJECT)
         receipt = result["continuity_receipt"]
-        assert receipt["schema_version"] == "cce.continuity-receipt.v1"
+        assert receipt["schema_version"] == "cce.continuity-receipt.v2"
         assert receipt["decision"] == result["conclusion"]
         assert receipt["basis"]["project_id"] == PROJECT
         assert receipt["basis"]["projection_digest"] == \
