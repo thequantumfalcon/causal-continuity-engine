@@ -67,6 +67,10 @@ MVP_TARGETS = {
 
 
 def _cleanup_workdirs() -> None:
+    engines = tuple(scenarios_module._ENGINES)
+    scenarios_module._ENGINES.clear()
+    for engine in reversed(engines):
+        engine.close()
     workdirs = tuple(scenarios_module._WORKDIRS)
     scenarios_module._WORKDIRS.clear()
     for workdir in reversed(workdirs):

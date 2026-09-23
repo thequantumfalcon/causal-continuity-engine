@@ -27,6 +27,9 @@ REPOSITORY_ID = 880081
 #: Retained while a run is active so each sandbox outlives its scenario engine.
 #: The runner explicitly cleans and clears this registry after every run.
 _WORKDIRS: list[tempfile.TemporaryDirectory] = []
+# Keep constructed engines reachable until runner cleanup, including when setup
+# or a scenario raises before its normal close. Close before deleting workdirs.
+_ENGINES: list[Engine] = []
 
 DELIVERABLE = "importer.py"
 
@@ -74,6 +77,7 @@ def _engine(**config):
                "artifacts": [DELIVERABLE]}],
            **config}
     e = Engine(workdir=root)
+    _ENGINES.append(e)
     e.create_project(
         "bench", repository="octo/bench", repository_id=REPOSITORY_ID,
         project_id=PRJ, config=cfg)
