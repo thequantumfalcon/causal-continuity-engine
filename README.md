@@ -62,7 +62,9 @@ command are already used by an unrelated published project.
 ## Use it from an editor
 
 `cce-engine mcp` speaks the Model Context Protocol over stdio, so an MCP client
-can read a project's control state directly. Four read-only tools:
+can read a project's control state directly. [docs/MCP.md](docs/MCP.md) walks the
+whole path on this repository, from install to a connected agent, and shows how
+the continuity check runs in CI on a runner that holds the store. Four read-only tools:
 `resume_packet`, `list_assumptions`, `list_invalidations`, `continuity_check`.
 
 The subcommand first ships in 0.1.6. The published 0.1.0, 0.1.2 and 0.1.3
@@ -864,6 +866,9 @@ condition.
 - [docs/PUBLIC-FLIP.md](docs/PUBLIC-FLIP.md) — the register of every control
   that could not be enabled while this repository was private, with the exact
   command that turned each one on at the flip.
+- [docs/MCP.md](docs/MCP.md) — connecting an agent over MCP, walked end to end on
+  this repository: install, init, ingest real events, confirm, verify, packet, check,
+  client configuration, and the freshness rule.
 - [docs/RELEASE.md](docs/RELEASE.md) — the reproducible, signed, immutable-ready
   release procedure and its continuity-bound attestation roadmap.
 - [docs/RESEARCH-ROADMAP.md](docs/RESEARCH-ROADMAP.md) — standards-backed
