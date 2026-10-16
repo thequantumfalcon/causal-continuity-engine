@@ -1,7 +1,7 @@
 # Requirement Coverage — CCE reference implementation
 
-This matrix describes version 0.2.0. It is a narrative status record, not a
-claim that artifact or platform gates have run. Processor 1.9.0 refuses older
+This matrix describes the local 0.3.0 candidate, not a published release or a
+claim that its artifact/platform gates have run. Processor 1.10.0 refuses older
 projections: preserve those stores, re-ingest retained inputs into a distinct
 current store/project, then review and explicitly confirm new proposals.
 Payloads already removed by retention cannot be reconstructed (ADR-114, ADR-126).
@@ -52,7 +52,7 @@ Status legend:
 
 | ID | Status | Evidence |
 |---|---|---|
-| AD-001 | implemented | pattern extraction from issues/PRs/comments/decisions |
+| AD-001 | implemented | pattern extraction from issues/PRs/comments/decisions; a negated cue ("we no longer assume X") proposes no assumption (ADR-132) |
 | AD-002 | partial | implicit assumptions only via dependency/scope heuristics; LLM adapter is the plug point (ADR-012) |
 | AD-003 | implemented | scope/criticality/confidence/authority/valid-time on every node |
 | AD-004 | implemented | current prose proposals use `cce.proposal-id.v1`, binding tenant/project, canonical source event, source identity/field, proposed kind and exact retained text; confirmation has a distinct canonical-decision identity. Older normalized statement identities retain compatibility checks but are not current proposal authority (ADR-126; `test_authority_extraction.py`, `test_authority_producer.py`). |

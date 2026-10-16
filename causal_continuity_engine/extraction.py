@@ -31,7 +31,7 @@ from .core import canonical_json, strict_json_loads
 from .ontology import AUTHORITY_RANK, authority_rank
 
 EXTRACTOR_NAME = "cce-deterministic"
-EXTRACTOR_VERSION = "1.4.0"
+EXTRACTOR_VERSION = "1.5.0"
 
 
 @dataclass
@@ -91,6 +91,17 @@ _CLAUSE_TAIL = r"(?:[^.\n]|\.(?!\s|\Z)|" + _SOFT_WRAP + r")"
 # code fence and recording a sentence the author never wrote. Fabricating a
 # statement is worse than dropping one: nothing downstream can tell.
 _GAP = r"(?:[ \t]|" + _SOFT_WRAP + r")+"
+
+# A cue that is itself negated denies the assumption instead of making it.
+# "We no longer assume X" and "nothing relies on X" extracted the same positive
+# proposal as "We assume X", so a sentence written to retire an assumption
+# could, once confirmed, re-assert it. The negator has to stand immediately
+# before the cue (allowing only a pronoun or "to" in between); a `not`
+# elsewhere in the sentence is not read as denial (ADR-132).
+_NEGATED_CUE = re.compile(
+    r"(?:\bnot|n['\u2019]t|\bcannot|\bnever|\bno[ \t]+longer|\bstop(?:s|ped)?|"
+    r"\bwithout|\bnothing|\bnobody|\bno[ \t]+one)"
+    r"(?:[ \t]+(?:we|you|they|it|to|be))*[ \t]*\Z", re.I)
 
 # Patterns: (kind, regex, base_confidence)
 _PATTERNS: list[tuple[str, re.Pattern, float]] = [
@@ -231,6 +242,10 @@ class DeterministicExtractor:
                 # deterministic path abstains.
                 raw_after = offsets[m.end("s") - 1] + 1
                 if _boundary_has_mark_or_zwj_continuation(text, raw_after):
+                    result.abstained += 1
+                    continue
+                if kind == "assumption" and _NEGATED_CUE.search(
+                        prose[max(0, m.start() - 40):m.start()]):
                     result.abstained += 1
                     continue
                 statement = _clean(

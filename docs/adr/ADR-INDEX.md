@@ -3500,3 +3500,58 @@ a latency bound, arbitrary privileged mutation isolation, or release readiness.
 The collector relies on its existing coherent caller snapshot or writer and
 does not support mutation callbacks inside the read. No result survives the
 collector call or substitutes for a later proof, completion or freshness check.
+
+## ADR-132 — A negated assumption cue proposes nothing
+
+**Status.** Accepted for the local next-version candidate, 2026-10-16;
+not published.
+
+**Context.** The assumption cues (`assume`, `relies on`, `depends on`,
+`provided`, `as long as`, `expects that`) captured only the clause after the
+cue, so "We no longer assume X", "We do not assume X" and "nothing relies on
+X" extracted the same positive proposal `X` as "We assume X". A sentence
+written to retire an assumption therefore offered the retired statement for
+confirmation, and a mistaken confirmation would re-assert it. Withdrawal
+(ADR-118) did not help: a comment is a different source from the issue body
+that stated the assumption.
+
+**Decision.** Before accepting an assumption candidate, the extractor reads
+the forty characters of prose immediately before the cue. If they end in a
+negator — `not`, an `n't` contraction, `cannot`, `never`, `no longer`,
+`stop`/`stops`/`stopped`, `without`, `nothing`, `nobody`, `no one` —
+optionally followed by a pronoun or `to`, the candidate is dropped and counted
+as an abstention. Nothing else changes: a prohibition or decision form of the
+same sentence ("We must not assume X", "We decided not to assume X") still
+proposes the constraint or decision the author wrote, and a negator elsewhere
+in the sentence does not deny the cue. The window reads the same masked prose
+the patterns read, so fenced, quoted and commented text cannot supply a
+negator.
+
+**Alternatives.** A negative lookbehind inside each cue regex would repeat the
+list per pattern and cannot express the variable-width `no longer` in Python.
+A negated-assumption proposal kind would need confirmation semantics that do
+not exist. Extracting the positive statement with a `negated` marker would
+still offer the retired text for confirmation. Handling denial only at
+ingestion (ADR-133) would keep offering the positive proposal.
+
+**Compatibility.** Extraction output changes for retained inputs that contain
+a negated cue, so `cce-deterministic` advances from 1.4.0 to 1.5.0 and the
+processor identity from `cce-processor/1.9.0` to `cce-processor/1.10.0`.
+Stores projected by 1.9.0 or earlier are refused under ADR-114: preserve them
+with their SQLite sidecars and re-ingest retained sources into a distinct new
+store/project, then review and confirm its proposals. ADR-133 stacks on the
+same 1.10.0 identity; no release is permitted between the two.
+
+**Verification.** Fifteen negated forms produce no assumption proposal and the
+pure negated cue is a counted abstention; the affirmed sentence, a mixed
+paragraph and three sentences with a negator elsewhere keep exactly the
+affirmed proposal; ingestion of a negated cue records no proposal; the
+extractor and processor identities are pinned. The deciding tests fail against
+extractor 1.4.0. The existing extraction, withdrawal, memory and compatibility
+suites are unchanged.
+
+**Limit.** This is a closed lexical rule over English negators adjacent to the
+cue. "We used to assume X", a negator separated from the cue by a clause, or a
+different wording of the denial are outside it and extract as before. It
+records nothing about the denied assumption; connecting a denial to an active
+assumption is ADR-133.

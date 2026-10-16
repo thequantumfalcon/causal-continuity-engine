@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No unreleased changes.
+The local 0.3.0 candidate is described below. It is not yet released.
+
+## 0.3.0 — not yet released
+
+Local next-version preparation; no release date, published artifact or completed
+platform-validation claim is implied by this entry.
+
+### Changed
+
+- **Breaking: processor compatibility advances to `cce-processor/1.10.0` and
+  extraction to `cce-deterministic/1.5.0`.** Preserve older projected stores and
+  their SQLite sidecars after stopping writers. Re-ingest retained sources into
+  a separate new store/project and review its proposals before confirming them.
+  Older projections do not upgrade in place; erased source payloads cannot be
+  reconstructed by replay (ADR-114, ADR-132).
+
+### Fixed
+
+- **A negated assumption cue no longer proposes the assumption it denies.**
+  "We no longer assume X", "We do not assume X" and "nothing relies on X"
+  extracted the same positive proposal as "We assume X", so a sentence written
+  to retire an assumption offered it for confirmation. The extractor now
+  abstains when a negator stands immediately before the cue. A prohibition or
+  decision form still proposes the constraint or decision the author wrote;
+  other wordings of a denial are outside this closed rule (ADR-132).
 
 ## 0.2.0 — 2026-09-23
 

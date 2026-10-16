@@ -84,9 +84,9 @@ def test_extraction_rejects_permissive_or_nonboolean_mode_before_abstaining(valu
 
 def test_strict_extraction_has_its_own_version():
     result = DeterministicExtractor().extract("", source_authority="human_intent")
-    assert EXTRACTOR_VERSION == "1.4.0"
-    assert result.extractor_version == "1.4.0"
-    assert DeterministicExtractor.version == "1.4.0"
+    assert EXTRACTOR_VERSION == "1.5.0"
+    assert result.extractor_version == "1.5.0"
+    assert DeterministicExtractor.version == "1.5.0"
 
 
 @pytest.mark.parametrize("authority", ["untrusted_content", "agent_inference", "human_intent"])
