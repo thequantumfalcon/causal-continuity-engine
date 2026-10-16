@@ -531,3 +531,42 @@ def test_exact_index_tree_and_commit_selectors_reject_the_planted_credit(tmp_pat
     assert index.returncode == 1, index.stderr
     assert tree.returncode == 1, tree.stderr
     assert commits.returncode == 1, commits.stderr
+
+
+_SESSION_LINK = "".join(("https://", "claude", ".ai/code/", "session_", "01AbCdEf"))
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        ("Claude", "-Session: ", _SESSION_LINK),
+        ("Codex", "-Session: ", "https://example.invalid/s/1"),
+        ("claude", "_session_id: ", "01AbCdEf"),
+        (_SESSION_LINK,),
+        ("<", _SESSION_LINK, ">"),
+    ],
+    ids=("tool-session-trailer", "other-tool-session-trailer", "session-id-key",
+         "bare-session-link", "bracketed-session-link"),
+)
+def test_ai_session_provenance_lines_are_rejected(parts):
+    checker = _load_checker()
+    line = "".join(parts)
+    assert checker.scan_prose(line, source="<commit-message>")
+    raw = (
+        "tree " + "a" * 40 + "\n"
+        "author Thomas Albrecht <owner@example.invalid> 1 +0000\n"
+        "committer Thomas Albrecht <owner@example.invalid> 1 +0000\n\n"
+        "fix: preserve the notification boundary\n\n" + line + "\n"
+    ).encode()
+    assert checker.scan_commit_object(raw, source="<commit>")
+
+
+def test_session_words_outside_tool_provenance_remain_clean():
+    checker = _load_checker()
+    safe = "\n".join([
+        "Session: https://example.invalid/s/1",
+        "Resume-Session: 42",
+        "Claude Code sessions resume from the packet described below.",
+        "See https://example.invalid/claude/code/session_01 for the fixture.",
+    ])
+    assert checker.scan_prose(safe, source="README.md") == ()

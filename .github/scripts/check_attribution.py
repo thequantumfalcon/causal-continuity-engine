@@ -76,6 +76,13 @@ _ARTIFACT_AI_CREDIT = re.compile(
 _TOOL_BYLINE = re.compile(
     rf"{_AI_ALIAS.pattern}\s*\((?:anthropic|openai)\)[.!]?"
 )
+# An AI coding session appends provenance rather than credit: a trailer whose key
+# names the tool ("<tool>-Session: <link>") and a bare link to the session. Neither
+# names an actor, so the credit grammar above never reached them.
+_AI_SESSION_KEY = re.compile(
+    rf"{_AI_ALIAS.pattern}[- ]session(?:[- ](?:id|link|url))?"
+)
+_AI_SESSION_LINK = re.compile(r"<?https?://claude\.ai/code/session_[a-z0-9_-]+/?>?")
 _TRAILER_KEYS = frozenset({
     "assisted-by",
     "authored-by",
@@ -233,6 +240,11 @@ def scan_prose(
         key, separator, value = line.partition(":")
         if separator and key.replace("_", "-") in _TRAILER_KEYS:
             reason = _actor_reason(value)
+        if reason is None and separator and _AI_SESSION_KEY.fullmatch(
+                key.replace("_", "-")):
+            reason = "tool/model session trailer"
+        if reason is None and _AI_SESSION_LINK.fullmatch(line):
+            reason = "tool/model session link"
         if reason is None:
             match = _CREDIT.fullmatch(line) or _ROLE.fullmatch(line)
             if match is not None:
