@@ -53,7 +53,7 @@ do. `just setup` installs every direct and transitive tool from
 `requirements-dev.lock` in pip's all-or-nothing hash-checking mode, refuses
 source distributions, then installs `causal-continuity-engine` editable without dependency
 resolution or an isolated build environment. The reviewed direct inputs are
-`pytest` 9.1.1, `ruff` 0.16.7, `build` 1.6.1, `jsonschema` 4.26.0,
+`pytest` 9.1.1, `ruff` 0.16.10, `build` 1.6.1, `jsonschema` 4.26.0,
 `setuptools` 84.0.0, and `pip` 26.2.1. None is imported by the engine; jsonschema validates
 emitted receipt instances only in the test/release gate.
 
