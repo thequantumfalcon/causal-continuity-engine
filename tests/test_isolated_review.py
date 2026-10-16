@@ -198,6 +198,12 @@ def test_rejected_in_repo_quarantine_is_not_created(tmp_path):
     assert not rejected.exists()
 
 
+# The first assertion impersonates the protected tree's owner as a non-root
+# supervisor. Run as root, that owner is uid 0, so the impersonation is root
+# and the boundary correctly proceeds to the reviewer lookup instead.
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="the non-root supervisor case cannot be impersonated when running as root")
 def test_reviewer_identity_must_be_non_root_non_owner_and_unable_to_write(tmp_path, monkeypatch):
     boundary = _load_boundary()
     protected = tmp_path / "protected"
