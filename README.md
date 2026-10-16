@@ -36,9 +36,14 @@ and neither is an unexamined green check.
 CCE addresses each with a mechanism rather than a better prompt. Decisions,
 assumptions, requirements and evidence become nodes in a bi-temporal causal
 graph over an application-enforced append-only, hash-chained event log, so
-*why* is a queryable edge and not a memory. When a requirement changes or evidence contradicts an assumption, the
+*why* is a queryable edge and not a memory. When a requirement changes, when the
+source that stated an assumption withdraws it, or when an integration records
+contradicting evidence through `engine.invalidation.fire(...)`, the
 blast radius is computed over typed edges, bounded, and classified
-deterministically. When policy requires proof, a task cannot be marked complete
+deterministically. CCE does not read new prose for contradictions: a comment
+that merely disputes an assumption, like the one above, proposes nothing and
+fires nothing until someone or some integration records it as a trigger.
+When policy requires proof, a task cannot be marked complete
 without a signed envelope whose required verifiers actually ran — the rejection gates are
 mechanically enumerated and mutation-tested below.
 
@@ -157,6 +162,12 @@ python -m pip install -e .
 
 On Windows, use the PowerShell environment-creation and activation commands
 above, then `python -m pip install -e .` from the checkout.
+
+The editable install is enough for the engine but not for the test suite,
+which fails at collection without the hash-locked development tools. Install
+them with `python -m pip install -r requirements-dev.lock` (or `just setup`),
+then run `python -m pytest tests -q`. The full suite can take around fifteen
+minutes.
 
 Global flags come **before** the subcommand: `cce-engine --dir <path> <subcommand>`.
 
