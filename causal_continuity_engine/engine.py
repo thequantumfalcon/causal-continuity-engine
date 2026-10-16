@@ -4554,8 +4554,23 @@ class Engine:
                     + "; ".join(shape_errors))
             check = verify_envelope(proof, self.signer)
             if not check["valid"]:
-                raise PermissionError("completion rejected: proof envelope invalid"
-                                      " or tampered")
+                # Name the check that failed (PA-002). One undifferentiated
+                # message made an envelope under an unregistered key, or one
+                # whose recorded status no longer matches its contents, read
+                # exactly like an edited body, so the operator could not tell
+                # which of the four to repair. The gate phrase itself is
+                # unchanged: tests/test_instrument_validation.py keys on it.
+                failed = [name for name, ok in (
+                    ("digest", check.get("digest_ok")),
+                    ("signature", check.get("signature_ok")),
+                    ("authenticity", check.get("authentic")),
+                    ("sufficiency", check.get("sufficiency_ok", True)),
+                ) if not ok]
+                detail = check.get("reason")
+                raise PermissionError(
+                    "completion rejected: proof envelope invalid or tampered"
+                    f" (failed: {', '.join(failed) or 'unclassified'})"
+                    + (f": {detail}" if detail else ""))
             if proof.get("status") != "verified":
                 raise PermissionError(
                     f"completion rejected: proof status is {proof.get('status')!r},"
