@@ -258,7 +258,11 @@ outcome, say what distinguishes it from "nothing happened".
 
 **No authorship attribution to tooling.** The `.githooks/` hooks and the CI
 attribution guard both reject it, in commit messages and in committed files.
-Do not work around them.
+Do not work around them. This is a rule about credit, not secrecy: AI coding
+assistants are used in this project's development, and every change is
+reviewed, tested, signed off, and committed by the maintainer, who is
+responsible for it. If AI tools did significant work on your patch, say so in
+plain words in the pull request; never list a tool as an author or co-author.
 
 ## Security
 

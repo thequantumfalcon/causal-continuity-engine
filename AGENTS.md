@@ -328,8 +328,11 @@ below what it is about to do (ADR-048).
 
 Never add AI authorship credit to a commit message, PR title or body, code
 comment, documentation file, changelog, or example. No co-author trailers,
-no "generated with" lines, no tool bylines, no mention of AI involvement in
-this codebase anywhere.
+no "generated with" lines, no tool bylines. This is a rule about credit, not
+secrecy: `.github/CONTRIBUTING.md` states plainly that AI coding assistants
+are used in development and that the maintainer reviews, tests, and commits
+every change. Disclosure in plain words is allowed; crediting a tool as an
+author is not.
 
 This is enforced, not requested. `.githooks/commit-msg` and
 `.githooks/pre-commit` block it locally (`core.hooksPath` is set to
