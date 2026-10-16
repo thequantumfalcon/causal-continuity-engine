@@ -361,8 +361,26 @@ class InvalidationEngine:
         reason: str = "",
         event_id: str | None = None,
         actor: str = "cce",
+        requires_human: bool | None = None,
+        invalidation_id: str | None = None,
     ) -> dict:
-        """Atomically create and apply an invalidation."""
+        """Atomically create and apply an invalidation.
+
+        `invalidation_id` lets a canonical producer name the invalidation
+        deterministically (ADR-133), so a later human decision that binds the
+        identity replays onto the same node; by default a fresh identifier is
+        generated.
+
+        `requires_human=True` records the invalidation as pending confirmation
+        regardless of confidence and blast radius, so a trigger that a human
+        must judge (ADR-133) changes no state until `confirm`; `None` keeps the
+        confidence/blast-radius rule.
+        """
+        if requires_human is not None and not isinstance(requires_human, bool):
+            raise ValueError("requires_human must be a boolean or None")
+        if invalidation_id is not None:
+            invalidation_id = validate_public_identifier(
+                invalidation_id, field="invalidation_id")
         tenant_id = validate_public_identifier(tenant_id, field="tenant_id")
         project_id = validate_public_identifier(project_id, field="project_id")
         target_node_id = validate_public_identifier(
@@ -392,7 +410,8 @@ class InvalidationEngine:
                 target_node_id=target_node_id, trigger_type=trigger_type,
                 trigger_evidence_id=trigger_evidence_id,
                 trigger_confidence=trigger_confidence, reason=reason,
-                event_id=event_id, actor=actor)
+                event_id=event_id, actor=actor, requires_human=requires_human,
+                invalidation_id=invalidation_id)
 
     def _fire(
         self,
@@ -406,6 +425,8 @@ class InvalidationEngine:
         reason: str = "",
         event_id: str | None = None,
         actor: str = "cce",
+        requires_human: bool | None = None,
+        invalidation_id: str | None = None,
     ) -> dict:
         """Invalidate target_node_id and propagate bounded impact.
 
@@ -459,9 +480,10 @@ class InvalidationEngine:
 
         high_blast = len(affected) >= 10 or truncated
         low_confidence = trigger_confidence < 0.6
-        requires_human = (low_confidence and high_blast) or (
-            (target.get("criticality") in ("high", "critical")) and low_confidence
-        )
+        if requires_human is None:
+            requires_human = (low_confidence and high_blast) or (
+                (target.get("criticality") in ("high", "critical")) and low_confidence
+            )
 
         classified = []
         for dep in affected:
@@ -528,6 +550,7 @@ class InvalidationEngine:
             entity_type="invalidation",
             tenant_id=tenant_id,
             project_id=project_id,
+            node_id=invalidation_id,
             status="open" if not requires_human else "pending_confirmation",
             criticality=target.get("criticality") or "medium",
             confidence=trigger_confidence,

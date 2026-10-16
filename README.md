@@ -40,9 +40,11 @@ graph over an application-enforced append-only, hash-chained event log, so
 source that stated an assumption withdraws it, or when an integration records
 contradicting evidence through `engine.invalidation.fire(...)`, the
 blast radius is computed over typed edges, bounded, and classified
-deterministically. CCE does not read new prose for contradictions: a comment
-that merely disputes an assumption, like the one above, proposes nothing and
-fires nothing until someone or some integration records it as a trigger.
+deterministically. CCE does not read prose for meaning. It does recognize one
+closed form: a trusted comment that restates an active assumption with a
+negator, like the one above, raises a human-gated notice that changes nothing
+until the owner confirms or rejects it; a differently worded dispute proposes
+nothing and fires nothing.
 When policy requires proof, a task cannot be marked complete
 without a signed envelope whose required verifiers actually ran — the rejection gates are
 mechanically enumerated and mutation-tested below.

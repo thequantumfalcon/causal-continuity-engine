@@ -3555,3 +3555,82 @@ cue. "We used to assume X", a negator separated from the cue by a clause, or a
 different wording of the denial are outside it and extract as before. It
 records nothing about the denied assumption; connecting a denial to an active
 assumption is ADR-133.
+
+## ADR-133 — Explicit negation of an active assumption raises a human-gated notice
+
+**Status.** Accepted for the local next-version candidate, 2026-10-16;
+not published.
+
+**Context.** A trusted comment saying "the upstream feed is NOT ordered by
+timestamp" ingested as nothing while the assumption it denied stayed active
+and kept gating work. Withdrawal (ADR-118) is scoped to the source that stated
+the assumption, so a comment cannot withdraw an issue-body assumption, and the
+README had to say that CCE does not read prose for contradictions. Separately,
+`InvalidationEngine.fire` could record a `pending_confirmation` invalidation
+(CI-005), but no CLI, authority operation or connector could confirm or reject
+one; only `InvalidationEngine.confirm` from Python could.
+
+**Decision.** During text processing of a non-quarantined block whose authority
+ranks at or above `human_intent` (OWNER, MEMBER, COLLABORATOR, or an owner-local
+decision), the engine compares each prose sentence against every active,
+currently authoritative assumption with the closed rule in
+`extraction.explicit_negations`: the assumption's own wording with exactly one
+negator inserted after an auxiliary (`is not`, `isn't`, `never`, `no longer`,
+`cannot`, `won't`), a negated assumption cue (the ADR-132 negator list before
+`assume`, `relies on`, `depends on`), or "the assumption that X is wrong, false,
+incorrect, invalid, no longer true or no longer valid", optionally behind one
+leading label or clause of at most eighty characters ending in a colon. Comparison uses `normalize_statement`; fenced, quoted and
+commented text is masked as for extraction. A hit fires a
+`contradictory_evidence` invalidation with `requires_human=True`, confidence
+0.9, the sentence as reason, the ingest event as provenance and a
+deterministic identity derived from that event and the target. The
+invalidation is `pending_confirmation`: no state changes (ADR-008). One notice
+per assumption; a rejected notice is not re-raised for the same sentence. The
+owner decides through two new owner-local authority operations,
+`confirm_invalidation` and `reject_invalidation`, whose operands
+(`Engine.authority_invalidation`) bind the pending revision's version and its
+wall-clock-free digest. They are recorded as canonical decisions and projected
+through `InvalidationEngine.confirm`, so `rebuild` replays them;
+`confirmed_at` joins the volatile projection keys. HTTP and MCP expose neither
+operation.
+
+**Alternatives.** Reading comments for meaning would need a classifier and
+would let any commenter stall a project; rejected, as in ADR-119.
+Invalidating automatically on an explicit negation would let one trusted typo
+change control state without a decision; rejected under CI-005. Exposing
+`InvalidationEngine.confirm` through CLI flags would record a runtime decision
+that `rebuild` cannot replay; rejected in favour of the authority grammar. A
+new node kind for notices would need its own packet section, schema version
+and lifecycle; the existing pending invalidation already has all three.
+
+**Compatibility.** Stacks on ADR-132's `cce-processor/1.10.0` and
+`cce-deterministic/1.5.0`; no release between them. No schema, wire or
+packet-shape change: the invalidation summary keeps its eight fields and the
+authority receipt its five, with `confirmation_id` carrying the invalidation
+identity for the two new operations. Direct `fire` callers are unchanged
+(`requires_human=None`, generated identity by default).
+
+**Verification.** Nine closed forms are recognized and ten near-misses
+(affirmation, question, other wording, an extra content word, two negators,
+quoted, fenced, commented, negation of another clause, an over-long leading
+clause) are not. OWNER, MEMBER
+and COLLABORATOR comments raise exactly one pending notice; CONTRIBUTOR, NONE
+and FIRST_TIME_CONTRIBUTOR raise none; injection-quarantined blocks, repeats
+and unconfirmed proposals raise none. The notice changes no assumption state,
+appears in the packet with its recommended action, drives `next_safe_action`
+and makes `check` report `action_required`. Confirmation invalidates the
+assumption and retries idempotently; rejection keeps it active and suppresses
+the same sentence but not a different denial; malformed, stale, mis-scoped and
+missing-operand decisions are refused with no projection change; an
+automatically applied invalidation has no operands; `rebuild` reproduces both
+a confirmed and a rejected notice. On the ADR-132 tree the deciding module
+does not import, the reproduction records zero invalidations, and the
+authority operation is unknown.
+
+**Limit.** This is a closed lexical control, not contradiction detection:
+"the feed arrives unordered" is outside it, as is any negation whose wording
+differs from the assumption's. It names which check a human must make; it does
+not make it. A trusted author's stray "not" raises a notice that blocks
+completion of touched tasks until rejected, which is the human gate working.
+The packet summary shows the target and recommended action, not the sentence;
+`invalidations --explain` and MCP `list_invalidations` show the reason.

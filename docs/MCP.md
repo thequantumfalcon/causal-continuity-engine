@@ -129,7 +129,9 @@ canonical event and the confirmation id:
 ```
 
 Revocation and scope changes are structured decisions too (`operation`
-`revoke` or `replace_scope` with the operands from `authority_confirmation`).
+`revoke` or `replace_scope` with the operands from `authority_confirmation`),
+and so is deciding a pending contradiction notice (`confirm_invalidation` or
+`reject_invalidation` with the operands from `authority_invalidation`).
 
 ## 5. Pin a verifier and verify
 

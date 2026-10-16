@@ -14,6 +14,19 @@ The local 0.3.0 candidate is described below. It is not yet released.
 Local next-version preparation; no release date, published artifact or completed
 platform-validation claim is implied by this entry.
 
+### Added
+
+- **A trusted explicit negation of an active assumption raises a human-gated
+  notice.** An OWNER, MEMBER or COLLABORATOR sentence that restates an active
+  assumption with one negator ("the feed is NOT ordered by timestamp"), negates
+  its cue ("we no longer assume …") or calls it wrong fires a
+  `contradictory_evidence` invalidation in `pending_confirmation`: nothing
+  changes until the owner records `confirm_invalidation` or
+  `reject_invalidation` through `authority --request`, with operands from
+  `Engine.authority_invalidation`. The notice appears in the resume packet and
+  makes `check` report `action_required`. The rule is closed and lexical; other
+  wordings are outside it (ADR-133).
+
 ### Changed
 
 - **Breaking: processor compatibility advances to `cce-processor/1.10.0` and
