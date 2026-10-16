@@ -14,9 +14,12 @@ history and a bi-temporal causal graph. Event-derived projections are
 rebuildable only while source payloads remain inside the retention window;
 runtime records are authenticated/audited rather than replay-derived. Memory
 tiers L0–L4 and token-budgeted Resume Packets are what
-an agent actually receives on resume. When a requirement changes or evidence
-contradicts an assumption, causal invalidation computes the blast radius
-over typed edges, bounds it, and classifies it deterministically. When policy
+an agent actually receives on resume. When a requirement changes, when the
+source that stated an assumption withdraws it, or when an integration records
+contradicting evidence through `engine.invalidation.fire(...)`, causal
+invalidation computes the blast radius over typed edges, bounds it, and
+classifies it deterministically. It does not read new prose for
+contradictions (ADR-119). When policy
 requires proof, a task cannot be marked complete without a signed proof envelope
 whose required verifiers actually ran — `Engine.complete_task` has twenty-two
 independently instrumented rejection gates, including current confirmed authority,
