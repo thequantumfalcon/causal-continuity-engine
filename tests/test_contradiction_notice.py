@@ -307,20 +307,26 @@ def test_an_automatic_invalidation_is_not_confirmable_through_the_grammar(engine
 
 # ---------------------------------------------------------------- replay
 
+def _replays_identically(engine):
+    fresh = engine.rebuild_projection(PROJECT)
+    try:
+        return engine.projection_fingerprint(PROJECT) == fresh.projection_fingerprint(PROJECT)
+    finally:
+        fresh.close()
+
+
 def test_rebuild_reproduces_the_notice_and_the_decision(engine):
     _confirmed_assumption(engine)
     (notice_id,) = _comment_report(engine, NEGATED, 61)["invalidations"]
     _decision(engine, "confirm_invalidation", notice_id, "decide-5")
-    assert engine.projection_fingerprint(PROJECT) == (
-        engine.rebuild_projection(PROJECT).projection_fingerprint(PROJECT))
+    assert _replays_identically(engine)
 
 
 def test_rebuild_reproduces_a_rejected_notice(engine):
     _confirmed_assumption(engine)
     (notice_id,) = _comment_report(engine, NEGATED, 62)["invalidations"]
     _decision(engine, "reject_invalidation", notice_id, "decide-6")
-    assert engine.projection_fingerprint(PROJECT) == (
-        engine.rebuild_projection(PROJECT).projection_fingerprint(PROJECT))
+    assert _replays_identically(engine)
 
 
 # ----------------------------------------------------------- fire() gate
