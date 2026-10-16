@@ -21,6 +21,19 @@ from tests.test_schema_release_identities import RELEASES as SCHEMA_RELEASES
 ROOT = Path(__file__).resolve().parent.parent
 _POSIX_RELEASE_GIT = pytest.mark.skipif(
     os.name != "posix", reason="the release Git profile supports POSIX release hosts")
+# The owner signing profile pins /usr/bin/ssh-keygen by absolute path. Without
+# it the profile refuses with "SSH signing executable is unavailable", which is
+# the control working, not the property these tests exist to pin; report the
+# missing prerequisite as a skip rather than as a release-control failure.
+_SSH_KEYGEN = pytest.mark.skipif(
+    not os.path.exists("/usr/bin/ssh-keygen"),
+    reason="the owner release signing profile requires /usr/bin/ssh-keygen")
+# An untrusted-owner fixture must be owned by someone other than root. Run as
+# root, every file the test creates is root-owned, so the check it exercises
+# correctly trusts the file and the planted defect is never planted.
+_NON_ROOT = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="the owner-mutable fixture cannot be planted when running as root")
 
 
 @pytest.fixture
@@ -28,9 +41,14 @@ def private_release_tmp():
     base = Path("/private/tmp") if Path("/private/tmp").is_dir() else Path("/tmp")
     path = Path(tempfile.mkdtemp(prefix="cce-release-test-", dir=base))
     path.chmod(0o700)
+    # Pin the umask: under a group-writable default (002) the fixture's own
+    # signing key is created group-writable and the profile rightly refuses
+    # it, which tested the host's umask instead of the release control.
+    previous_umask = os.umask(0o022)
     try:
         yield path
     finally:
+        os.umask(previous_umask)
         shutil.rmtree(path)
 
 
@@ -1495,6 +1513,7 @@ def test_release_checker_rejects_worktree_residue_appearing_after_admission(
 
 
 @_POSIX_RELEASE_GIT
+@_SSH_KEYGEN
 def test_owner_release_profile_still_refuses_inert_worktree_residue(
         private_release_tmp, monkeypatch):
     tmp_path = private_release_tmp
@@ -1929,6 +1948,7 @@ def test_release_git_rejects_a_private_key_where_a_public_key_is_required(
 
 
 @_POSIX_RELEASE_GIT
+@_NON_ROOT
 def test_release_profile_rejects_symlinked_or_owner_mutable_programs(
         private_release_tmp):
     checker = _load_release_script("check_release_tag")
@@ -1968,6 +1988,7 @@ def test_release_profile_rejects_symlinked_or_owner_mutable_programs(
 
 
 @_POSIX_RELEASE_GIT
+@_SSH_KEYGEN
 def test_release_git_profiles_are_absolute_and_token_free(
         private_release_tmp, monkeypatch):
     tmp_path = private_release_tmp
