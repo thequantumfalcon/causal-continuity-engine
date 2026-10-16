@@ -65,7 +65,7 @@ from .evidence import (
     run_determinism_probe,
     run_mutation_probe,
 )
-from .extraction import DeterministicExtractor, normalize_statement
+from .extraction import DeterministicExtractor, explicit_negations, normalize_statement
 from .github import (
     TRUSTED_ASSOCIATIONS,
     WEBHOOK_BODY_MAX_BYTES,
@@ -110,6 +110,8 @@ _AUTHORITY_SOURCE = "cce:authority-decision:v1"
 _AUTHORITY_EXTRACTOR = "cce.authority-decision"
 _PROPOSAL_SCHEMA = "cce.proposal-id.v1"
 _AUTHORITY_KINDS = frozenset({"requirement", "constraint", "decision", "assumption", "task"})
+_INVALIDATION_OPERATIONS = frozenset({"confirm_invalidation", "reject_invalidation"})
+_NOTICE_SCHEMA = "cce.contradiction-notice.v1"
 # Version of the statement normalization contract that feeds stable_node_id.
 # It is deliberately separate from the extractor version: pattern behavior can
 # change without changing identity, while an identity change survives forever
@@ -141,8 +143,8 @@ _CONTINUITY_STATE_FIELDS = (
 _AUTHORIZED_ASSOCIATIONS = TRUSTED_ASSOCIATIONS
 
 _VOLATILE_PROJECTION_KEYS = {
-    "captured_at", "checked_at", "completed_at", "composed_at", "created_at",
-    "decided_at", "fired_at", "generated_at", "packet_generation_time",
+    "captured_at", "checked_at", "completed_at", "composed_at", "confirmed_at",
+    "created_at", "decided_at", "fired_at", "generated_at", "packet_generation_time",
     "ran_at", "started_at", "superseded_at",
 }
 _INTERNAL_RANDOM_ID = re.compile(
@@ -171,6 +173,15 @@ def _authority_request(request: dict) -> dict:
             required.add("authority_scope")
         optional = {"note"}
         binding = "confirmation"
+    elif isinstance(operation, str) and operation in _INVALIDATION_OPERATIONS:
+        # The human gate of CI-005, as a canonical decision: accepting or
+        # rejecting a pending invalidation binds the exact pending revision,
+        # so a notice re-fired or already decided under another request
+        # cannot be confirmed by a stale operand set (ADR-133).
+        required = common | {"invalidation_id", "expected_invalidation_version",
+                             "expected_invalidation_digest"}
+        optional = {"note"}
+        binding = "invalidation"
     else:
         raise ValueError("unknown authority operation")
     if not required <= request.keys() or request.keys() - required - optional:
@@ -212,6 +223,8 @@ def _authority_request(request: dict) -> dict:
 
 
 def _confirmation_id(event: dict, request: dict) -> str:
+    if request["operation"] in _INVALIDATION_OPERATIONS:
+        return request["invalidation_id"]
     if request["operation"] != "confirm":
         return request["confirmation_id"]
     basis = [_AUTHORITY_SCHEMA, event["tenant_id"], event["project_id"], event["event_id"]]
@@ -2451,6 +2464,27 @@ class Engine:
                 "expected_confirmation_digest": digest_obj(state),
                 "authority_scope": state["authority_scope"]}
 
+    def authority_invalidation(self, project_id: str, invalidation_id: str) -> dict:
+        """Return exact request operands for a pending invalidation; this is not
+        an authorization operation (ADR-133).
+
+        The digest covers the pending revision's semantic data with processor
+        wall clocks removed, so the same operands bind on live ingest and on
+        canonical replay.
+        """
+        self._require_project(project_id)
+        try:
+            inv = self.graph.get(invalidation_id, tenant_id=self.tenant_id,
+                                 project_id=project_id, entity_type="invalidation")
+        except KeyError:
+            raise ValueError("unknown invalidation") from None
+        if inv["status"] != "pending_confirmation":
+            raise ValueError("invalidation is not pending confirmation")
+        return {"invalidation_id": invalidation_id,
+                "expected_invalidation_version": inv["version"],
+                "expected_invalidation_digest": digest_obj(self._projection_value(
+                    inv["data"], {}, anonymize_unknown_ids=False))}
+
     def authority_is_current(self, node: dict) -> bool:
         """Canonical authority witness, not human authentication or status resolution.
 
@@ -2484,6 +2518,11 @@ class Engine:
     def _validate_authority_operands(self, project_id: str, request: dict) -> dict | None:
         if request["tenant_id"] != self.tenant_id or request["project_id"] != project_id:
             raise PermissionError("authority request is outside the local project")
+        if request["operation"] in _INVALIDATION_OPERATIONS:
+            binding = self.authority_invalidation(project_id, request["invalidation_id"])
+            if any(request[key] != value for key, value in binding.items()):
+                raise ValueError("authority request does not bind the pending invalidation")
+            return None
         if request["operation"] == "confirm":
             binding = self.authority_proposal(project_id, request["proposal_id"])
             if any(request[key] != value for key, value in binding.items()):
@@ -2710,6 +2749,15 @@ class Engine:
     def _process_authority_decision(self, event: dict, report: dict) -> None:
         request = self._authority_payload(event)
         project_id = event["project_id"]
+        if request["operation"] in _INVALIDATION_OPERATIONS:
+            self._validate_authority_operands(project_id, request)
+            inv = self.invalidation.confirm(
+                request["invalidation_id"], actor="owner-local",
+                accept=request["operation"] == "confirm_invalidation",
+                event_id=event["event_id"])
+            report["invalidations"].append(inv["node_id"])
+            report["created"].append({"node_id": inv["node_id"], "kind": "invalidation"})
+            return
         state = self._validate_authority_operands(project_id, request)
         node_id = _confirmation_id(event, request)
         criticality = None
@@ -3182,6 +3230,8 @@ class Engine:
             if quarantined_block:
                 self.store.audit(actor="extractor", action="injection.quarantined",
                                  object_id=node.id, detail=item.statement[:200])
+        if not quarantined_block and authority_rank(authority) >= authority_rank("human_intent"):
+            self._notice_explicit_negations(event, text, report)
         if not quarantined_block:
             # Read producer history rather than current mutable metadata. An
             # unrelated field edit or equal restatement does not withdraw this
@@ -3230,6 +3280,56 @@ class Engine:
                             project_id=project_id, node_id=confirmed["node_id"], data={},
                             valid_to=event["recorded_at"], event_id=event_id)
         return not quarantined_block
+
+    def _notice_explicit_negations(self, event: dict, text: str, report: dict) -> None:
+        """Raise a human-gated notice when trusted prose explicitly negates an
+        active assumption (ADR-133).
+
+        "The feed is NOT ordered by timestamp" or "we no longer assume the feed
+        is ordered by timestamp", from an author the project trusts, fires a
+        `contradictory_evidence` invalidation in `pending_confirmation`: the
+        assumption and everything built on it are untouched until the owner
+        confirms or rejects the notice through the authority grammar (CI-005).
+        One notice per assumption; a rejected notice is not re-raised for the
+        same sentence. This reads nothing for meaning: only the assumption's
+        own wording with one negator, or a negated assumption cue, counts.
+        """
+        project_id = event["project_id"]
+        active = [node for node in self.graph.current(
+            project_id, "assumption", status=["active", "supported"], tenant_id=self.tenant_id)
+            if self.authority_is_current(node)]
+        if not active:
+            return
+        denied = explicit_negations(
+            text, {node["node_id"]: node["data"].get("statement", "") for node in active})
+        if not denied:
+            return
+        recorded = self.graph.current(
+            project_id, "invalidation", status=["open", "pending_confirmation", "rejected"],
+            tenant_id=self.tenant_id)
+        for node_id in sorted(denied):
+            try:
+                reason = validate_human_text(
+                    denied[node_id][:300], field="invalidation reason", max_length=300)
+            except ValueError:
+                # The sentence carried control characters; the notice still
+                # stands, the quoted text does not.
+                reason = "explicit negation of the assumption (sentence withheld)"
+            if any(inv["data"].get("trigger_type") == "contradictory_evidence"
+                   and inv["data"].get("target_node_id") == node_id
+                   and (inv["status"] != "rejected" or inv["data"].get("reason") == reason)
+                   for inv in recorded):
+                continue
+            # The identity derives from the ingest event and the target, so a
+            # later canonical decision that names it replays onto the same node.
+            notice_id = "inv_" + digest_obj(
+                [_NOTICE_SCHEMA, self.tenant_id, project_id, event["event_id"], node_id])[7:31]
+            inv = self.invalidation.fire(
+                tenant_id=self.tenant_id, project_id=project_id, target_node_id=node_id,
+                trigger_type="contradictory_evidence", trigger_confidence=0.9,
+                reason=reason, event_id=event["event_id"], requires_human=True,
+                invalidation_id=notice_id)
+            report["invalidations"].append(inv["node_id"])
 
     @staticmethod
     def _initial_status(entity_type: str, item, existing) -> str | None:

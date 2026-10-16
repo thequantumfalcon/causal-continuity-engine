@@ -379,6 +379,90 @@ def normalize_statement(statement: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# An explicit negation of a statement: the statement itself with exactly one
+# negator inserted after an auxiliary ("the feed is NOT ordered"), or a negated
+# assumption cue ("we no longer assume the feed is ordered"), or the assumption
+# named and called wrong. This is the same closed lexical control as ADR-119,
+# aimed at assumptions: it reads nothing for meaning, so "the feed arrives
+# unordered" is outside it and stays outside it on purpose (ADR-133).
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+_AUXILIARY_NEGATION = re.compile(
+    r"\b(is|are|was|were|does|do|did|can|will|has|have|had|should|must|shall|would|could)"
+    r"(?:\s+not|n['\u2019]t|\s+never|\s+no\s+longer)\b", re.I)
+_IRREGULAR_NEGATION = (
+    (re.compile(r"\bcannot\b", re.I), "can"),
+    (re.compile(r"\bwon['\u2019]t\b", re.I), "will"),
+)
+_NEGATED_CUE_CLAUSE = re.compile(
+    r"(?:\bnot|n['\u2019]t|\bcannot|\bnever|\bno\s+longer|\bstop(?:s|ped)?|\bwithout|"
+    r"\bnothing|\bnobody|\bno\s+one)(?:\s+(?:we|you|they|it|to|be))*\s+"
+    r"(?:assum(?:e|es|ing|ption)(?:\s+that)?|rel(?:y|ies|ying)\s+on(?:\s+the\s+fact\s+that)?|"
+    r"depend(?:s|ing)?\s+on(?:\s+the\s+fact\s+that)?)\s+(?P<s>.+)", re.I)
+_ASSUMPTION_CALLED_WRONG = re.compile(
+    r"\bthe\s+assumption\s+that\s+(?P<s>.+?)\s+(?:is|was)\s+"
+    r"(?:wrong|false|incorrect|invalid|no\s+longer\s+(?:true|valid))\b", re.I)
+
+
+def _denial_candidates(sentence: str) -> list[str]:
+    """Statements a single sentence explicitly denies, before normalization."""
+    found = []
+    cue = _NEGATED_CUE_CLAUSE.search(sentence)
+    if cue:
+        found.append(cue.group("s"))
+    wrong = _ASSUMPTION_CALLED_WRONG.search(sentence)
+    if wrong:
+        found.append(wrong.group("s"))
+    positive, count = _AUXILIARY_NEGATION.subn(r"\1", sentence, count=1)
+    if count == 0:
+        for pattern, auxiliary in _IRREGULAR_NEGATION:
+            positive, count = pattern.subn(auxiliary, sentence, count=1)
+            if count:
+                break
+    if count == 1 and not _AUXILIARY_NEGATION.search(positive):
+        found.append(positive)
+    return found
+
+
+def explicit_negations(text: str, statements: dict[str, str]) -> dict[str, str]:
+    """Map each statement key that `text` explicitly denies to the denying
+    sentence (ADR-133).
+
+    `statements` maps an opaque key to a statement, normally an active
+    assumption's node id to its statement. Only prose is read: fenced code,
+    quotes and HTML comments are masked exactly as for extraction, and format
+    controls are removed before matching. Comparison uses the extractor's
+    normalized statement identity, so case, punctuation and stop words do not
+    matter but every content word does.
+    """
+    if not text or not statements:
+        return {}
+    wanted = {}
+    for key, statement in statements.items():
+        normalized = normalize_statement(statement or "")
+        if normalized:
+            wanted.setdefault(normalized, []).append(key)
+    if not wanted:
+        return {}
+    visible, _ = _without_invisibles(text)
+    denied: dict[str, str] = {}
+    for raw in _SENTENCE_END.split(_prose_only(visible)):
+        sentence = re.sub(r"\s+", " ", raw).strip().rstrip(".!?;:,")
+        if not sentence:
+            continue
+        # "Correction: the feed is not ordered" and "Checked the producer today:
+        # the feed is not ordered" carry one leading label or clause ending in a
+        # colon; it is not part of the statement being denied. The clause is
+        # bounded so a colon deep inside unrelated prose cannot manufacture one.
+        unlabelled = re.sub(r"^[^:]{1,80}:\s+", "", sentence)
+        candidates = _denial_candidates(sentence)
+        if unlabelled != sentence:
+            candidates += _denial_candidates(unlabelled)
+        for candidate in candidates:
+            for key in wanted.get(normalize_statement(candidate.rstrip(".!?;:,")), ()):
+                denied.setdefault(key, sentence)
+    return denied
+
+
 # Regions of a comment that are not the author asserting something. A fenced
 # block is code, and code comments are full of modal verbs; a blockquote is
 # someone else's words, frequently quoted in order to disagree with them; an

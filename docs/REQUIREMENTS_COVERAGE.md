@@ -56,7 +56,7 @@ Status legend:
 | AD-002 | partial | implicit assumptions only via dependency/scope heuristics; LLM adapter is the plug point (ADR-012) |
 | AD-003 | implemented | scope/criticality/confidence/authority/valid-time on every node |
 | AD-004 | implemented | current prose proposals use `cce.proposal-id.v1`, binding tenant/project, canonical source event, source identity/field, proposed kind and exact retained text; confirmation has a distinct canonical-decision identity. Older normalized statement identities retain compatibility checks but are not current proposal authority (ADR-126; `test_authority_extraction.py`, `test_authority_producer.py`). |
-| AD-005 | implemented | status resolution is versioned but cannot grant prose authority. Owner-local `record_authority_decision` and `authority --request FILE` provide closed confirm/revoke/replace_scope operations with canonical operand checks; HTTP/MCP expose no confirmation producer (ADR-126). |
+| AD-005 | implemented | status resolution is versioned but cannot grant prose authority. Owner-local `record_authority_decision` and `authority --request FILE` provide closed confirm/revoke/replace_scope/confirm_invalidation/reject_invalidation operations with canonical operand checks; HTTP/MCP expose no confirmation producer (ADR-126). |
 | AD-006 | implemented | source typing and injection quarantine precede extraction. All prose, including OWNER and human-decision prose, proposes rather than mandates; explicit local confirmation is required (`test_authority_extraction.py`, `test_authority_consumers.py`; ADR-126). |
 | AD-007 | implemented | calibration by source authority + abstention gate |
 | AD-008 | partial | assumes/depends_on edges supported; automatic linking only where extraction sees both ends |
@@ -65,11 +65,11 @@ Status legend:
 
 | ID | Status | Evidence |
 |---|---|---|
-| CI-001 | implemented | 8 trigger types incl. changed_requirement, failed_check, dependency_drift. Current confirmations bind an exact source statement: its admitted withdrawal invalidates that confirmation and closes validity. Confirmed requirement/constraint withdrawal uses changed_requirement; other confirmed kinds use expired_approval (`test_authority_withdrawal_classification.py`; ADR-126). Historical merged-statement last-source behavior is recorded in ADR-017. |
+| CI-001 | implemented | 8 trigger types incl. changed_requirement, failed_check, dependency_drift. Current confirmations bind an exact source statement: its admitted withdrawal invalidates that confirmation and closes validity. Confirmed requirement/constraint withdrawal uses changed_requirement; other confirmed kinds use expired_approval (`test_authority_withdrawal_classification.py`; ADR-126). Historical merged-statement last-source behavior is recorded in ADR-017. A trusted explicit negation of an active assumption fires a human-gated `contradictory_evidence` notice (ADR-133). |
 | CI-002 | implemented | typed-edge propagation with strength decay + budgets |
 | CI-003 | implemented | deterministic matrix `classify()` |
 | CI-004 | implemented | minimal causal path + evidence + recommended action |
-| CI-005 | implemented | `pending_confirmation` applies no silent L0 rewrite. Completion also refuses any task touched by an unresolved open/pending invalidation and refuses every task under a critical unresolved invalidation, even for later proofs; the affected set still depends on the typed graph and classification policy (ADR-089). |
+| CI-005 | implemented | `pending_confirmation` applies no silent L0 rewrite. Completion also refuses any task touched by an unresolved open/pending invalidation and refuses every task under a critical unresolved invalidation, even for later proofs; the affected set still depends on the typed graph and classification policy (ADR-089). Pending notices are decided through the `confirm_invalidation`/`reject_invalidation` authority operations, recorded as canonical events (ADR-133). |
 | CI-006 | implemented | persisted project/task-scope packet watermarks survive process restarts; packet membership and final watermark admission share the selected validity instant. Later freshness checks use current time; clock-only changes and broad project safety changes can stale a scope (`test_task_packets.py`, `test_packet_validity_frontier.py`; ADR-128, ADR-130). |
 | CI-007 | implemented | 3 resolution modes with lineage |
 | CI-008 | implemented | `metrics()` counters + ContinuityBench precision/recall |
