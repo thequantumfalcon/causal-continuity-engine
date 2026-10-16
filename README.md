@@ -139,7 +139,7 @@ with `.\.venv\Scripts\python.exe -m pip install causal-continuity-engine`
 and invoke the environment's `cce-engine.exe` by its absolute path in the
 commands below. After activation, `cce-engine --help` checks the installation.
 
-**Upgrading an existing project:** this candidate uses processor 1.10.0 and
+**Upgrading an existing project:** this release uses processor 1.10.0 and
 extractor 1.5.0; projections written by 0.2.0's processor 1.9.0 or earlier
 processors are refused. There is no in-place projection or authority upgrade. Stop writers,
 preserve the complete old project state (including its database and any SQLite
@@ -147,7 +147,7 @@ sidecars), and re-ingest retained sources into a separate new project/store.
 Review and explicitly confirm the new proposals there; old prose is not approval.
 Do not remove markers or sidecars to bypass refusal. Payloads already removed
 by retention cannot be reconstructed from their digests. New users can simply
-start a fresh project. See [the candidate upgrade notes](CHANGELOG.md#030--not-yet-released);
+start a fresh project. See [the upgrade notes for this release](CHANGELOG.md#030--2026-10-16);
 the [0.1.6 notes](CHANGELOG.md#016--2026-09-20) remain historical.
 
 To run this exact checkout instead of the published package, or to work on the
