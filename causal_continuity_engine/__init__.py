@@ -7,7 +7,7 @@ authenticated runtime records are not replay-derived (ADR-001). Storage is
 SQLite implementing the PostgreSQL-first relational adjacency design (ADR-011).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 SCHEMA_VERSIONS = {
     "anchor": "cce.anchor.v1",

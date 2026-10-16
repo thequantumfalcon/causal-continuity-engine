@@ -104,7 +104,7 @@ from .store import (
 )
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
-PROCESSOR_VERSION = "cce-processor/1.9.0"
+PROCESSOR_VERSION = "cce-processor/1.10.0"
 _AUTHORITY_SCHEMA = "cce.authority-decision.v1"
 _AUTHORITY_SOURCE = "cce:authority-decision:v1"
 _AUTHORITY_EXTRACTOR = "cce.authority-decision"
