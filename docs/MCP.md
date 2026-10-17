@@ -1,9 +1,13 @@
 # Using CCE from an MCP client
 
 This guide walks through connecting a coding agent to a CCE project over the
-Model Context Protocol, end to end, on a real repository. Every command and
-every output below was run against this repository's own `main` on
-2026-09-24 with the published 0.2.0 wheel; nothing here is hypothetical.
+Model Context Protocol, end to end, on a real repository. Every `cce-engine`
+command and the MCP client session below were re-run on 2026-10-17 with the
+published 0.4.0 wheel, on a copy of this repository's `main`, using synthetic
+webhook payloads in place of the real GitHub objects. The dogfood observations
+quoted in sections 3 and 4 (six extracted claims, one confirmed constraint) are
+from the original run on 2026-09-24 with the 0.2.0 wheel and the real issue,
+pull request, push and check-run objects. Nothing here is hypothetical.
 
 The short version: install the package, initialize a project inside your
 repository, feed it real events, confirm the proposals you actually mean,
@@ -36,14 +40,20 @@ refusal rather than a partial view. Never delete a sidecar to force admission.
 
 ```bash
 python3 -m venv ~/cce-env
-~/cce-env/bin/pip install "causal-continuity-engine==0.2.0"
+~/cce-env/bin/pip install "causal-continuity-engine==0.4.0"
+~/cce-env/bin/pip install pytest   # only because the example verifier in step 5 runs pytest
 ~/cce-env/bin/cce-engine --help
 ```
 
-Verify the wheel you received against the release: the 0.2.0 wheel is
-`sha256:8e3d3dee3d62af1ec246f74113bc1387d8becb9bef59940b3cbefda4a0c86421`
-(`pip download --no-deps --only-binary=:all: causal-continuity-engine==0.2.0`,
-then `shasum -a 256`). The same digest is on the GitHub release and on PyPI.
+Verify the wheel you received against the release: the 0.4.0 wheel is
+`sha256:0f68b49e397cb6548106bf294add252c227b279ecb75fa03252a6a056461a360`
+(`pip download --no-deps --only-binary=:all: causal-continuity-engine==0.4.0`,
+then `shasum -a 256`). PyPI lists the same digest; compare it with the
+checksum manifest attached to the GitHub release as well.
+
+The pytest install is not a CCE dependency. Without it, the step 5 verifier
+cannot run and `verify` reports `inconclusive`, which is CCE refusing to count
+a check that never ran, not a pass.
 
 Use the environment's absolute `cce-engine` path in every client configuration
 below; an editor does not inherit your shell's activation or working directory.
@@ -56,7 +66,7 @@ Bind the project to the repository's immutable numeric id, not its name:
 cd /path/to/your/repo
 REPO_ID=$(gh api repos/OWNER/NAME --jq .id)
 ~/cce-env/bin/cce-engine --dir . init --repo OWNER/NAME --repo-id "$REPO_ID"
-# initialized CCE project prj_... (capture: redacted); local API credentials are in .cce/secrets
+# initialized CCE project prj_... (capture: redacted); local API credentials are in <repo>/.cce/secrets
 ```
 
 `.cce/` holds the store and three local secrets. It is in this repository's
@@ -82,8 +92,8 @@ evidence, trusted only if policy lists that App id.
 
 Expect noise. From two issues and one pull request of real prose, the
 extractor proposed six claims: two genuine invariants and four sentences that
-merely contain "must" or "never". That is why 0.2.0 makes every extracted
-claim a proposal.
+merely contain "must" or "never". That is why, since 0.2.0, every extracted
+claim is a proposal.
 
 ## 4. Confirm only what you mean
 
@@ -214,14 +224,14 @@ Any MCP client, generic form:
 
 On Windows use `Scripts/cce-engine.exe` and forward slashes.
 
-What the reference SDK client (`mcp` 1.29.0) saw against the dogfood store:
+What the reference SDK client (`mcp` 1.29.0) saw against the re-run store:
 
 ```text
-protocol 2025-11-25 | server causal-continuity-engine 0.2.0
+protocol 2025-11-25 | server causal-continuity-engine 0.4.0
 tools ['continuity_check', 'list_assumptions', 'list_invalidations', 'resume_packet']
 continuity_check  isError False  {"conclusion": "success", "open_invalidations": [], ...}
 list_assumptions  isError False  "No active assumptions."
-list_invalidations isError False
+list_invalidations isError False  "No open invalidations."
 resume_packet     isError False  "# CCE Resume Packet ... Scope: {"kind": "project"} | complete: True ..."
 ```
 
@@ -243,7 +253,7 @@ jobs:
     steps:
       - run: |
           python3 -m venv "$RUNNER_TEMP/cce"
-          "$RUNNER_TEMP/cce/bin/pip" install --only-binary=:all: "causal-continuity-engine==0.2.0"
+          "$RUNNER_TEMP/cce/bin/pip" install --only-binary=:all: "causal-continuity-engine==0.4.0"
           cd /srv/projects/my-repo                       # the directory that contains .cce/
           "$RUNNER_TEMP/cce/bin/cce-engine" --dir . resume --format json > /dev/null   # compose, then check
           "$RUNNER_TEMP/cce/bin/cce-engine" --dir . --json check
