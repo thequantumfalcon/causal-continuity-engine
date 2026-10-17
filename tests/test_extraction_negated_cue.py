@@ -90,4 +90,4 @@ def test_ingest_of_a_negated_cue_records_no_proposal():
 def test_extractor_and_processor_identities_advance_with_the_rule():
     assert EXTRACTOR_VERSION == "1.5.0"
     assert DeterministicExtractor.version == "1.5.0"
-    assert PROCESSOR_VERSION == "cce-processor/1.10.0"
+    assert PROCESSOR_VERSION == "cce-processor/1.11.0"

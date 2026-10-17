@@ -151,6 +151,7 @@ def test_owner_negated_cue_raises_a_notice_and_no_proposal(engine):
 @pytest.mark.parametrize("association,expected", [
     ("OWNER", 1), ("MEMBER", 1), ("COLLABORATOR", 1),
     ("CONTRIBUTOR", 0), ("NONE", 0), ("FIRST_TIME_CONTRIBUTOR", 0),
+    ("owner", 0), ("Member", 0), ("OWNER ", 0),            # not GitHub spellings (ADR-134)
 ])
 def test_only_trusted_authors_raise_a_notice(engine, association, expected):
     _confirmed_assumption(engine)

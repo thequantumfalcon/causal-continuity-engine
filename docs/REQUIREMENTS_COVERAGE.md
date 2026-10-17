@@ -1,7 +1,7 @@
 # Requirement Coverage — CCE reference implementation
 
-This matrix describes version 0.3.0. It is a narrative status record, not a
-claim that artifact or platform gates have run. Processor 1.10.0 refuses older
+This matrix describes the local 0.4.0 candidate, not a published release or a
+claim that its artifact/platform gates have run. Processor 1.11.0 refuses older
 projections: preserve those stores, re-ingest retained inputs into a distinct
 current store/project, then review and explicitly confirm new proposals.
 Payloads already removed by retention cannot be reconstructed (ADR-114, ADR-126).
@@ -57,7 +57,7 @@ Status legend:
 | AD-003 | implemented | scope/criticality/confidence/authority/valid-time on every node |
 | AD-004 | implemented | current prose proposals use `cce.proposal-id.v1`, binding tenant/project, canonical source event, source identity/field, proposed kind and exact retained text; confirmation has a distinct canonical-decision identity. Older normalized statement identities retain compatibility checks but are not current proposal authority (ADR-126; `test_authority_extraction.py`, `test_authority_producer.py`). |
 | AD-005 | implemented | status resolution is versioned but cannot grant prose authority. Owner-local `record_authority_decision` and `authority --request FILE` provide closed confirm/revoke/replace_scope/confirm_invalidation/reject_invalidation operations with canonical operand checks; HTTP/MCP expose no confirmation producer (ADR-126). |
-| AD-006 | implemented | source typing and injection quarantine precede extraction. All prose, including OWNER and human-decision prose, proposes rather than mandates; explicit local confirmation is required (`test_authority_extraction.py`, `test_authority_consumers.py`; ADR-126). |
+| AD-006 | implemented | source typing and injection quarantine precede extraction. All prose, including OWNER and human-decision prose, proposes rather than mandates; explicit local confirmation is required (`test_authority_extraction.py`, `test_authority_consumers.py`; ADR-126). A GitHub association types text as maintainer intent only in GitHub's exact spelling, as command authorization compares it (`test_exact_author_association.py`; ADR-134). |
 | AD-007 | implemented | calibration by source authority + abstention gate |
 | AD-008 | partial | assumes/depends_on edges supported; automatic linking only where extraction sees both ends |
 

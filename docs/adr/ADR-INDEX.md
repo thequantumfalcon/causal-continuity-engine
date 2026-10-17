@@ -3634,3 +3634,57 @@ not make it. A trusted author's stray "not" raises a notice that blocks
 completion of touched tasks until rejected, which is the human gate working.
 The packet summary shows the target and recommended action, not the sentence;
 `invalidations --explain` and MCP `list_invalidations` show the reason.
+
+## ADR-134 — A GitHub author association is trusted only in GitHub's exact spelling
+
+**Status.** Accepted for the local next-version candidate, 2026-10-16;
+not published.
+
+**Context.** `text_authority` upper-cased `author_association` before
+comparing it with OWNER, MEMBER and COLLABORATOR, and a test pinned that
+`owner` counted as maintainer intent. Command authorization (GHI-005)
+compared the same field exactly, so one payload could be trusted for its prose
+and refused for its command. A reproduction run of the ADR-133 notice showed
+the effect: a comment whose association was `owner` raised a
+`contradictory_evidence` notice, while `OWNER ` with a trailing space did not.
+GitHub sends only upper-case association values, so the lenient path served
+no webhook input; it only widened what a hand-made or replayed payload could
+claim.
+
+**Decision.** `text_authority` returns `human_intent` only when the
+association is a string exactly equal to OWNER, MEMBER or COLLABORATOR; every
+other value, including other spellings of those three, is
+`untrusted_content`. Text authority and command authorization now compare the
+same set the same way. Untrusted text is still extracted, screened and
+proposed as before; it cannot mandate, cannot raise an ADR-133 notice and
+cannot run a command.
+
+**Alternatives.** Documenting the case-insensitive comparison would keep two
+answers to one question in the engine. Normalizing at ingestion would rewrite
+a retained source field. Refusing the whole event for a non-GitHub spelling
+would turn a typing decision into a rejection of evidence that untrusted
+typing already contains.
+
+**Compatibility.** Replay re-normalizes each retained payload, so a retained
+event whose association differs from GitHub's spelling now types differently.
+The processor identity advances from `cce-processor/1.10.0` to
+`cce-processor/1.11.0`; `cce-deterministic` stays 1.5.0 because extraction is
+unchanged. Stores projected by 1.10.0 or earlier are refused under ADR-114:
+preserve them with their SQLite sidecars and re-ingest retained sources into a
+distinct new store/project, then review and confirm its proposals. Webhook
+data from GitHub projects identically.
+
+**Verification.** The three GitHub spellings type issue, comment, pull-request
+and review text as `human_intent`; ten other spellings, among them `owner`,
+`Member` and `OWNER ` with a trailing space, type all four as
+`untrusted_content`, and non-text values are untrusted without raising. Text
+trust and command authorization agree on every tested value. `owner`,
+`Member` and `OWNER ` comments raise no ADR-133 notice while the upper-case
+associations still raise one. The processor identity is pinned. The deciding
+tests fail against processor 1.10.0.
+
+**Limit.** This decides how a value is compared, not whether it is true.
+Anyone who can submit a payload chooses its association: HTTP ingestion
+trusts it only after webhook signature verification, and CLI ingestion is
+owner-local. Exact comparison removes a spelling GitHub never sends; it does
+not authenticate the author.
