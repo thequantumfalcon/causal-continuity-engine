@@ -833,6 +833,18 @@ a guard on commands that delegate to a program named in their arguments. But a
 test must import the code under test, so the subject can rewrite the runner's
 report. That is what value-oracle checks and mutation probes exist for.
 
+**A dependency-manifest push can invalidate assumptions it has nothing to do with.**
+Automatic `dependency_drift` invalidation fires on dependency vocabulary, not on the dependency
+a push actually changes. Reproduced: four confirmed assumptions, one of them about `requests`,
+and a push changing `requirements.txt` with the message "bump requests to 3.0" invalidated all
+four (precision 1/4), so `check` reported failure. A stricter rule that requires the push to name
+the dependency is being reworked. Until it lands, read a drift invalidation after a dependency
+change as a question to answer, not a verdict.
+
+**Nothing creates `assumes` or `depends_on` edges yet.** The ontology declares them and
+invalidation traverses them, but no ingest path, CLI command or MCP tool produces them, so in
+practice invalidation does not propagate along them.
+
 **ContinuityBench is self-scored on curated deterministic fixtures.** All eleven
 scenarios pass and all six metrics are at target, which demonstrates mechanism
 correctness. It is not evidence about real repositories, and it is not a
