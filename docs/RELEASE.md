@@ -87,7 +87,7 @@ omits `date-released`.
    and its negative fixtures; the test gate fails otherwise.
 2. Regenerate `docs/CAPABILITIES.md` only with
    `python -m causal_continuity_engine.capabilities --write`.
-3. Run `python .github/scripts/check_release_metadata.py --release v0.4.0`,
+3. Run `python .github/scripts/check_release_metadata.py --release v0.4.1`,
    then `just setup` and `just release` from a clean checkout.
    Release-mode metadata checking refuses while the heading is undated.
 4. Drive the MCP server by hand from the built wheel with a real client, and

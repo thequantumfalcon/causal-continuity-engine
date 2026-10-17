@@ -82,6 +82,30 @@ def _run_independent_verifier(proof_path: Path, *, key_hex: str | None) -> str:
     return verdict
 
 
+def _confirmed_task(engine: Engine, title: str, key: str) -> str:
+    """Record a task the only way 0.2.0 and later accept one: as owner authority.
+
+    A raw `graph.put_node` task has no confirmation origin, so `attest_action`
+    refuses it ("confirmation has no canonical origin"). A human decision
+    proposes the task; the owner confirms that exact proposal; the confirmation
+    is the task (#139).
+    """
+    report = engine.ingest_human_decision(
+        PROJECT, actor="quickstart-owner", decision=f"- [ ] {title}",
+        request_id=f"quickstart-propose-{key}")
+    (proposal,) = [
+        candidate for candidate in (
+            engine.authority_proposal(PROJECT, item["node_id"])
+            for item in report["created"] if item["kind"] == "claim")
+        if candidate["proposed_kind"] == "task"]
+    receipt = engine.record_authority_decision(PROJECT, {
+        "operation": "confirm", "request_id": f"quickstart-confirm-{key}",
+        "tenant_id": TENANT, "project_id": PROJECT,
+        **proposal, "authority_scope": {"kind": "global"},
+    })
+    return receipt["confirmation_id"]
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary)
@@ -120,11 +144,11 @@ def main() -> int:
         print(f"   project {PROJECT}, autonomy granted to level 2")
 
         try:
-            _say("2. Record a task")
-            task = engine.graph.put_node(
-                entity_type="task", tenant_id=TENANT, project_id=PROJECT,
-                status="open", data={"title": "exporter must stream rows"})
-            print(f"   task {task.id}: {task['data']['title']}")
+            _say("2. Record a task",
+                 "proposed by a human decision, then confirmed by the owner")
+            task_id = _confirmed_task(engine, "make the exporter stream rows", "first")
+            task = engine.graph.get(task_id, tenant_id=TENANT, project_id=PROJECT)
+            print(f"   task {task_id}: {task['data']['statement']}")
 
             _say("3. Mint a proof by actually running the pinned verifier")
             proof = engine.attest_action(
@@ -132,7 +156,7 @@ def main() -> int:
                 intent_statement="exporter streams rows",
                 actor={"agent": "quickstart", "model": "n/a"},
                 action_type="run_verifier",
-                continuity={"task_ids": [task.id]})
+                continuity={"task_ids": [task_id]})
             print(f"   proof {proof['proof_id']}: {proof['status']}")
             for verification in proof["verifications"]:
                 print(f"     {verification['verifier']}:"
@@ -147,7 +171,7 @@ def main() -> int:
 
             _say("4. Complete the task through the gate")
             completed = engine.complete_task(
-                PROJECT, task.id, proof=proof, actor="quickstart")
+                PROJECT, task_id, proof=proof, actor="quickstart")
             print(f"   task status: {completed['status']}")
 
             _say("5. Verify the envelope with the independent verifier",
@@ -165,12 +189,10 @@ def main() -> int:
             _say("6. Try the same proof on a different task",
                  "a signature says the record is authentic, not what it is"
                  " evidence for")
-            other = engine.graph.put_node(
-                entity_type="task", tenant_id=TENANT, project_id=PROJECT,
-                status="open", data={"title": "a different task"})
+            other_id = _confirmed_task(engine, "a different task", "second")
             try:
                 engine.complete_task(
-                    PROJECT, other.id, proof=proof, actor="quickstart")
+                    PROJECT, other_id, proof=proof, actor="quickstart")
             except PermissionError as exc:
                 print(f"   refused, as it must be:\n     {exc}")
             else:
