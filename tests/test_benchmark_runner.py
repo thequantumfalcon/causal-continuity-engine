@@ -102,3 +102,34 @@ def test_a_nonpassing_metric_gate_makes_the_process_fail(monkeypatch, verdict):
         runner.main()
 
     assert caught.value.code == 1
+
+
+def test_the_human_report_prints_raw_counts_beside_each_percentage(monkeypatch, capsys):
+    """A 100% over one item and over a hundred are different evidence."""
+    def scenario():
+        return {"name": "counted", "checks": [("did the thing", True)],
+                "metrics": {"invalidation_precision": 0.5},
+                "counts": {"invalidation_precision": [1, 2]}}
+    scenario.__name__ = "counted"
+    monkeypatch.setattr(runner, "ALL_SCENARIOS", [scenario])
+    monkeypatch.setattr(runner.sys, "argv", ["continuitybench"])
+    with pytest.raises(SystemExit):
+        runner.main()
+    out = capsys.readouterr().out
+    assert "metric invalidation_precision: 50.00% (1/2)" in out
+    assert "from 1 scenario(s)" in out
+
+
+def test_every_shipped_count_matches_its_ratio():
+    """Each real scenario's counts reproduce the ratio it reports; only the
+    packet's own evidence_coverage ratio is uncounted."""
+    report = runner.run()
+    for result in report["scenarios"]:
+        for metric, value in result["metrics"].items():
+            count = result.get("counts", {}).get(metric)
+            if metric == "evidence_coverage":
+                assert count is None
+                continue
+            assert count is not None, (result["name"], metric)
+            numerator, denominator = count
+            assert denominator > 0 and abs(numerator / denominator - value) < 1e-12
