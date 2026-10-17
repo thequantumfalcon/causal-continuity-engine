@@ -93,7 +93,7 @@ class TestNormalize:
 
     def test_text_authority_helper(self):
         assert text_authority("OWNER") == "human_intent"
-        assert text_authority("owner") == "human_intent"
+        assert text_authority("owner") == "untrusted_content"
         assert text_authority("NONE") == "untrusted_content"
         assert text_authority(None) == "untrusted_content"
 

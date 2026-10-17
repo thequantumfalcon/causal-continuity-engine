@@ -65,10 +65,12 @@ def text_authority(author_association: str | None) -> str:
     """Source authority for text authored by a GitHub account.
 
     An issue or comment body is evidence about intent, never policy — and
-    whose intent it is decides how much weight it carries.
+    whose intent it is decides how much weight it carries. GitHub sends the
+    association in upper case; any other spelling is not a GitHub value and
+    stays untrusted, exactly as command authorization compares it (ADR-134).
     """
     if (isinstance(author_association, str)
-            and author_association.upper() in TRUSTED_ASSOCIATIONS):
+            and author_association in TRUSTED_ASSOCIATIONS):
         return "human_intent"
     return "untrusted_content"
 

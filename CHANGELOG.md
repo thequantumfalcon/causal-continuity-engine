@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No unreleased changes.
+The local 0.4.0 candidate is described below. It is not yet released.
+
+## 0.4.0 — not yet released
+
+Local next-version preparation; no release date, published artifact or completed
+platform-validation claim is implied by this entry.
+
+### Changed
+
+- **Breaking: processor compatibility advances to `cce-processor/1.11.0`;
+  extraction stays `cce-deterministic/1.5.0`.** Preserve older projected stores
+  and their SQLite sidecars after stopping writers. Re-ingest retained sources
+  into a separate new store/project and review its proposals before confirming
+  them. Older projections do not upgrade in place; erased source payloads
+  cannot be reconstructed by replay (ADR-114, ADR-134).
+
+### Fixed
+
+- **A GitHub author association is trusted only in GitHub's exact spelling.**
+  Text authority upper-cased the association before comparing it, so a payload
+  carrying `owner` or `Member` was read as maintainer intent and could raise an
+  ADR-133 notice, while command authorization compared exactly and refused the
+  same value. Both now accept only `OWNER`, `MEMBER` and `COLLABORATOR`; any
+  other spelling is untrusted content. GitHub itself sends only the upper-case
+  values, so webhook data is unaffected (ADR-134).
 
 ## 0.3.0 — 2026-10-16
 
