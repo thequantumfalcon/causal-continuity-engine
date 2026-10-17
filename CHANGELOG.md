@@ -14,6 +14,15 @@ The local 0.4.1 candidate is described below. It is not yet released.
 Local next-version preparation; no release date, published artifact or completed
 platform-validation claim is implied by this entry.
 
+### Changed
+
+- **ContinuityBench prints raw counts beside every percentage.** Each
+  scenario's metric line shows its numerator and denominator (the packet's own
+  evidence-coverage ratio is marked as such), and each gated average states how
+  many scenarios it rests on, so a 100% over one item reads as what it is.
+  `--json` output gains per-scenario `counts` and a run-level `metric_sources`;
+  gates, targets and scenario checks are unchanged.
+
 ### Fixed
 
 - **`examples/quickstart.py` runs again.** Since tasks became owner-confirmed
