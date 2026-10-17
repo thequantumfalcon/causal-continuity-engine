@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No unreleased changes.
+The local 0.4.1 candidate is described below. It is not yet released.
+
+## 0.4.1 — not yet released
+
+Local next-version preparation; no release date, published artifact or completed
+platform-validation claim is implied by this entry.
+
+### Fixed
+
+- **`examples/quickstart.py` runs again.** Since tasks became owner-confirmed
+  authority (0.2.0) it minted its task with a raw graph write, and
+  `attest_action` refused it ("confirmation has no canonical origin"). It now
+  proposes the task through a human decision and confirms it, and
+  `tests/test_quickstart_example.py` runs the example end to end, so the suite
+  fails if it breaks again.
 
 ## 0.4.0 — 2026-10-17
 
