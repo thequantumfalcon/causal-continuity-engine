@@ -110,9 +110,11 @@ than the official SDK, which would pull in more than twenty packages.
 
 ## Quickstart
 
-The installation commands below install the package PyPI currently serves; to
-run this exact checkout, including its authority and v2 packet examples, use
-the editable installation that follows.
+Install either the published package (the next blocks) or this checkout (the
+editable installation further down), not both: one virtual environment is
+enough. The published package runs this quickstart when this checkout is the
+release PyPI serves; for `main` between releases, or your own changes, use the
+editable installation.
 
 Python 3.11 or newer is required; the engine has no third-party runtime
 dependencies. Choose the block for your platform and run it in a new working
@@ -163,13 +165,20 @@ python -m pip install -e .
 ```
 
 On Windows, use the PowerShell environment-creation and activation commands
-above, then `python -m pip install -e .` from the checkout.
+above, then `python -m pip install -e .` from the checkout. Keep that
+environment active and `cd` back to your new working directory before the steps
+below, so `cce-demo` and its secrets are not created inside the checkout.
 
 The editable install is enough for the engine but not for the test suite,
 which fails at collection without the hash-locked development tools. Install
 them with `python -m pip install -r requirements-dev.lock` (or `just setup`),
-then run `python -m pytest tests -q`. The full suite can take around fifteen
-minutes.
+then run `python -m pytest tests` from the checkout. The project configuration
+already adds `-q`; adding another hides the closing pass/skip summary. The full
+suite can take around fifteen minutes. A few tests skip when the environment
+lacks what they exercise; `-rs` lists each skip with its reason. To see the
+completion gates described below exercised, run
+`python -m pytest tests/test_instrument_validation.py`: it plants each defect a
+gate exists to catch and checks that the named gate catches it.
 
 Global flags come **before** the subcommand: `cce-engine --dir <path> <subcommand>`.
 
@@ -371,6 +380,8 @@ Response: cli-markdown | max bytes: 131072
 The full human view renders each schema field or declares it as metadata kept
 in canonical JSON. Use `resume --format json` for those complete canonical
 field values, including signatures, digests and the state-basis object.
+Recent context lists retrieved nodes by their text; an event node has none, so
+it appears by its id alone (`-  (evt_...)`).
 
 The named verification gap is expected on a fresh project: proof is required
 by default, but CCE cannot safely invent a project-specific verifier
@@ -687,10 +698,17 @@ Published v1 schemas remain historical contracts; v1 proofs are not current
 completion evidence. The v2 schema URLs are bound to the `v0.2.0` release tag,
 and the release workflow verifies that each serves the checked-out bytes.
 
+`verify_proof.py` is a single file. Installing the published package places a
+copy under the environment's `share/causal-continuity-engine/audit/verifiers/`;
+with an editable install, use the checkout's `verifiers/verify_proof.py`. From
+the project directory:
+
 ```bash
 # The complete configured verifier set must already be pinned in project policy.
 cce-engine --dir . --json verify > proof.json
-python verifiers/verify_proof.py proof.json
+VERIFY_PROOF="$VIRTUAL_ENV/share/causal-continuity-engine/audit/verifiers/verify_proof.py"
+# editable install: VERIFY_PROOF=/absolute/path/to/this/local/checkout/verifiers/verify_proof.py
+python "$VERIFY_PROOF" proof.json
 ```
 
 ```text
@@ -698,6 +716,8 @@ UNVERIFIED means nothing was established, not that nothing is wrong.
 An hmac-sha256 envelope needs --hmac-key-hex; a lamport envelope needs --fingerprint
 from a source other than the envelope itself.
 UNVERIFIED C1:P C2:S C3:S C4:P C5:S  proof.json
+
+1 UNVERIFIED
 ```
 
 **That verdict is the honest one, and it is the point.** `hmac-sha256` is not
@@ -705,10 +725,15 @@ a third-party-verifiable scheme at all. Without the secret, an untouched
 envelope and a resealed forgery are indistinguishable, so the verifier reports
 `UNVERIFIED` — not `VALID` — and exits 2. A verifier that returned `VALID`
 there would be telling a stranger that a body a forger rewrote and resealed is
-sound. Supply the key and the same envelope verifies:
+sound. Supply the key and the same envelope verifies. For `hmac-sha256` the key
+is the project's local signing key, `.cce/secrets/signing.key`, given as hex.
+Anyone holding it can also seal a forgery, so this is the operator's own check,
+not a stranger's. The command below puts the key on the command line; run it
+only on a machine you control:
 
 ```bash
-python verifiers/verify_proof.py proof.json --hmac-key-hex <hex>
+python "$VERIFY_PROOF" proof.json \
+  --hmac-key-hex "$(python -c "import pathlib; print(pathlib.Path('.cce/secrets/signing.key').read_bytes().hex())")"
 # VALID      C1:P C2:P C3:P C4:P C5:S  proof.json
 ```
 
@@ -718,7 +743,7 @@ Reaching `VALID` as a stranger requires the fingerprint from somewhere other
 than the artifact:
 
 ```bash
-python verifiers/verify_proof.py proof.json --fingerprint sha256:...
+python "$VERIFY_PROOF" proof.json --fingerprint sha256:...
 ```
 
 The verifier's input boundary is deliberately finite. One invocation accepts
@@ -743,8 +768,9 @@ and `INVALID` dominates — a batch containing both an `INVALID` and an
 Check that the reference implementation still agrees with the corpus:
 
 ```bash
+# from the checkout
 python vectors/generate.py --check
-# reference agrees with every committed vector
+# reference agrees with all 50 committed vectors
 ```
 
 ## What this does not do
