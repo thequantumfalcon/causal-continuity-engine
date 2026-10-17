@@ -133,8 +133,15 @@ def run() -> dict:
                 gates[name] = "PASS" if actual <= target else "FAIL"
             else:
                 gates[name] = "PASS" if actual >= target else "FAIL"
+        # How many scenarios each average rests on (the run-level rate counts
+        # every scenario).
+        source_metric = {"critical_invalidation_recall": "invalidation_recall"}
+        metric_sources = {
+            name: (len(results) if name == "continuity_success_rate" else sum(
+                1 for r in results if source_metric.get(name, name) in r["metrics"]))
+            for name in metrics}
         return {"scenarios": results, "metrics": metrics, "gates": gates,
-                "total_seconds": total_seconds}
+                "metric_sources": metric_sources, "total_seconds": total_seconds}
     finally:
         _cleanup_workdirs()
 
@@ -154,15 +161,24 @@ def main():
                 # Keep the human report encodable on Windows consoles whose
                 # default code page cannot represent checkmark glyphs.
                 print(f"    {'OK' if ok else 'XX'} {desc}")
+            # Raw counts beside every percentage: a 100% over one item and a
+            # 100% over a hundred are different evidence, and the table below
+            # averages per-scenario ratios.
+            for metric, value in r.get("metrics", {}).items():
+                count = r.get("counts", {}).get(metric)
+                shown = (f"{count[0]}/{count[1]}" if count
+                         else "ratio reported by the packet")
+                print(f"    metric {metric}: {value:.2%} ({shown})")
         print("\nMetrics vs MVP targets")
         print("=" * 64)
         for name, value in report["metrics"].items():
             target = MVP_TARGETS.get(name)
             gate = report["gates"].get(name, "")
             shown = "n/a" if value is None else f"{value:.2%}"
+            sources = report.get("metric_sources", {}).get(name, 0)
             print(f"{name:32s} {shown:>8s}  target "
                   f"{'<=' if name == 'false_completion_rate' else '>='}"
-                  f" {target:.0%}  [{gate}]")
+                  f" {target:.0%}  [{gate}]  from {sources} scenario(s)")
         print(f"\ntotal: {report['total_seconds']}s")
     failed = [r["name"] for r in report["scenarios"] if not r["passed"]]
     failed_gates = [name for name, verdict in report["gates"].items()
