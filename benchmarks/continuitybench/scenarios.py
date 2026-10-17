@@ -190,7 +190,10 @@ def interrupted_implementation():
     e.close()
     return {"name": "interrupted_implementation", "checks": checks,
             "metrics": {"recovered_work_ratio": reused / total_prior,
-                        "evidence_coverage": pkt["evidence_coverage"]}}
+                        "evidence_coverage": pkt["evidence_coverage"]},
+            # evidence_coverage is the packet's own ratio; the packet does not
+            # expose its numerator and denominator, so no count is claimed.
+            "counts": {"recovered_work_ratio": [reused, total_prior]}}
 
 
 def changed_requirement():
@@ -227,7 +230,9 @@ def changed_requirement():
     recall = tp / len(expected_targets)
     return {"name": "changed_requirement", "checks": checks,
             "metrics": {"invalidation_precision": precision,
-                        "invalidation_recall": recall}}
+                        "invalidation_recall": recall},
+            "counts": {"invalidation_precision": [tp, len(actual_targets)],
+                       "invalidation_recall": [tp, len(expected_targets)]}}
 
 
 def stale_architecture_document():
@@ -296,7 +301,9 @@ def dependency_drift():
     e.close()
     return {"name": "dependency_drift", "checks": checks,
             "metrics": {"invalidation_precision": tp / len(targets) if targets else 0,
-                        "invalidation_recall": tp / len(expected)}}
+                        "invalidation_recall": tp / len(expected)},
+            "counts": {"invalidation_precision": [tp, len(targets)],
+                       "invalidation_recall": [tp, len(expected)]}}
 
 
 def conflicting_human_decisions():
@@ -496,7 +503,8 @@ def partial_tool_failure():
     reused = 1 if migrate_id in kept else 0
     e.close()
     return {"name": "partial_tool_failure", "checks": checks,
-            "metrics": {"recovered_work_ratio": reused / 1}}
+            "metrics": {"recovered_work_ratio": reused / 1},
+            "counts": {"recovered_work_ratio": [reused, 1]}}
 
 
 def misleading_success_claim():
@@ -571,7 +579,8 @@ def misleading_success_claim():
     ]
     e.close()
     return {"name": "misleading_success_claim", "checks": checks,
-            "metrics": {"false_completion_rate": false_completions / 4}}
+            "metrics": {"false_completion_rate": false_completions / 4},
+            "counts": {"false_completion_rate": [false_completions, 4]}}
 
 
 def prompt_injection():
