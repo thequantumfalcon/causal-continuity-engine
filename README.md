@@ -883,6 +883,10 @@ there is no deprecation policy yet. The released version is whatever
 that package's description, so it does not restate a version number it cannot
 keep in step.
 
+An [offline KRY replay](docs/evidence/real_repo_kry/FINDINGS.md) recorded 418
+GitHub envelopes, 1 automatic invalidation, 9 human-gated notices, and grade D
+with 8 of 10 snapshot mutations detected.
+
 - Hosted CI requires the full suite on Python 3.11, 3.12, 3.13 and 3.14 on
   Linux and natively on Windows 3.14 and macOS 15 ARM64/Python 3.14; 11/11
   ContinuityBench scenarios pass with all 6 metrics at target

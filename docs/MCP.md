@@ -181,6 +181,13 @@ cce-engine --dir . verify
 runs the negative control and expects it to fail, and grades the evidence. The
 claimant cannot pick the command.
 
+For JS-dependent tests, Node must be discoverable in the verifier's sandbox
+PATH or the tests may skip. CCE 0.5.0 uses a fixed PATH derived from absolute
+`os.defpath` entries, not the caller's shell PATH; there is no policy PATH
+override. Check skips as well as the exit code: they can leave declared
+artifact mutations undetected and lower the evidence grade, as the
+[KRY replay](evidence/real_repo_kry/FINDINGS.md) demonstrates.
+
 ## 6. Compose a packet, then check
 
 ```bash
