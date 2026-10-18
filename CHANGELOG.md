@@ -25,6 +25,17 @@ platform-validation claim is implied by this entry.
 
 ### Fixed
 
+- **Open dependency notices also hold tasks linked after the notice.**
+  Completion checks current typed dependency paths as well as recorded impacts;
+  incomplete bounded traversal refuses completion until the notice is resolved.
+  Rejected or resolved notices release the hold (ADR-135 addendum).
+
+- **Completion refuses an explicitly uncertain revision frontier.** An
+  out-of-order tracked push cannot be bypassed with a fresh proof, optional
+  proof policy, or an exact completion retry. Projects that have never tracked
+  a revision remain completable; an admitted push clears the uncertainty
+  through the existing frontier update (ADR-135 addendum).
+
 - **Dependency drift names the dependency before invalidating automatically.**
   A changed manifest must match an assumption's scope paths, or the subject of a
   commit changing a manifest must name a bumped package in the assumption.
@@ -33,6 +44,27 @@ platform-validation claim is implied by this entry.
   notice that blocks completion of touched tasks pending review. Rejections bind
   to the push's commit or `after` SHA, so rejecting one notice cannot silence a
   later push (ADR-135).
+
+- **Lockfile-only and NuGet bumps raise dependency control state.** Watch
+  `uv.lock`, `yarn.lock`, `pnpm-lock.yaml`, NuGet project/package manifests,
+  and `Directory.Packages.props` / `Directory.Build.props`. Named bumps can
+  invalidate their assumptions and block dependent completion; `uv.lock`
+  uses Python package-name normalization.
+
+- **Scope paths stop at path-segment boundaries.** A scope for `packages/api/`
+  still covers its descendants, but no longer covers `packages/api-other/`.
+  Exact manifest scopes likewise exclude filenames that merely share a prefix.
+
+- **Dependency extras identify only their base package.** An assumption naming
+  `requests[socks]` no longer automatically invalidates for a bump of the separate
+  `socks` package. Valid spaces around extras, such as `requests [socks, security]`,
+  and empty extras are handled in assumptions and bump subjects. Bumps of
+  `requests` still match; vocabulary cues remain subject to human review.
+
+- **Dependabot requirement-update subjects name their package.** Recognize
+  `Update X requirement from A to B` and suffix-only requirement updates, while
+  retaining subject-only matching and excluding the common word `requirement`
+  from automatic package identity.
 
 ## 0.4.1 — 2026-10-17
 

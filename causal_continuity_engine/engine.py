@@ -3542,23 +3542,28 @@ class Engine:
 
     _MANIFESTS = re.compile(
         r"(^|/)(requirements[^/]*\.txt|pyproject\.toml|package(-lock)?\.json|"
-        r"poetry\.lock|Pipfile(\.lock)?|go\.(mod|sum)|Cargo\.(toml|lock)|"
+        r"poetry\.lock|uv\.lock|yarn\.lock|pnpm-lock\.yaml|Pipfile(\.lock)?|"
+        r"Directory\.(Packages|Build)\.props|packages\.(config|lock\.json)|"
+        r"[^/]+\.(csproj|fsproj|vbproj|nuspec)|go\.(mod|sum)|Cargo\.(toml|lock)|"
         r"Gemfile(\.lock)?|pom\.xml|build\.gradle[^/]*)$")
 
     # ADR-135: manifest paths do not identify the dependency that moved.
     # Automatic drift needs a scope hit or a package named by a bump subject;
     # vocabulary/shared words alone are questions for the owner (CI-005).
-    _DRIFT_PACKAGE_TOKEN = re.compile(r"@?[a-z0-9][a-z0-9_.@/-]*")
-    _DRIFT_NAME = r"@?[a-z0-9][a-z0-9_.@/-]*(?:\[[a-z0-9_,.-]+\])?"
+    _DRIFT_NAME = (
+        r"@?[a-z0-9][a-z0-9_.@/-]*"
+        r"(?:[ \t]*\[(?:[ \t]*[a-z0-9_.-]+(?:[ \t]*,[ \t]*[a-z0-9_.-]+)*)?[ \t]*\])?")
+    # Consume extras with the base name before normalization discards them.
+    _DRIFT_PACKAGE_TOKEN = re.compile(_DRIFT_NAME)
     _DRIFT_PYTHON_MANIFEST = re.compile(
-        r"(^|/)(requirements[^/]*\.txt|pyproject\.toml|poetry\.lock|Pipfile(\.lock)?)$")
+        r"(^|/)(requirements[^/]*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$")
     _DRIFT_BUMP = re.compile(
         r"^(?:[a-z][a-z0-9_-]*(?:\([^()\r\n]*\))?!?:\s*)?"
         r"(?:bump(?:s|ed)?|upgrad(?:e[sd]?|ing)|updat(?:e[sd]?|ing))\s+"
         r"(?:(?:dependency|dependencies|module|rust crate)\s+)?"
         r"(" + _DRIFT_NAME + r"(?:\s*(?:,\s*(?:and\s+)?|\band\s+|&\s*)"
         + _DRIFT_NAME + r")*)"
-        r"(?:\s+monorepo)?(?:\s+(?:from|to)\b|(?=\s*(?:$|\(#|in\b)))")
+        r"(?:\s+(?:monorepo|requirement))?(?:\s+(?:from|to)\b|(?=\s*(?:$|\(#|in\b)))")
     _DRIFT_VOCABULARY = frozenset((
         "dependency", "dependencies", "version", "pinned", "requires", "library", "package"))
     _DRIFT_COMMON = frozenset((
@@ -3567,8 +3572,8 @@ class Engine:
         "dependencies dependency does doing down during each either else even every file "
         "files from have having here into just like lock lockfile made major make many "
         "merge minor more most much must need never only other over patch pinned refresh "
-        "release require required requirements requires same should since some still such "
-        "than that their them then there these they this those through under until update "
+        "release require required requirement requirements requires same should since some still "
+        "such than that their them then there these they this those through under until update "
         "updated updates upgrade upgraded upgrades upon version versions very want were "
         "what when where whether which while will with within without would your package "
         "packages library libraries build main master fix fixes fixed app apps api ci cd "
@@ -3580,7 +3585,7 @@ class Engine:
     def _drift_package(token: str, *, python: bool = False) -> str:
         # Python spelling rules must not equate distinct npm package names.
         # Keep scoped names and module paths whole in either ecosystem.
-        token = token.split("[", 1)[0].strip(".").lower()
+        token = token.split("[", 1)[0].strip().strip(".").lower()
         return re.sub(r"[-_.]+", "-", token) if python and "/" not in token else token
 
     def _process_push(self, event: dict, envelope: dict, report: dict):
@@ -3780,7 +3785,8 @@ class Engine:
         for sp in scope_paths or []:
             prefix = sp.rstrip("*").rstrip("/")
             for c in changed:
-                if c == sp or (prefix and c.startswith(prefix)):
+                # Directory coverage requires a complete path segment.
+                if c == sp or (prefix and (c == prefix or c.startswith(prefix + "/"))):
                     return True
         return False
 
@@ -4689,6 +4695,13 @@ class Engine:
                 self._confirmed_task_state(project_id, task, parse_ts(utcnow()))
             except (KeyError, ValueError):
                 raise PermissionError("completion rejected: task lacks current authority") from None
+        # ADR-135: a fresh proof cannot reconcile an explicitly uncertain
+        # revision. A project that has never tracked a revision remains usable.
+        project = self._require_project(project_id)
+        if project["data"].get("revision_frontier_uncertain"):
+            raise PermissionError(
+                "completion rejected: revision trust unavailable; reconcile "
+                "the tracked revision before claiming completion")
         blocking_invalidations = self.invalidation.blocking_invalidations(
             project_id, task_id)
         if blocking_invalidations:

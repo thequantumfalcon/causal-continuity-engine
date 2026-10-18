@@ -512,9 +512,11 @@ contract is generated from the live route registry in [docs/API.md](docs/API.md)
 
 ## How it decides a task is done
 
-`complete_task` is the false-completion gate, with twenty-two independently
+`complete_task` is the false-completion gate, with twenty-three independently
 instrumented rejection paths. Authority and state guards apply even when proof
-is optional. For a new completion, any supplied proof is validated; missing
+is optional. Explicit revision-frontier uncertainty blocks completion, including
+an exact retry; a project without a tracked revision may still complete.
+For a new completion, any supplied proof is validated; missing
 proof is rejected when policy requires it:
 
 1. **The target is a task in this project.** Another entity type, tenant, or
