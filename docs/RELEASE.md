@@ -43,9 +43,9 @@ which maintainer signed.
 
 ## Prepare the tree
 
-Processor 1.11.0 and extractor 1.5.0 are not an in-place projection upgrade.
+Processor 1.12.0 and extractor 1.5.0 are not an in-place projection upgrade.
 Stop writers and preserve each complete older database with its SQLite
-sidecars, including processor 1.10.0 stores. Re-ingest retained sources into a
+sidecars, including processor 1.11.0 stores. Re-ingest retained sources into a
 distinct current store/project (ADR-114, ADR-126). Review the
 new source-event-bound proposals and explicitly confirm the intended statements
 and global or confirmed-task scopes through the local authority producer.
@@ -87,7 +87,7 @@ omits `date-released`.
    and its negative fixtures; the test gate fails otherwise.
 2. Regenerate `docs/CAPABILITIES.md` only with
    `python -m causal_continuity_engine.capabilities --write`.
-3. Run `python .github/scripts/check_release_metadata.py --release v0.4.1`,
+3. Run `python .github/scripts/check_release_metadata.py --release v0.5.0`,
    then `just setup` and `just release` from a clean checkout.
    Release-mode metadata checking refuses while the heading is undated.
 4. Drive the MCP server by hand from the built wheel with a real client, and

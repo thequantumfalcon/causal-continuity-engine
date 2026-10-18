@@ -108,14 +108,15 @@ def _release_tag_bytes(
     ).encode("utf-8")
 
 
-def test_current_metadata_is_consistent_and_dated():
+def test_current_metadata_is_consistent_and_unreleased():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT) == ("0.4.1", "2026-10-17")
+    assert metadata.check(ROOT) == ("0.5.0", None)
 
 
-def test_current_metadata_is_tag_ready():
+def test_current_metadata_cannot_be_tagged():
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT, release_tag="v0.4.1") == ("0.4.1", "2026-10-17")
+    with pytest.raises(SystemExit, match="release mode rejects a not yet released"):
+        metadata.check(ROOT, release_tag="v0.5.0")
 
 
 def test_the_processor_and_extractor_versions_are_pinned():
@@ -129,7 +130,7 @@ def test_the_processor_and_extractor_versions_are_pinned():
     from causal_continuity_engine import extraction as extraction_module
     from causal_continuity_engine.engine import PROCESSOR_VERSION
 
-    assert PROCESSOR_VERSION == "cce-processor/1.11.0"
+    assert PROCESSOR_VERSION == "cce-processor/1.12.0"
     assert extraction_module.EXTRACTOR_VERSION == "1.5.0"
 
 

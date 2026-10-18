@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No unreleased changes.
+The local 0.5.0 candidate is described below. It is not yet released.
+
+## 0.5.0 — not yet released
+
+Local next-version preparation; no release date, published artifact or completed
+platform-validation claim is implied by this entry.
+
+### Changed
+
+- **Breaking: processor compatibility advances to `cce-processor/1.12.0`;
+  extraction stays `cce-deterministic/1.5.0`.** Preserve older projected stores
+  and their SQLite sidecars after stopping writers. Re-ingest retained sources
+  into a separate new store/project and review its proposals before confirming
+  them. Older projections do not upgrade in place; erased source payloads
+  cannot be reconstructed by replay (ADR-114, ADR-135).
+
+### Fixed
+
+- **Dependency drift names the dependency before invalidating automatically.**
+  A changed manifest must match an assumption's scope paths, or the subject of a
+  commit changing a manifest must name a bumped package in the assumption.
+  Message bodies and common words do not supply package names. Dependency
+  vocabulary alone raises a human-gated
+  notice that blocks completion of touched tasks pending review. Rejections bind
+  to the push's commit or `after` SHA, so rejecting one notice cannot silence a
+  later push (ADR-135).
 
 ## 0.4.1 — 2026-10-17
 

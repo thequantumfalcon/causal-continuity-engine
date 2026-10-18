@@ -272,7 +272,7 @@ def stale_architecture_document():
 
 
 def dependency_drift():
-    """Manifest change invalidates dependent assumptions, nothing else."""
+    """Named drift applies; unrelated dependency vocabulary needs review (ADR-135)."""
     e = _engine()
     dependent = e.ingest_github(PRJ, "issues", "i1", _issue(
         1, "We assume the requests library version stays below 3."))
@@ -282,18 +282,32 @@ def dependency_drift():
                       "the requests library version stays below 3")["confirmation_id"]
     coffee_id = _confirm(e, unrelated, "assumption",
                          "the office coffee machine works")["confirmation_id"]
+    distractors = []
+    for number, statement in enumerate((
+            "the public API version stays at v2",
+            "the exporter requires UTC timestamps",
+            "the importer package only reads CSV files"), start=3):
+        report = e.ingest_github(PRJ, "issues", f"i{number}", _issue(
+            number, f"We assume {statement}."))
+        distractors.append(_confirm(e, report, "assumption", statement)["confirmation_id"])
     e.ingest_github(PRJ, "push", "p1", _push(
         [{"id": "b" * 40, "message": "bump requests to 3.0", "added": [],
           "modified": ["requirements.txt"], "removed": [],
           "timestamp": "2026-07-29T12:00:00Z"}]))
     fired = e.graph.current(PRJ, "invalidation")
-    targets = {i["data"]["target_node_id"] for i in fired}
+    targets = {i["data"]["target_node_id"] for i in fired if i["status"] == "open"}
+    pending = {i["data"]["target_node_id"] for i in fired
+               if i["status"] == "pending_confirmation"}
     expected = {dep_id}
     tp = len(targets & expected)
     checks = [
         ("dependency assumption invalidated", dep_id in targets),
-        ("unrelated assumption untouched", coffee_id not in targets
+        ("unrelated assumption untouched", coffee_id not in targets | pending
          and e.graph.get(coffee_id)["status"] in ("active", "proposed")),
+        ("realistic distractors remain active",
+         not targets & set(distractors)
+         and all(e.graph.get(node_id)["status"] == "active" for node_id in distractors)),
+        ("dependency vocabulary goes to human review", set(distractors) <= pending),
         ("invalidation explains trigger and path",
          all(i["data"].get("minimal_causal_path") and i["data"].get("reason")
              for i in fired)),
