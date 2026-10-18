@@ -3,7 +3,7 @@
 A verifier that only ever reports PASS is not evidence of anything. This file
 therefore exercises negative controls at the completion boundary.
 
-CCE's completion gate has accumulated twenty-two independent rejection paths
+CCE's completion gate has accumulated twenty-three independent rejection paths
 across repeated adversarial review rounds. Every one is exercised by a test that
 proves it CAN fire. Nothing until now proved that each fires **for the
 reason it exists** and that the others stay quiet — which matters here more
@@ -55,6 +55,7 @@ GATES = {
     "authority_conflict": "unresolved applicable authority conflict",  # obligation boundary
     "wrong_target":     "is not a task in the requested project",     # ADR-068
     "open_invalidation": "unresolved invalidation control state",       # CI-005
+    "revision_untrusted": "revision trust unavailable",               # ADR-135
     "already_complete": "is already verified",                       # ADR-074
     "quarantined":      "is quarantined",                       # ADR-050
     "not_completable":  "is not completable",                        # ADR-074
@@ -400,6 +401,35 @@ class TestEachDefectTripsItsOwnGate:
             tenant_id=engine.tenant_id, project_id=PRJ, target_node_id=asm.id,
             trigger_type="contradictory_evidence", trigger_confidence=0.95)
         assert _attempt(engine, task.id, proof) == "open_invalidation"
+        engine.close()
+
+    @pytest.mark.parametrize("confirm", [False, True])
+    def test_dependency_added_after_notice(self, tmp_path, confirm):
+        from tests.test_dependency_drift_precision import _assume, _attest, _decide, _push
+
+        engine, task, _, _ = _good(tmp_path)
+        try:
+            assumption = _assume(engine)
+            notice, = _push(engine, "refresh dependency locks")["invalidations"]
+            if confirm:
+                _decide(engine, notice, "confirm_invalidation", "confirm-notice")
+            engine.graph.put_edge(
+                edge_type="assumes", src_id=task.id, dst_id=assumption.id,
+                tenant_id=engine.tenant_id, project_id=PRJ)
+            proof = _attest(engine, task.id)
+            assert proof["status"] == "verified"
+            assert _attempt(engine, task.id, proof) == "open_invalidation"
+            assert engine.graph.get(task.id)["status"] == "open"
+        finally:
+            engine.close()
+
+    def test_revision_frontier_becomes_uncertain_after_attestation(self, tmp_path):
+        engine, task, proof, _ = _good(tmp_path)
+        engine.graph.put_node(
+            entity_type="project", tenant_id=engine.tenant_id,
+            project_id=PRJ, node_id=PRJ, data={"revision_frontier_uncertain": True})
+        assert _attempt(engine, task.id, proof) == "revision_untrusted"
+        assert engine.graph.get(task.id)["status"] == "open"
         engine.close()
 
     def test_policy_declares_no_verifiers(self, tmp_path):

@@ -3712,8 +3712,8 @@ Only the first message line is a subject; bodies and subjects of commits
 without manifest changes cannot name the bumped package. The closed grammar
 starts at the subject's beginning after an optional conventional-commit prefix
 and recognizes bump/update/upgrade forms, optional dependency/module/rust-crate
-labels, named lists and monorepo labels. PEP 503 spelling is normalized only
-for Python manifest commits; optional package extras are removed. Scoped names
+labels, named lists and monorepo or requirement suffixes. PEP 503 spelling is
+normalized only for Python manifest commits; optional package extras are removed. Scoped names
 and module paths retain punctuation and remain whole tokens. The closed
 `_DRIFT_COMMON` set is subtracted from both package names and shared words.
 
@@ -3781,3 +3781,62 @@ that grant. Confirmation retains the human-gated classification rather than
 recomputing the stronger automatic impact. Those pre-existing lifecycle
 semantics are not fixed here. Notice blocking follows the recorded typed
 graph; missing dependency edges remain a limit (ADR-089).
+
+
+### ADR-135 addendum — Completion checks dependencies recorded after the notice
+
+**Decision.** The existing unresolved-invalidation completion gate checks both
+historical impact receipts and current typed dependencies. A single bounded
+walk from the completing task follows the existing propagation edge types to
+its dependencies and checks them against each notice's target and recorded
+impacts. Adding an edge after the notice therefore cannot hide a task from
+that notice, including an edge to a historically held dependent whose original
+target edge has ended. Existing depth and node budgets bound the walk, and
+cycles are deduplicated. Exhaustion conservatively holds completion rather
+than treating a partial traversal as proof that a task is unrelated.
+Rejected and resolved notices remain outside the gate; critical notices still
+hold the whole project. No receipt, status transition, schema, or processor
+version changes; this is part of the unreleased `cce-processor/1.12.0` candidate.
+
+**Verification.** `tests/test_completion_late_dependency.py` exercises pending
+and confirmed notices with direct, transitive, and historically held late
+dependencies, depth/node exhaustion, unrelated/reversed/non-propagating edges,
+and closed notices.
+`test_dependency_added_after_notice` in `tests/test_instrument_validation.py`
+plants both notice states and identifies the existing `open_invalidation` gate
+using fresh engine attestations. Existing known-good completion stays accepted.
+
+**Limit.** Only recorded typed edges establish dependency; absent edges still
+cannot be inferred. A budget-exhausted notice may hold an unrelated task until
+review resolves the notice. Current traversal supplements the historical impact
+receipts; removing an edge does not erase a recorded hold. This check does not
+retroactively apply status changes to newly linked tasks.
+
+### Addendum — Completion and explicit revision uncertainty
+
+**Decision.** Completion refuses while the project's persisted
+`revision_frontier_uncertain` flag is set, including when a newly issued proof
+is verified, proof is optional, or the caller retries the same completed claim.
+The gate reads the flag inside the existing completion transaction, before
+claiming a proof or returning an idempotent completion. An admitted push clears
+the flag through the existing tracked-frontier update.
+
+The owner explicitly distinguishes an uncertain revision from a project that
+has never established a tracked revision: the latter may still complete. The
+aggregate continuity `trust_unavailable` flag is therefore not this gate's
+predicate; it can also describe an unstarted frontier or integrity failures.
+This keeps the existing known-good completion fixture valid without changing
+its assertions or relaxing another gate.
+
+**Verification.** `tests/test_completion_revision_trust.py` drives out-of-order
+pushes through ingestion and completion with engine-issued proofs, checks
+optional-proof and exact-retry paths, pins recovery after an admitted push,
+and retains completion before any tracked revision.
+`test_revision_frontier_becomes_uncertain_after_attestation` in the instrument
+harness plants the flag after a known-good attestation and requires the named
+`revision_untrusted` gate.
+
+**Limit.** This gate does not establish which revision is authoritative or
+reconcile rejected pushes. It does not promote all continuity-check failures
+to completion blockers. The unreleased candidate retains processor
+`cce-processor/1.12.0`.

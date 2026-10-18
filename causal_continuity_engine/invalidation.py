@@ -12,6 +12,7 @@ nodes review_required instead of blocked/invalidated.
 from __future__ import annotations
 
 import math
+from collections import deque
 
 from .core import (
     canonical_json,
@@ -21,7 +22,12 @@ from .core import (
     validate_public_identifier,
 )
 from .graph import TraversalBudgetExceeded
-from .ontology import CRITICALITY_LEVELS, IMPACT_STATES, is_valid_transition
+from .ontology import (
+    CRITICALITY_LEVELS,
+    IMPACT_STATES,
+    PROPAGATION_EDGES,
+    is_valid_transition,
+)
 
 TRIGGER_TYPES = {
     "changed_requirement",
@@ -1049,13 +1055,33 @@ class InvalidationEngine:
 
         An unresolved invalidation is control state, not merely history.  A
         later proof cannot silently price in a human confirmation that has
-        never happened.  Direct/propagated invalidations therefore follow the
-        named node, while a critical invalidation remains a project-wide
-        stop.  Resolved and rejected invalidations are absent from
+        never happened. Direct/propagated invalidations follow their recorded
+        targets and impacts through current typed dependency edges, including
+        edges added after the notice. Traversal exhaustion conservatively
+        holds completion; a critical invalidation remains a project-wide
+        stop. Resolved and rejected invalidations are absent from
         :meth:`open_invalidations` and cannot keep work blocked.
         """
+        invalidations = self.open_invalidations(project_id)
+        # Walk once from the candidate to its dependencies (ADR-135). Starting
+        # only at notice targets misses late edges to historical dependents
+        # whose original target edge has since ended, but whose hold is open.
+        ancestors = {node_id}
+        frontier = deque([(node_id, 0)]) if invalidations else deque()
+        incomplete = False
+        while frontier and not incomplete:
+            current, depth = frontier.popleft()
+            for edge in self.graph.out_edges(current, set(PROPAGATION_EDGES)):
+                dependency = edge["dst_id"]
+                if dependency in ancestors:
+                    continue
+                if depth >= self.max_depth or len(ancestors) > self.max_nodes:
+                    incomplete = True
+                    break
+                ancestors.add(dependency)
+                frontier.append((dependency, depth + 1))
         blockers = []
-        for invalidation in self.open_invalidations(project_id):
+        for invalidation in invalidations:
             data = invalidation.get("data") or {}
             touched = {
                 item.get("node_id")
@@ -1063,7 +1089,7 @@ class InvalidationEngine:
                 if isinstance(item, dict)
             }
             touched.add(data.get("target_node_id"))
-            if node_id in touched or data.get("severity") == "critical":
+            if incomplete or ancestors & touched or data.get("severity") == "critical":
                 blockers.append(invalidation)
         return blockers
 

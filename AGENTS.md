@@ -22,9 +22,9 @@ classifies it deterministically. It does not read prose for meaning; a trusted
 explicit negation of an active assumption's own wording raises a human-gated
 notice (ADR-133). When policy
 requires proof, a task cannot be marked complete without a signed proof envelope
-whose required verifiers actually ran — `Engine.complete_task` has twenty-two
+whose required verifiers actually ran — `Engine.complete_task` has twenty-three
 independently instrumented rejection gates, including current confirmed authority,
-applicable authority conflicts, unresolved invalidation control,
+applicable authority conflicts, unresolved invalidation control, explicit revision uncertainty,
 monotonic completed-state, and completable-state guards, and evidence is graded
 A–F from negative controls,
 mutation probes and determinism probes. That grade is a mechanical lower bound: it
