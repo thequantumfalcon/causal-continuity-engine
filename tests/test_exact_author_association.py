@@ -87,4 +87,4 @@ def test_text_trust_and_command_authorization_agree(association):
 
 
 def test_processor_identity_advances_with_the_rule():
-    assert PROCESSOR_VERSION == "cce-processor/1.11.0"
+    assert PROCESSOR_VERSION == "cce-processor/1.12.0"

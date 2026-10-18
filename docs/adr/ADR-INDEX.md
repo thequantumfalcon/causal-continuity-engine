@@ -3688,3 +3688,96 @@ Anyone who can submit a payload chooses its association: HTTP ingestion
 trusts it only after webhook signature verification, and CLI ingestion is
 owner-local. Exact comparison removes a spelling GitHub never sends; it does
 not authenticate the author.
+
+## ADR-135 — Dependency drift binds names and push revisions
+
+**Status.** Accepted for the local 0.5.0 candidate, 2026-10-17; not published.
+
+**Context.** On 0.4.1, a push changing `requirements.txt` with subject
+"bump requests to 3.0" automatically invalidated four confirmed assumptions:
+one about requests and three about the public API version, an exporter that
+requires UTC timestamps, and an importer package. Automatic precision was
+1/4: dependency vocabulary and shared words were treated as evidence that
+each assumption's dependency changed. The earlier unmerged drift design
+made vocabulary matches human-gated but suppressed rejected notices by
+manifest list and cue words. A rejection therefore muted genuinely later
+pushes, allowing completion after a new dependency change. Its grammar also
+read message bodies and mistook generic words for package names.
+
+**Decision.** A tracked, admitted manifest push fires an automatic
+`dependency_drift` invalidation at confidence 0.8 only when an assumption's
+existing scope paths cover a changed manifest, or a manifest-changing
+commit's subject names a bumped package that the assumption names as a token.
+Only the first message line is a subject; bodies and subjects of commits
+without manifest changes cannot name the bumped package. The closed grammar
+starts at the subject's beginning after an optional conventional-commit prefix
+and recognizes bump/update/upgrade forms, optional dependency/module/rust-crate
+labels, named lists and monorepo labels. PEP 503 spelling is normalized only
+for Python manifest commits; optional package extras are removed. Scoped names
+and module paths retain punctuation and remain whole tokens. The closed
+`_DRIFT_COMMON` set is subtracted from both package names and shared words.
+
+Otherwise, a whole dependency-vocabulary word or a distinctive word shared
+with subjects/changed-path stems raises a `pending_confirmation` notice at
+confidence 0.5. The target assumption stays active; completion of touched
+tasks is blocked by the existing unresolved-invalidation gate (ADR-089).
+The owner confirms or rejects through the canonical authority operations
+introduced in ADR-133. This reuses their existing impact/severity behavior;
+it does not change confirmation or completion gates.
+
+Notice identity hashes the tenant, project, target, ref and push revision:
+`after`, or commit IDs if `after` is absent, or the event identity if neither
+is present. Ingest's source validation still applies. An already recorded
+notice for that identity is not repeated, including after rejection. Every
+new revision has its own notice even while an earlier notice remains pending;
+rejecting the earlier notice therefore cannot dispose of later evidence.
+Named package or scope evidence takes the automatic path before notice
+deduplication, including after a rejected notice. Reasons include a push
+fingerprint and complete-manifest-list digest; displayed paths/cues are
+bounded to stay below `fire`'s 4096-character reason limit.
+
+**Alternatives.** Always invalidating on vocabulary retains the demonstrated
+false positives. Reading quoted bot bodies would let upstream prose supply
+unrelated package names. Guessing the members of a grouped subject would
+invent evidence: a title such as "Bump the minor-patch group across 1 directory
+with 3 updates" names no package. Suppressing all future notices by reason,
+or retaining only one pending notice across revisions, lets one decision
+erase later evidence. Parsing manifest contents would require inputs not
+present in the push payload and is outside this change.
+
+**Compatibility.** Retained pushes now project differently, so the processor
+advances from `cce-processor/1.11.0` to `cce-processor/1.12.0`.
+Extraction remains `cce-deterministic/1.5.0`. Older projected stores refuse
+under ADR-114: stop writers, preserve the complete old store and SQLite
+sidecars, and re-ingest retained sources into a distinct new store/project.
+Review and explicitly confirm the new proposals; removing processor markers
+is not migration, and erased payloads cannot be recovered. The 0.5.0 metadata
+is an undated local candidate following the 0.4.1 preparation pattern.
+No schema, wire or packet-shape change; direct `fire` callers are unchanged.
+
+**Verification.** `tests/test_dependency_drift_precision.py` exercises the
+four-assumption reproduction, sourced Dependabot/Renovate subjects, generic
+word/body false positives, package boundaries, distinct pushes after
+rejection, same-push deduplication, and deterministic replay. Completion
+regressions use engine-produced proofs and identify the existing unresolved
+invalidation gate; a positive control completes. The grouped-subject case
+rejects a notice, ingests a new commit/after SHA, and requires a new pending
+invalidation that blocks completion; owner confirmation then invalidates the
+assumption. A later named bump invalidates automatically. ContinuityBench
+adds the three realistic distractors, separately checks their pending review,
+and measures automatic-invalidation precision only over applied notices.
+
+**Limit.** This is lexical evidence, not dependency resolution or a manifest
+diff. Common-word package names cannot auto-match. Aliases, unnamed groups,
+unknown verbs and monorepo members not literally named in the subject need
+review when vocabulary/shared-word cues exist; absent those cues they can be
+missed. A coincidental named bump can still invalidate an unrelated assumption
+using the same token. No changed manifest means no drift notice. The existing
+scope path route remains available, but authority confirmation accepts global
+or task scopes, not arbitrary paths; paths can be set through existing
+`narrowed_scope` resolution, not a new confirmation field. Pending notices
+can lower autonomy for critical assumptions, and rejection does not restore
+that grant. Confirmation retains the human-gated classification rather than
+recomputing the stronger automatic impact. Those pre-existing lifecycle
+semantics are not fixed here. Notice blocking follows the recorded typed
+graph; missing dependency edges remain a limit (ADR-089).

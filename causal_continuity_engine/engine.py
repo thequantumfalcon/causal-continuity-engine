@@ -104,7 +104,7 @@ from .store import (
 )
 from .verifiers import VerifierRunner, VerifierSpec, record_verification
 
-PROCESSOR_VERSION = "cce-processor/1.11.0"
+PROCESSOR_VERSION = "cce-processor/1.12.0"
 _AUTHORITY_SCHEMA = "cce.authority-decision.v1"
 _AUTHORITY_SOURCE = "cce:authority-decision:v1"
 _AUTHORITY_EXTRACTOR = "cce.authority-decision"
@@ -3545,6 +3545,44 @@ class Engine:
         r"poetry\.lock|Pipfile(\.lock)?|go\.(mod|sum)|Cargo\.(toml|lock)|"
         r"Gemfile(\.lock)?|pom\.xml|build\.gradle[^/]*)$")
 
+    # ADR-135: manifest paths do not identify the dependency that moved.
+    # Automatic drift needs a scope hit or a package named by a bump subject;
+    # vocabulary/shared words alone are questions for the owner (CI-005).
+    _DRIFT_PACKAGE_TOKEN = re.compile(r"@?[a-z0-9][a-z0-9_.@/-]*")
+    _DRIFT_NAME = r"@?[a-z0-9][a-z0-9_.@/-]*(?:\[[a-z0-9_,.-]+\])?"
+    _DRIFT_PYTHON_MANIFEST = re.compile(
+        r"(^|/)(requirements[^/]*\.txt|pyproject\.toml|poetry\.lock|Pipfile(\.lock)?)$")
+    _DRIFT_BUMP = re.compile(
+        r"^(?:[a-z][a-z0-9_-]*(?:\([^()\r\n]*\))?!?:\s*)?"
+        r"(?:bump(?:s|ed)?|upgrad(?:e[sd]?|ing)|updat(?:e[sd]?|ing))\s+"
+        r"(?:(?:dependency|dependencies|module|rust crate)\s+)?"
+        r"(" + _DRIFT_NAME + r"(?:\s*(?:,\s*(?:and\s+)?|\band\s+|&\s*)"
+        + _DRIFT_NAME + r")*)"
+        r"(?:\s+monorepo)?(?:\s+(?:from|to)\b|(?=\s*(?:$|\(#|in\b)))")
+    _DRIFT_VOCABULARY = frozenset((
+        "dependency", "dependencies", "version", "pinned", "requires", "library", "package"))
+    _DRIFT_COMMON = frozenset((
+        "about above after again against also among another because been before being "
+        "below between both bump bumps bumped change changed changes chore could deps "
+        "dependencies dependency does doing down during each either else even every file "
+        "files from have having here into just like lock lockfile made major make many "
+        "merge minor more most much must need never only other over patch pinned refresh "
+        "release require required requirements requires same should since some still such "
+        "than that their them then there these they this those through under until update "
+        "updated updates upgrade upgraded upgrades upon version versions very want were "
+        "what when where whether which while will with within without would your package "
+        "packages library libraries build main master fix fixes fixed app apps api ci cd "
+        "group groups directory directories module modules monorepo rust crate crates the and"
+    ).split())
+    _DRIFT_NOTICE_SCHEMA = "cce.dependency-drift-notice.v1"
+
+    @staticmethod
+    def _drift_package(token: str, *, python: bool = False) -> str:
+        # Python spelling rules must not equate distinct npm package names.
+        # Keep scoped names and module paths whole in either ecosystem.
+        token = token.split("[", 1)[0].strip(".").lower()
+        return re.sub(r"[-_.]+", "-", token) if python and "/" not in token else token
+
     def _process_push(self, event: dict, envelope: dict, report: dict):
         project_id = event["project_id"]
         payload = event["payload"] or {}
@@ -3642,37 +3680,88 @@ class Engine:
             p for p in changed
             if tracked_push and self._MANIFESTS.search(p))
         if manifest_changed:
-            # Tokens the push is "about": changed-path stems + commit messages.
+            # Bodies may quote upstream changelogs. Only subjects of commits
+            # touching a manifest are evidence of a named dependency bump.
             push_terms: set[str] = set()
+            named: set[str] = set()
+            python_named: set[str] = set()
             for p in changed:
                 stem = p.split("/")[-1].rsplit(".", 1)[0]
                 push_terms.update(t for t in re.split(r"[_\-.]", stem.lower())
                                   if len(t) > 3)
             for commit in payload.get("commits", []) or []:
-                push_terms.update(
-                    t for t in re.findall(r"[a-z]{4,}", (commit.get("message")
-                                                         or "").lower()))
-            push_terms -= {"bump", "update", "upgrade", "chore", "merge"}
+                subject = (commit.get("message") or "").split("\n", 1)[0].lower()
+                push_terms.update(re.findall(r"[a-z]{4,}", subject))
+                paths = [path for key in ("added", "modified", "removed")
+                         for path in commit.get(key, []) or []]
+                if any(self._MANIFESTS.search(path) for path in paths):
+                    python_manifest = any(self._DRIFT_PYTHON_MANIFEST.search(path)
+                                          for path in paths)
+                    for match in self._DRIFT_BUMP.finditer(subject):
+                        named.update(self._drift_package(token) for token in re.findall(
+                            self._DRIFT_NAME, match.group(1)))
+                        if python_manifest:
+                            python_named.update(self._drift_package(token, python=True)
+                                                for token in re.findall(
+                                                    self._DRIFT_NAME, match.group(1)))
+            push_terms -= self._DRIFT_COMMON
+            named -= self._DRIFT_COMMON
+            python_named -= self._DRIFT_COMMON
+            # A rejection acknowledges one revision, never every future bump
+            # with the same manifest/cues. Retain separate notices even while
+            # an earlier push is pending, so rejecting it cannot erase a later
+            # push's evidence. Missing revision evidence never grants a mute.
+            revision = after or sorted(
+                commit["id"] for commit in payload.get("commits", []) or []
+                if commit.get("id")) or event["event_id"]
+            push_key = digest_obj([ref, revision])
+            recorded = {inv["node_id"] for inv in self.graph.current(
+                project_id, "invalidation", tenant_id=self.tenant_id)}
+            # Keep the explanation inside fire's text bound even for a large
+            # monorepo push; the digest binds the complete manifest list.
+            manifest_reason = (f"dependency manifests changed: {str(manifest_changed)[:1200]}; "
+                               f"manifest digest {digest_obj(manifest_changed)}; push {push_key}")
             for node in self.graph.current(
                     project_id, "assumption", status=["active", "supported"],
                     tenant_id=self.tenant_id):
                 scope_paths = (node.get("scope") or {}).get("paths", [])
                 statement = (node["data"].get("statement") or "").lower()
                 statement_terms = set(re.findall(r"[a-z]{4,}", statement))
-                mentions_dep = any(
-                    tok in statement for tok in
-                    ("dependency", "version", "pinned", "requires", "library",
-                     "package")) or bool(statement_terms & push_terms)
-                if mentions_dep or self._scope_hit(scope_paths, manifest_changed):
+                tokens = self._DRIFT_PACKAGE_TOKEN.findall(statement)
+                names = sorted((named & {self._drift_package(token) for token in tokens})
+                               | (python_named & {self._drift_package(token, python=True)
+                                                  for token in tokens}))
+                if names or self._scope_hit(scope_paths, manifest_changed):
+                    basis = (f"the push bumps {', '.join(names)[:1200]}" if names
+                             else "the assumption's scope covers a changed manifest")
                     inv = self.invalidation.fire(
                         tenant_id=self.tenant_id, project_id=project_id,
                         target_node_id=node["node_id"],
                         trigger_type="dependency_drift",
                         trigger_confidence=0.8,
-                        reason=f"dependency manifest changed: {manifest_changed}",
+                        reason=f"{manifest_reason}; {basis}",
                         event_id=event["event_id"],
                     )
                     report["invalidations"].append(inv["node_id"])
+                    continue
+                vocabulary = sorted(statement_terms & self._DRIFT_VOCABULARY)
+                shared = sorted(statement_terms & push_terms)
+                if not (vocabulary or shared):
+                    continue
+                notice_id = "inv_" + digest_obj([
+                    self._DRIFT_NOTICE_SCHEMA, self.tenant_id, project_id,
+                    push_key, node["node_id"]])[7:31]
+                if notice_id in recorded:
+                    continue
+                cues = ", ".join(vocabulary + [f"shares '{word}'" for word in shared])[:1200]
+                inv = self.invalidation.fire(
+                    tenant_id=self.tenant_id, project_id=project_id,
+                    target_node_id=node["node_id"], trigger_type="dependency_drift",
+                    trigger_confidence=0.5,
+                    reason=(f"{manifest_reason}; no named dependency match ({cues}); "
+                            "confirm or reject"),
+                    event_id=event["event_id"], requires_human=True, invalidation_id=notice_id)
+                report["invalidations"].append(inv["node_id"])
         # Critical-path changes make prior passing verifications stale (EV-005).
         if changed and tracked_push:
             for prior in self.graph.current(

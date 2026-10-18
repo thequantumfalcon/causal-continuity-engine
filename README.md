@@ -141,15 +141,15 @@ with `.\.venv\Scripts\python.exe -m pip install causal-continuity-engine`
 and invoke the environment's `cce-engine.exe` by its absolute path in the
 commands below. After activation, `cce-engine --help` checks the installation.
 
-**Upgrading an existing project:** this release uses processor 1.11.0 and
-extractor 1.5.0; projections written by 0.3.0's processor 1.10.0 or earlier
+**Upgrading to this local 0.5.0 candidate:** it uses processor 1.12.0 and
+extractor 1.5.0; projections written by 0.4.1's processor 1.11.0 or earlier
 processors are refused. There is no in-place projection or authority upgrade. Stop writers,
 preserve the complete old project state (including its database and any SQLite
 sidecars), and re-ingest retained sources into a separate new project/store.
 Review and explicitly confirm the new proposals there; old prose is not approval.
 Do not remove markers or sidecars to bypass refusal. Payloads already removed
 by retention cannot be reconstructed from their digests. New users can simply
-start a fresh project. See [the upgrade notes for this release](CHANGELOG.md#040--2026-10-17);
+start a fresh project. See [the candidate upgrade notes](CHANGELOG.md#050--not-yet-released);
 the [0.1.6 notes](CHANGELOG.md#016--2026-09-20) remain historical.
 
 To run this exact checkout instead of the published package, or to work on the
@@ -833,13 +833,19 @@ a guard on commands that delegate to a program named in their arguments. But a
 test must import the code under test, so the subject can rewrite the runner's
 report. That is what value-oracle checks and mutation probes exist for.
 
-**A dependency-manifest push can invalidate assumptions it has nothing to do with.**
-Automatic `dependency_drift` invalidation fires on dependency vocabulary, not on the dependency
-a push actually changes. Reproduced: four confirmed assumptions, one of them about `requests`,
-and a push changing `requirements.txt` with the message "bump requests to 3.0" invalidated all
-four (precision 1/4), so `check` reported failure. A stricter rule that requires the push to name
-the dependency is being reworked. Until it lands, read a drift invalidation after a dependency
-change as a question to answer, not a verdict.
+**Dependency drift identifies names, not actual manifest changes.** In this local 0.5.0
+candidate, automatic `dependency_drift` invalidation needs a matching assumption scope path
+or a named package bump in the subject of a commit changing a manifest. Common words and
+message bodies cannot supply package names. Dependency vocabulary or distinctive shared
+words instead raise a human-gated notice: the assumption stays active pending review, but
+the notice blocks completion of touched tasks and can lower autonomy for critical assumptions.
+Rejection acknowledges only that push's revision; later matching pushes raise fresh control state.
+Grouped bot subjects without package names need vocabulary/shared-word cues to raise review,
+even when their bodies list packages; without those cues they can be missed.
+CCE does not inspect manifest contents, infer aliases or expand monorepo membership; the
+closed English bump grammar can miss real changes or match coincidental names. A confirmed
+notice keeps the existing human-gated impact classification, which can be weaker than an
+automatic invalidation. See [ADR-135](docs/adr/ADR-INDEX.md#adr-135--dependency-drift-binds-names-and-push-revisions).
 
 **Nothing creates `assumes` or `depends_on` edges yet.** The ontology declares them and
 invalidation traverses them, but no ingest path, CLI command or MCP tool produces them, so in
