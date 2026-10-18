@@ -141,7 +141,7 @@ with `.\.venv\Scripts\python.exe -m pip install causal-continuity-engine`
 and invoke the environment's `cce-engine.exe` by its absolute path in the
 commands below. After activation, `cce-engine --help` checks the installation.
 
-**Upgrading to this local 0.5.0 candidate:** it uses processor 1.12.0 and
+**Upgrading an existing project:** this release uses processor 1.12.0 and
 extractor 1.5.0; projections written by 0.4.1's processor 1.11.0 or earlier
 processors are refused. There is no in-place projection or authority upgrade. Stop writers,
 preserve the complete old project state (including its database and any SQLite
@@ -149,7 +149,7 @@ sidecars), and re-ingest retained sources into a separate new project/store.
 Review and explicitly confirm the new proposals there; old prose is not approval.
 Do not remove markers or sidecars to bypass refusal. Payloads already removed
 by retention cannot be reconstructed from their digests. New users can simply
-start a fresh project. See [the candidate upgrade notes](CHANGELOG.md#050--not-yet-released);
+start a fresh project. See [the upgrade notes for this release](CHANGELOG.md#050--2026-10-17);
 the [0.1.6 notes](CHANGELOG.md#016--2026-09-20) remain historical.
 
 To run this exact checkout instead of the published package, or to work on the
@@ -835,8 +835,8 @@ a guard on commands that delegate to a program named in their arguments. But a
 test must import the code under test, so the subject can rewrite the runner's
 report. That is what value-oracle checks and mutation probes exist for.
 
-**Dependency drift identifies names, not actual manifest changes.** In this local 0.5.0
-candidate, automatic `dependency_drift` invalidation needs a matching assumption scope path
+**Dependency drift identifies names, not actual manifest changes.** Since 0.5.0,
+automatic `dependency_drift` invalidation needs a matching assumption scope path
 or a named package bump in the subject of a commit changing a manifest. Common words and
 message bodies cannot supply package names. Dependency vocabulary or distinctive shared
 words instead raise a human-gated notice: the assumption stays active pending review, but
