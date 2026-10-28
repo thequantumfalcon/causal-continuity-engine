@@ -17,6 +17,7 @@ from .core import (
     validate_public_identifier,
 )
 from .ontology import FAILURE_TAXONOMY, RUN_OUTCOMES
+from .resume import ResumeComposer
 
 
 def _outcome_items(value, *, field: str) -> list[dict]:
@@ -288,6 +289,11 @@ class PartialProgressManager:
             "verifier_gaps": sorted({g for g in gaps if g}),
             "rerun_instructions": self._rerun(last, checkpoint),
         }
+        # The schema deliberately reports quarantined IDs for diagnosis. Their
+        # payload must not reappear in summaries, checkpoint state or retry steps.
+        ResumeComposer(self.store, self.graph, self.memory,
+                       tenant_id=self.tenant_id)._require_quarantine_free(
+            project_id, {key: value for key, value in packet.items() if key != "quarantined"})
         return packet
 
     @staticmethod

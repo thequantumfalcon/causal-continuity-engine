@@ -3886,3 +3886,34 @@ runner reported success. The fixture performs no external operation.
 link, a replacement after validation, or a malicious permitted interpreter is
 not excluded by it. It does not solve native Windows command-line parsing or
 claim operating-system isolation. The execution fixture is POSIX-specific.
+
+## ADR-137 — State listings and recovery share the quarantine exit check
+
+**Decision.** MCP assumption/invalidation lists, their CLI equivalents including
+invalidation explanations, and partial recovery output check the content they
+will emit against the existing ResumeComposer quarantine filter. A collision
+refuses the result rather than emitting an incomplete list as success. The check
+does not append a collision audit: MCP remains read-only and a refused recovery
+read leaves state unchanged. Errors name the boundary without repeating payload.
+
+Recovery's schema-defined `quarantined` list remains a diagnostic list of IDs.
+Its payload is not exported there. All other recovery content, including nested
+checkpoint state and retry instructions, passes through the same exit check.
+
+**Rationale.** Complete resume composition already withheld a known quarantined
+statement, but list calls could still print that statement from a confirmed
+assumption or an invalidation reason. Recovery similarly returned it through
+verified artifact summaries. Filtering only the full Resume Packet left these
+other context-producing paths inconsistent with ADR-035.
+
+**Verification.** `tests/test_quarantine_state_exits.py` drives real MCP framing,
+CLI text/JSON outputs and recovery construction. It pairs each refusal with an
+unrelated-quarantine control. MCP and recovery database snapshots are unchanged;
+CLI refuses before emitting state. Nested checkpoint data and failed-step names
+are covered, as are retained diagnostic quarantine IDs.
+
+**Limit.** This reuses exact/long-substring matching; it is not a semantic
+injection detector. A real text collision can still deny a state read. It does
+not change raw administrative graph access or claim that every possible future
+export path is covered. Capsule export already reaches complete composition and
+refused the reproduced collision; no capsule format change is made here.

@@ -775,6 +775,14 @@ class ResumeComposer:
     #: is an injected block embedded in a longer, legitimate-looking one.
     _MIN_SUBSTRING_PATTERN = 24
 
+    def _require_quarantine_free(self, project_id: str, content) -> None:
+        """Refuse a state export that cannot disclose omissions in its schema."""
+        checked = self._strip_quarantined(
+            project_id, {"content": content, "omissions": []},
+            tenant_id=self.tenant_id, record_audit=False)
+        if checked["content"] != content:
+            raise ValueError("state output unavailable: quarantined content withheld")
+
     def _strip_quarantined(
             self, project_id: str, packet: dict, *,
             tenant_id: str | None = None,
