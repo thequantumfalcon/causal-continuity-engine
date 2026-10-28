@@ -59,14 +59,14 @@ Status legend:
 | AD-005 | implemented | status resolution is versioned but cannot grant prose authority. Owner-local `record_authority_decision` and `authority --request FILE` provide closed confirm/revoke/replace_scope/confirm_invalidation/reject_invalidation operations with canonical operand checks; HTTP/MCP expose no confirmation producer (ADR-126). |
 | AD-006 | implemented | source typing and injection quarantine precede extraction. All prose, including OWNER and human-decision prose, proposes rather than mandates; explicit local confirmation is required (`test_authority_extraction.py`, `test_authority_consumers.py`; ADR-126). A GitHub association types text as maintainer intent only in GitHub's exact spelling, as command authorization compares it (`test_exact_author_association.py`; ADR-134). |
 | AD-007 | implemented | calibration by source authority + abstention gate |
-| AD-008 | partial | assumes/depends_on edges supported; automatic linking only where extraction sees both ends |
+| AD-008 | partial | `assumes`/`depends_on` edges are declared and traversable, but no ingest path, CLI command, or MCP tool creates them. A trusted integration must record those edges through the graph API; automatic linking is not implemented. |
 
 ## Core — Causal invalidation (CI)
 
 | ID | Status | Evidence |
 |---|---|---|
 | CI-001 | implemented | 8 trigger types incl. changed_requirement, failed_check, dependency_drift. Current confirmations bind an exact source statement: its admitted withdrawal invalidates that confirmation and closes validity. Confirmed requirement/constraint withdrawal uses changed_requirement; other confirmed kinds use expired_approval (`test_authority_withdrawal_classification.py`; ADR-126). Historical merged-statement last-source behavior is recorded in ADR-017. A trusted explicit negation of an active assumption fires a human-gated `contradictory_evidence` notice (ADR-133). |
-| CI-002 | implemented | typed-edge propagation with strength decay + budgets |
+| CI-002 | implemented | typed-edge propagation with strength decay and depth/node budgets. Impact receipts are bounded; `truncated` reports the node-budget fallback, not depth completeness. Completion separately holds on incomplete dependency traversal while a notice remains open (ADR-135 addendum; [operations guidance](OPERATIONS.md#dependency-coverage-and-traversal)). |
 | CI-003 | implemented | deterministic matrix `classify()` |
 | CI-004 | implemented | minimal causal path + evidence + recommended action |
 | CI-005 | implemented | `pending_confirmation` applies no silent L0 rewrite. Completion also refuses any task touched by an unresolved open/pending invalidation and refuses every task under a critical unresolved invalidation, even for later proofs; the affected set still depends on the typed graph and classification policy (ADR-089). Pending notices are decided through the `confirm_invalidation`/`reject_invalidation` authority operations, recorded as canonical events (ADR-133). |

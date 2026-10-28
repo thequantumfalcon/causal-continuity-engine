@@ -10,77 +10,53 @@ Continuity, causal invalidation, and proof for long-running coding agents.
 
 <p align="center"><img src="https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/main/docs/assets/demo.svg" alt="cce-engine quickstart: install, init, audit verify, assumptions" width="760"></p>
 
-**Run it locally:** jump to the [Quickstart](#quickstart).
+Start with the [Quickstart](#quickstart), [MCP guide](docs/MCP.md), or
+[operations guide](docs/OPERATIONS.md).
 
 ## The problem
 
-An agent working a codebase over weeks does not fail by forgetting text. It
-fails by losing the causal thread, in three specific ways:
+Long-running coding work needs durable decision provenance, current assumptions,
+and evidence for completion. CCE provides:
 
-**It forgets why.** A decision was made in session 4 for a reason that lived
-in session 4's context. By session 40 the decision survives and the reason
-does not, so the agent either re-litigates it or violates it. A summary of
-the conversation does not carry the reason; it carries a paraphrase of the
-conclusion.
+- An application-enforced append-only, hash-chained event log and a bi-temporal
+  graph of decisions, assumptions, requirements, and evidence.
+- Bounded invalidation over recorded typed edges when requirements change,
+  source statements are withdrawn, or an integration calls
+  `engine.invalidation.fire(...)` with contradicting evidence.
+- Signed completion proofs checked against configured verifiers, current
+  authority, policy, and declared artifacts.
 
-**It keeps working from an assumption that has since been contradicted.** The
-agent assumed the upstream feed was ordered by timestamp. Three days later an
-issue comment says it is not. Nothing connects that comment to the twelve
-things built on the assumption, so the agent keeps building on it, and the
-contradiction surfaces as a bug much later and much further away.
+Extraction uses deterministic patterns. A trusted comment that explicitly
+negates an active assumption's wording raises a notice for owner confirmation;
+differently worded disputes may be missed. Ingest does not create `assumes` or
+`depends_on` edges. An integration must record those dependencies before
+invalidation can traverse them. See [limits](#what-this-does-not-do).
 
-**It reports success it cannot evidence.** "Done, tests pass" is a claim about
-a claim. The test run may have been self-reported, may have run a command the
-agent chose, may have passed with the deliverable deleted, or may have passed
-against a state that no longer exists. Absence of success is never success,
-and neither is an unexamined green check.
-
-CCE addresses each with a mechanism rather than a better prompt. Decisions,
-assumptions, requirements and evidence become nodes in a bi-temporal causal
-graph over an application-enforced append-only, hash-chained event log, so
-*why* is a queryable edge and not a memory. When a requirement changes, when the
-source that stated an assumption withdraws it, or when an integration records
-contradicting evidence through `engine.invalidation.fire(...)`, the
-blast radius is computed over typed edges, bounded, and classified
-deterministically. CCE does not read prose for meaning. It does recognize one
-closed form: a trusted comment that restates an active assumption with a
-negator, like the one above, raises a human-gated notice that changes nothing
-until the owner confirms or rejects it; a differently worded dispute proposes
-nothing and fires nothing.
-When policy requires proof, a task cannot be marked complete
-without a signed envelope whose required verifiers actually ran — the rejection gates are
-mechanically enumerated and mutation-tested below.
-
-Event integrity separates two facts that are easy to conflate:
+Two commitments serve different integrity checks:
 `payload_digest` identifies the raw source delivery for idempotency, while
 `stored_payload_digest` authenticates the exact redacted or metadata-only
 canonical bytes that processing consumed. Both commitments survive retention;
-the removable payload bytes do not have to remain present forever.
+payload bytes may be removed.
 
 The engine is Python 3.11+ and imports nothing outside the standard library.
-`just deps` AST-scans `causal_continuity_engine/` and fails on any import that is not stdlib —
-parsing rather than importing, so a lazy or guarded import is caught too. CI
-invokes the same `.github/scripts/check_stdlib.py` scanner through
-`run_gates.py` on every pull request and every push to `main`.
+`just deps` and CI AST-scan `causal_continuity_engine/` with
+`.github/scripts/check_stdlib.py`, including lazy and guarded imports.
 
 The PyPI distribution name is `causal-continuity-engine`, the import package is
-`causal_continuity_engine`, and the executable is `cce-engine`. Those longer
-names are intentional: the shorter `cce` distribution, import namespace, and
-command are already used by an unrelated published project.
+`causal_continuity_engine`, and the executable is `cce-engine`. The shorter
+`cce` names belong to an unrelated project.
 
 ## Use it from an editor
 
-`cce-engine mcp` speaks the Model Context Protocol over stdio, so an MCP client
-can read a project's control state directly. [docs/MCP.md](docs/MCP.md) walks the
-whole path on this repository, from install to a connected agent, and shows how
-the continuity check runs in CI on a runner that holds the store. Four read-only tools:
+`cce-engine mcp` exposes four read-only tools over Model Context Protocol stdio:
 `resume_packet`, `list_assumptions`, `list_invalidations`, `continuity_check`.
+[docs/MCP.md](docs/MCP.md) covers installation, connection, and a continuity
+check on a runner that holds the store.
 
-The subcommand first ships in 0.1.6. The published 0.1.0, 0.1.2 and 0.1.3
-packages do not include it; 0.1.4 was prepared but never published, and 0.1.5
-was tagged but never published. The released 0.1.6 lifecycle has been exercised with
-the reference MCP SDK; other clients are expected to work over the same
-transport but have not been exercised here.
+MCP first shipped in 0.1.6; the earlier published packages lack it. Version
+0.1.4 was prepared but unpublished, and 0.1.5 was tagged but unpublished.
+The 0.1.6 lifecycle was exercised with the reference MCP SDK. Other client
+compatibility has not been established here; the guide records later reruns.
 
 Initialize a fresh project with the quickstart below before connecting a client.
 Use the absolute path to the installed `cce-engine` executable and the initialized
@@ -101,14 +77,13 @@ terminal's virtual environment or working directory. For example, on macOS/Linux
 On Windows, use the virtual environment's `Scripts/cce-engine.exe`; forward
 slashes avoid JSON backslash escaping. Replace both example paths with real paths.
 MCP observes a closed store: stop writers cleanly before connecting. Any SQLite
-WAL, SHM, or rollback-journal sidecar causes refusal rather than a partial view.
-Never delete a sidecar to force admission; it may contain recovery data.
+WAL, SHM, or rollback-journal sidecar causes refusal. If another process changes
+the store, calls refuse the stale snapshot; restart the MCP session after
+writers have stopped. Never delete a sidecar to force admission; it may contain
+recovery data.
 
-The server is read-only by design. An MCP client is an untrusted caller in this
-project's authority model, so nothing exposed here mutates state, mints a proof,
-or grants autonomy — a test fails if a future tool name suggests otherwise. It
-adds no dependencies: the transport is hand-rolled on `json` and `sys` rather
-than the official SDK, which would pull in more than twenty packages.
+The transport uses only the standard library. MCP callers cannot ingest,
+confirm authority, mint proofs, grant autonomy, or complete tasks.
 
 ## Quickstart
 
@@ -536,7 +511,8 @@ proof is rejected when policy requires it:
 5. **The current state is completable.** Only a new, open, or in-progress task
    can transition to verified; proof-optional policy cannot overwrite blocked,
    uncertain, invalidated, rejected, or superseded work.
-6. **A proof exists.** Policy demands one and none was supplied.
+6. **A required proof exists.** A missing proof blocks completion when policy
+   requires one.
 7. **The required proof shape exists.** Missing identifiers or decision
    fields are malformed input, not a signature question.
 8. **The envelope verifies.** Signature and digest, checked against the
@@ -569,7 +545,7 @@ proof is rejected when policy requires it:
     negative control, artifacts, isolation, or command makes re-attestation
     mandatory.
     Results must come from an authoritative source; self-assertion satisfies
-    nothing, and the worst result reported anywhere wins.
+    nothing, and the worst authoritative result for a required check wins.
 18. **The signed policy decision is `allow`.** An authentic record of a
     denied action cannot be promoted into completion.
 19. **Evidence grade meets the floor.** Default `C`.
@@ -582,18 +558,21 @@ proof is rejected when policy requires it:
 22. **Applicable authority is not conflicted.** An applicable blocked, uncertain,
     review-required or explicitly conflicted control prevents completion, even
     under proof-optional policy.
+23. **The tracked revision is not explicitly uncertain.** An out-of-order
+    tracked push blocks completion, including an exact retry, until an admitted
+    push reconciles the frontier. A project that has never tracked a revision
+    remains completable.
 
 The instrument-validation suite plants exactly one defect for each path and
 asserts that the intended gate, rather than a neighboring one, rejects it.
 
 ### Evidence grades
 
-Grading asks one question: could this check have been red? Three mechanical
-probes answer it without asking the subject to grade itself — a **negative
-control** (show the check failing against known-bad state), a **mutation
-probe** (destroy the deliverable in a sandbox copy; some required check must
-notice), and a **determinism probe** (run twice; a check that disagrees with
-itself evidences nothing).
+Evidence grading uses three probes: a **negative control** must fail against
+known-bad state; a **mutation probe** checks whether destroying a copied
+deliverable makes a required check fail; a **determinism probe** repeats the
+check twice and compares results. These probes assess the checks, without
+establishing that they test the intended property.
 
 | Grade | Meaning |
 |---|---|
@@ -635,8 +614,7 @@ swap-and-restore between observations, especially on the Windows
 standard-library fallback. Run hostile verifier code under OS-enforced
 isolation (ADR-099, ADR-103).
 
-Pinning is the difference between a name and a check. The policy supplies the
-command, not the claimant:
+Pin each verifier's command, negative control, and artifacts in project policy:
 
 ```json
 {
@@ -690,14 +668,11 @@ determinism`; both exit non-zero on failure.
 ## Verifying a proof without trusting the engine
 
 [SPEC.md](SPEC.md) is normative: it defines the `cce.proof.v2` envelope and
-the five checks (digest, signature, authenticity, sufficiency, scope) well
-enough to reimplement from that text alone.
-[verifiers/verify_proof.py](verifiers/verify_proof.py) is such a
-reimplementation — standard library only, and it imports nothing from
-`causal_continuity_engine`,
-so agreement between the two is evidence rather than the same code run twice.
-[vectors/](vectors/) is a committed conformance corpus, including honest
-negatives and adversarial forgeries, that pins both implementations in CI.
+five checks: digest, signature, authenticity, sufficiency, and scope.
+[verifiers/verify_proof.py](verifiers/verify_proof.py) implements them using
+only the standard library, without importing `causal_continuity_engine`.
+The committed [conformance corpus](vectors/) includes valid records, negative
+cases, and forgeries checked against both implementations in CI.
 Published v1 schemas remain historical contracts; v1 proofs are not current
 completion evidence. The v2 schema URLs are bound to the `v0.2.0` release tag,
 and the release workflow verifies that each serves the checked-out bytes.
@@ -724,16 +699,12 @@ UNVERIFIED C1:P C2:S C3:S C4:P C5:S  proof.json
 1 UNVERIFIED
 ```
 
-**That verdict is the honest one, and it is the point.** `hmac-sha256` is not
-a third-party-verifiable scheme at all. Without the secret, an untouched
-envelope and a resealed forgery are indistinguishable, so the verifier reports
-`UNVERIFIED` — not `VALID` — and exits 2. A verifier that returned `VALID`
-there would be telling a stranger that a body a forger rewrote and resealed is
-sound. Supply the key and the same envelope verifies. For `hmac-sha256` the key
-is the project's local signing key, `.cce/secrets/signing.key`, given as hex.
-Anyone holding it can also seal a forgery, so this is the operator's own check,
-not a stranger's. The command below puts the key on the command line; run it
-only on a machine you control:
+HMAC verification requires the project's local signing key,
+`.cce/secrets/signing.key`, supplied as hex. Without it the verifier reports
+`UNVERIFIED` and exits 2. Anyone holding that key can also sign a forged
+record, so HMAC provides an operator check within the shared trust domain.
+The command below puts the key on the command line; run it only on a machine
+you control:
 
 ```bash
 python "$VERIFY_PROOF" proof.json \
@@ -741,10 +712,8 @@ python "$VERIFY_PROOF" proof.json \
 # VALID      C1:P C2:P C3:P C4:P C5:S  proof.json
 ```
 
-`lamport-sha256/1` is checkable without the signing key, but the public key
-travels inside the envelope, so anyone may mint a keypair and sign anything.
-Reaching `VALID` as a stranger requires the fingerprint from somewhere other
-than the artifact:
+For `lamport-sha256/1`, the envelope carries the public key. Independent
+verification requires its fingerprint from a trusted source outside the artifact:
 
 ```bash
 python "$VERIFY_PROOF" proof.json --fingerprint sha256:...
@@ -762,12 +731,10 @@ without prefix truncation. A path-expansion limit is a usage error on stderr
 with exit 64. An unreadable, unstable, oversized, non-regular, or malformed
 file produces a per-file `INVALID`/`E_CJSON` result and makes the batch exit 1.
 
-The verdict has four values because collapsing them loses the distinction
-between opposite situations. `INVALID` means something is wrong.
-`UNVERIFIED` means nothing was established. `INCOMPLETE` means the envelope is
-authentic and honestly records that the work is not done. Exit codes follow,
-and `INVALID` dominates — a batch containing both an `INVALID` and an
-`INCOMPLETE` exits 1, so a CI gate keyed on the code cannot miss a forgery.
+The four verdicts preserve distinct outcomes: `VALID` passes the applicable
+envelope checks; `INVALID` fails a check; `UNVERIFIED` lacks required trust;
+`INCOMPLETE` is authentic but records unfinished work. `INVALID` dominates
+batch results: a batch containing both `INVALID` and `INCOMPLETE` exits 1.
 
 Check that the reference implementation still agrees with the corpus:
 
@@ -779,63 +746,43 @@ python vectors/generate.py --check
 
 ## What this does not do
 
-These are stated here so they are not discovered later and reported as
-findings. Several are load-bearing: the design depends on being honest about
-them.
+**Key registry distribution and revocation are absent.** SPEC §6 requires a
+trusted fingerprint obtained outside the envelope. CCE supplies no distribution
+channel or mechanism for withdrawing trust in a signing key.
 
-**Key registry distribution is unsolved.** Authenticity requires a fact from
-outside the envelope — a fingerprint obtained out of band. SPEC §6 requires
-such a registry and says nothing about how it travels, because nothing here
-solves that. No amount of verifier code closes it.
+**Envelope validation does not establish live freshness.** The engine checks
+current project state before completion. A standalone verifier with only the
+envelope cannot check whether its deliverables or controls have since changed
+(SPEC §11, item 1).
 
-**Signing-key revocation is not implemented.** A fingerprint in the registry is trusted for every
-envelope it ever signed. Withdrawing a key is not a mechanism this has.
+**Retention bounds rebuildability.** Once retention removes source payloads,
+the event-derived projection cannot be fully rebuilt from the log.
+`cce-engine rebuild` reports `UNDECIDABLE` (exit 3). Runtime records such as
+proofs, imported sessions, and checkpoints rely on signatures and audit history,
+not event replay; preserve the complete store for recovery.
 
-**A stranger cannot tell whether an envelope is still fresh.** An envelope is a
-statement about a moment. Whether the deliverables it names still carry the
-digests it records requires the project, not the envelope. The engine checks it
-— that is rejection 15 above — but someone holding only the envelope cannot, so
-`VALID` from the standalone verifier says the record is sound, not that the
-world it describes still exists. SPEC §11, item 1.
+**Evidence grade does not establish test adequacy.** Even grade A can describe
+stable, falsifiable checks that test the wrong property. Probes assess binding
+to declared deliverables; the operator must choose the required properties.
 
-**Rebuildability is bounded by the retention window.** Projections rebuild
-from the event log until retention clears a payload; after that the log no
-longer contains what it would take to check. `cce-engine rebuild` reports
-`UNDECIDABLE` (exit 3) rather than pretending the projection either matches or
-diverges, because "the log disagrees" and "the log can no longer say" are
-opposite diagnoses.
+**Injection screening is pattern-based.** Novel phrasing can evade detection.
+Recognized quarantined content is barred from every memory tier, removed from
+previous tiers, and stripped from packets. Secret redaction also uses a pattern
+denylist and can miss unfamiliar formats.
 
-**Evidence grading is a mechanical lower bound, not an oracle.** The probes
-prove a check is bound to a deliverable's existence and content. They can
-never prove it checks the right property. An A-grade check can be bound,
-stable, falsifiable, and still test the wrong thing. It is lint, not an
-oracle.
+**The proof implementations share an author.** Agreement on the conformance
+corpus does not establish independent assurance or exclude shared defects.
 
-**Injection screening is pattern-based and will miss novel phrasing.** The
-structural defences do not depend on the patterns catching anything:
-quarantined content is barred from every memory tier, vacates any tier it
-already held, and is stripped from composed packets. That is deliberate
-layering — the screen is the weak layer and is treated as such.
+**External anchors need separate publication.** Tail-truncation detection
+requires an anchor held somewhere the store operator cannot rewrite. CCE
+supplies no publication channel.
 
-**Both the engine and its "independent" verifier have one author.** Two
-implementations agreeing proves the specification is unambiguous enough to
-reimplement, and that neither carries a defect the other lacks by
-construction. That enables implementation independence; it does not
-constitute it. A verifier written by a different party against SPEC.md is the
-thing that would.
-
-**An anchor published nowhere proves nothing.** Tamper evidence has three
-layers, and the outermost is only as good as where the anchor is put: one
-produced at verification time from the same store agrees with whatever that
-store now says. CCE ships no publication channel.
-
-**Verifier sandboxing is not kernel isolation, and not a defence against
-in-process forgery.** There are timeouts, concurrent bounded pipe drains, a
-deterministic stored transcript capped at 256 KiB, best-effort process-tree
-termination, a scrubbed environment with a named threat behind each entry, and
-a guard on commands that delegate to a program named in their arguments. But a
-test must import the code under test, so the subject can rewrite the runner's
-report. That is what value-oracle checks and mutation probes exist for.
+**Verifier execution needs OS isolation for hostile code.** The runner supplies
+timeouts, bounded pipe capture, a transcript capped at 256 KiB, best-effort
+process-tree termination, environment scrubbing, and a command-wrapper guard.
+It cannot prevent same-user absolute-path access, enforce network isolation,
+or stop imported code from forging an in-process report. Use OS isolation,
+property checks, and mutation probes appropriate to the threat model.
 
 **Dependency drift identifies names, not actual manifest changes.** Since 0.5.0,
 automatic `dependency_drift` invalidation needs a matching assumption scope path
@@ -855,10 +802,16 @@ automatic invalidation. See [ADR-135](docs/adr/ADR-INDEX.md#adr-135--dependency-
 invalidation traverses them, but no ingest path, CLI command or MCP tool produces them, so in
 practice invalidation does not propagate along them.
 
-**ContinuityBench is self-scored on curated deterministic fixtures.** All eleven
-scenarios pass and all six metrics are at target, which demonstrates mechanism
-correctness. It is not evidence about real repositories, and it is not a
-comparison against anything.
+**Impact receipts are bounded.** Initial propagation uses six hops and 500
+distinct nodes by default. Node-budget exhaustion retries two hops with a
+5,000-node cap. The `truncated` flag reports that fallback, not depth
+completeness. Completion separately follows current dependencies and holds on
+traversal exhaustion while a notice remains open. See the
+[operations guide](docs/OPERATIONS.md#dependency-coverage-and-traversal).
+
+**ContinuityBench uses curated deterministic fixtures and its own scoring.**
+Passing its eleven scenarios and six metric targets exercises those cases;
+it does not establish real-repository accuracy or comparative performance.
 
 **Transaction timestamps are ordered within one process, not across writers.**
 Equal wall-clock samples are advanced by one microsecond under a process-local
@@ -879,11 +832,9 @@ application level rather than by row-level security.
 
 ## Status
 
-Pre-1.0. The public API is **not yet declared** — anything may change, and
-there is no deprecation policy yet. The released version is whatever
-[PyPI](https://pypi.org/project/causal-continuity-engine/) serves; this file is
-that package's description, so it does not restate a version number it cannot
-keep in step.
+Pre-1.0. The public API is **not yet declared** and has no deprecation policy.
+Check [PyPI](https://pypi.org/project/causal-continuity-engine/) for the released
+version; `main` can contain unreleased changes.
 
 An [offline KRY replay](docs/evidence/real_repo_kry/FINDINGS.md) recorded 418
 GitHub envelopes, 1 automatic invalidation, 9 human-gated notices, and grade D
@@ -906,14 +857,9 @@ with 8 of 10 snapshot mutations detected.
   evidence in
   [docs/REQUIREMENTS_COVERAGE.md](docs/REQUIREMENTS_COVERAGE.md)
 
-The trust core is **change-controlled, not frozen**. Successive adversarial
-rounds, including the current operator-surface and race hardening, found
-defects both in feature code and in the machinery built to check it. The
-contribution contract requires a pre-fix reproduction and regression for each
-accepted defect fix. That is why
-hardening changes get their own adversarial pass: treat a clean integrated
-round, not a historical round number or defect count, as the stopping
-condition.
+Trust-core changes require a reproduction, a regression demonstrated against
+the pre-fix revision, and adversarial review of the fix. Historical review
+counts do not substitute for validating the current change.
 
 ## Contributing, security, license
 
