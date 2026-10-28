@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP and CLI assumption/invalidation listings and partial recovery packets
+  refuse output containing known quarantined payload text. They reuse the packet
+  exit filter without writing collision audits on read-only paths (ADR-137).
 - Quarantined extraction labels no longer suppress unrelated confirmed control
   state in Resume Packets. Actual payload collisions remain withheld, including
   payloads using the same words as engine labels (ADR-136).
