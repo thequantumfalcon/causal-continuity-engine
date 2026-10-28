@@ -765,6 +765,7 @@ class ResumeComposer:
         "span", "source_ref", "suspected_injection", "quarantine_reason",
         "quarantined_at", "extractor", "extractor_version", "node_id",
         "event_id", "kind",
+        "pattern", "demoted_from", "proposed_kind", "demotion_reason",
     })
 
     #: A pattern shorter than this matches only as a whole value. Substring
@@ -773,6 +774,14 @@ class ResumeComposer:
     #: patterns are matched inside larger strings because the realistic leak
     #: is an injected block embedded in a longer, legitimate-looking one.
     _MIN_SUBSTRING_PATTERN = 24
+
+    def _require_quarantine_free(self, project_id: str, content) -> None:
+        """Refuse a state export that cannot disclose omissions in its schema."""
+        checked = self._strip_quarantined(
+            project_id, {"content": content, "omissions": []},
+            tenant_id=self.tenant_id, record_audit=False)
+        if checked["content"] != content:
+            raise ValueError("state output unavailable: quarantined content withheld")
 
     def _strip_quarantined(
             self, project_id: str, packet: dict, *,

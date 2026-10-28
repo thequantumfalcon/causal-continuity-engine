@@ -858,6 +858,7 @@ def cmd_assumptions(args):
     rows = [{"node_id": n["node_id"], "status": n["status"],
              "criticality": n["criticality"], "confidence": n["confidence"],
              "statement": n["data"].get("statement")} for n in nodes]
+    engine.composer._require_quarantine_free(meta["project_id"], rows)
     _emit(args, rows, "\n".join(
         f"[{r['status']}/{r['criticality']}] {r['statement']}  ({r['node_id']})"
         for r in rows) or "no assumptions")
@@ -870,6 +871,7 @@ def cmd_invalidations(args):
         inv = engine.graph.get(
             args.explain, tenant_id=engine.tenant_id,
             project_id=meta["project_id"], entity_type="invalidation")
+        engine.composer._require_quarantine_free(meta["project_id"], inv["data"])
         _emit(args, inv["data"],
               f"{inv['data'].get('trigger_type')}: {inv['data'].get('reason')}\n"
               f"path: {' '.join(map(str, inv['data'].get('minimal_causal_path', [])))}\n"
@@ -882,6 +884,7 @@ def cmd_invalidations(args):
                  "trigger": i["data"].get("trigger_type"),
                  "severity": i["data"].get("severity"),
                  "target": i["data"].get("target_summary")} for i in invs]
+        engine.composer._require_quarantine_free(meta["project_id"], rows)
         _emit(args, rows, "\n".join(
             f"[{r['severity']}] {r['trigger']} -> {r['target']} ({r['node_id']})"
             for r in rows) or "no open invalidations")

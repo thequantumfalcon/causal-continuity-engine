@@ -193,22 +193,28 @@ class _Session:
                 project_id, "assumption", status=["active", "supported"],
                 tenant_id=engine.tenant_id)
             nodes = [node for node in nodes if engine.graph.may_mandate(node)]
+            rows = [{"node_id": node["node_id"], "status": node.get("status"),
+                     "statement": node.get("data", {}).get("statement", "")} for node in nodes]
+            engine.composer._require_quarantine_free(project_id, rows)
             if not nodes:
                 result = "No active assumptions."
             else:
                 result = "\n".join(
                     f"- [{node.get('status')}] "
-                    f"{node.get('data', {}).get('statement', '')}"
-                    for node in nodes)
+                    f"{node['statement']}"
+                    for node in rows)
         elif name == "list_invalidations":
             open_items = engine.invalidation.open_invalidations(project_id)
+            rows = [{"node_id": item["node_id"],
+                     "severity": item.get("data", {}).get("severity", "?"),
+                     "reason": item.get("data", {}).get("reason", "")} for item in open_items]
+            engine.composer._require_quarantine_free(project_id, rows)
             if not open_items:
                 result = "No open invalidations."
             else:
                 result = "\n".join(
-                    f"- {item.get('data', {}).get('severity', '?')}: "
-                    f"{item.get('data', {}).get('reason', '')}"
-                    for item in open_items)
+                    f"- {item['severity']}: {item['reason']}"
+                    for item in rows)
         elif name == "continuity_check":
             report = engine.continuity_check(project_id, _sign_receipt=False)
             # The signed receipt is four fifths of this report and is

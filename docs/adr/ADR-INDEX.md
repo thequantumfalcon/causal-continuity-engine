@@ -3840,3 +3840,80 @@ harness plants the flag after a known-good attestation and requires the named
 reconcile rejected pushes. It does not promote all continuity-check failures
 to completion blockers. The unreleased candidate retains processor
 `cce-processor/1.12.0`.
+
+## ADR-136 — Extraction bookkeeping is not quarantined prose
+
+**Decision.** The packet exit filter's bookkeeping exclusions include the
+extractor-owned `pattern`, `demoted_from`, `proposed_kind` and `demotion_reason`
+fields. Their values classify extraction; they do not supply payload patterns.
+All other content strings remain subject to the existing exact/substring
+matching rules. This changes packet filtering, not extraction or stored identity.
+
+**Rationale.** A quarantined assumption proposal carries the label `assumption`.
+Treating that label as hostile text also matched an unrelated, canonically
+confirmed assumption's metadata. Complete packet composition then refused even
+though the confirmed statement and quarantined statement were different.
+These four fields are assigned by the extractor and are not copied from source
+object keys by `_process_text`.
+
+**Verification.** `tests/test_quarantine_metadata.py` ingests hostile agent traces
+and GitHub issue bodies after owner-local confirmation. Unrelated assumptions
+survive both live composition and rebuilt projections. Matching statement text
+still refuses without mutating the store. Engine-label words appearing under
+`title` or an unknown payload key still produce a disclosed text collision.
+
+**Limit.** This does not recognize semantic equivalence or defeat an attacker
+who quotes real control text to suppress it. Such genuine text collisions stay
+fail-closed. It does not broaden the injection screen or treat privileged raw
+Graph writes as an untrusted ingestion API.
+
+### ADR-024 addendum — Resolve absolute executable aliases before wrapper checks
+
+**Decision.** Check both the requested basename and the resolved basename of
+an absolute executable against the existing indirection list. Resolution loops
+and operating-system errors refuse. A missing executable remains admissible and
+is reported inconclusive when execution is attempted. The runner and pinned-policy
+admission already share this check;
+both now reject an innocently named symlink to a blocked shell. Python venv
+interpreter symlinks remain admissible.
+
+**Verification.** `tests/test_verifier_symlink_indirection.py` covers direct and
+chained POSIX shell aliases, the actual runner's refusal, a Python interpreter
+alias and a symlink loop. Before the fix the renamed shell ran `true` and the
+runner reported success. The fixture performs no external operation.
+
+**Limit.** This is name-based wrapper detection. A renamed binary copy or hard
+link, a replacement after validation, or a malicious permitted interpreter is
+not excluded by it. It does not solve native Windows command-line parsing or
+claim operating-system isolation. The execution fixture is POSIX-specific.
+
+## ADR-137 — State listings and recovery share the quarantine exit check
+
+**Decision.** MCP assumption/invalidation lists, their CLI equivalents including
+invalidation explanations, and partial recovery output check the content they
+will emit against the existing ResumeComposer quarantine filter. A collision
+refuses the result rather than emitting an incomplete list as success. The check
+does not append a collision audit: MCP remains read-only and a refused recovery
+read leaves state unchanged. Errors name the boundary without repeating payload.
+
+Recovery's schema-defined `quarantined` list remains a diagnostic list of IDs.
+Its payload is not exported there. All other recovery content, including nested
+checkpoint state and retry instructions, passes through the same exit check.
+
+**Rationale.** Complete resume composition already withheld a known quarantined
+statement, but list calls could still print that statement from a confirmed
+assumption or an invalidation reason. Recovery similarly returned it through
+verified artifact summaries. Filtering only the full Resume Packet left these
+other context-producing paths inconsistent with ADR-035.
+
+**Verification.** `tests/test_quarantine_state_exits.py` drives real MCP framing,
+CLI text/JSON outputs and recovery construction. It pairs each refusal with an
+unrelated-quarantine control. MCP and recovery database snapshots are unchanged;
+CLI refuses before emitting state. Nested checkpoint data and failed-step names
+are covered, as are retained diagnostic quarantine IDs.
+
+**Limit.** This reuses exact/long-substring matching; it is not a semantic
+injection detector. A real text collision can still deny a state read. It does
+not change raw administrative graph access or claim that every possible future
+export path is covered. Capsule export already reaches complete composition and
+refused the reproduced collision; no capsule format change is made here.

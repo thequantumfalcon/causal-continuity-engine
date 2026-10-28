@@ -754,9 +754,17 @@ def test_strict_json_output_is_all_or_nothing_and_closes_engine(
                 "data": {"statement": "bad number"},
             }]
 
+    class StubComposer:
+        @staticmethod
+        def _require_quarantine_free(project_id, content):
+            # This fixture isolates malformed JSON output, with no quarantined source.
+            assert project_id == "prj_stub"
+            assert content[0]["statement"] == "bad number"
+
     class StubEngine:
         tenant_id = "ten_stub"
         graph = StubGraph()
+        composer = StubComposer()
         closed = False
 
         def close(self):
