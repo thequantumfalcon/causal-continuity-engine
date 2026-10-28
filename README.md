@@ -10,6 +10,8 @@ Continuity, causal invalidation, and proof for long-running coding agents.
 
 <p align="center"><img src="https://raw.githubusercontent.com/thequantumfalcon/causal-continuity-engine/main/docs/assets/demo.svg" alt="cce-engine quickstart: install, init, audit verify, assumptions" width="760"></p>
 
+**Run it locally:** jump to the [Quickstart](#quickstart).
+
 ## The problem
 
 An agent working a codebase over weeks does not fail by forgetting text. It
