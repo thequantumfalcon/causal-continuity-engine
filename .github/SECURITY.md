@@ -16,13 +16,15 @@ quarantine barrier, the redaction path, and the event and audit chains.
 | Version | Supported |
 |---|---|
 | Latest commit on `main` | Yes |
-| 0.1.x — latest published release | Yes |
-| Older releases and arbitrary commits | No |
-| Anything else | No such version exists |
+| 0.5.x — latest published patch | Yes |
+| Earlier 0.5.x patches and releases before 0.5.0 | No |
+| Other arbitrary commits | No |
 
-This is pre-1.0 software with no release branches. A fix lands on `main`; if it
-affects the latest published release, the supported delivery is a new 0.1.x
-patch release rather than mutating or backporting to an older artifact.
+This is pre-1.0 software with no maintained release branches. Fixes land on
+`main` and ship in a new release; published artifacts are not changed and
+older release lines do not receive backports. Review the changelog before
+upgrading: incompatible processor versions require a new store and renewed
+authority confirmation, as described in the README.
 
 Hosted CI requires fixes to pass on Python 3.11, 3.12, 3.13 and 3.14 on Linux,
 and on Python 3.14 natively on Windows and macOS 15 ARM64.

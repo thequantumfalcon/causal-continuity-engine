@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Documentation
+
+- Shorten README narration while retaining runnable examples, proof contracts,
+  and documented limits. List the existing revision-uncertainty completion gate
+  alongside the other 22 instrumented gates.
+- Correct supported-version guidance to the current 0.5 series and remove the
+  unimplemented automatic dependency-edge linking claim.
+- Document the closed-store MCP lifecycle, bounded impact receipts, verifier
+  evidence interpretation, and upgrade/recovery steps in `docs/OPERATIONS.md`.
+  These edits do not change runtime behavior.
+
 ### Fixed
 
 - MCP and CLI assumption/invalidation listings and partial recovery packets

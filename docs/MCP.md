@@ -1,13 +1,17 @@
 # Using CCE from an MCP client
 
-This guide walks through connecting a coding agent to a CCE project over the
-Model Context Protocol, end to end, on a real repository. Every `cce-engine`
+This guide records an MCP walkthrough. Every `cce-engine`
 command and the MCP client session below were re-run on 2026-10-17 with the
 published 0.4.0 wheel, on a copy of this repository's `main`, using synthetic
 webhook payloads in place of the real GitHub objects. The dogfood observations
 quoted in sections 3 and 4 (six extracted claims, one confirmed constraint) are
 from the original run on 2026-09-24 with the 0.2.0 wheel and the real issue,
-pull request, push and check-run objects. Nothing here is hypothetical.
+pull request, push and check-run objects.
+
+The commands below retain the tested 0.4.0 version. For a new installation of
+the current checkout or release, use the [README quickstart](../README.md#quickstart).
+Older projected stores cannot be opened by incompatible processor versions;
+follow the [upgrade procedure](OPERATIONS.md#upgrades-retention-and-recovery).
 
 The short version: install the package, initialize a project inside your
 repository, feed it real events, confirm the proposals you actually mean,
@@ -32,9 +36,14 @@ owner-local: it runs only through the CLI on the machine that holds the store.
 An MCP client is an untrusted caller in the authority model, and a test in this
 repository fails if a tool name ever suggests otherwise.
 
-MCP observes a closed store. Stop the CLI or the HTTP server before connecting;
-any SQLite `-wal`, `-shm` or rollback-journal sidecar next to `cce.db` causes a
-refusal rather than a partial view. Never delete a sidecar to force admission.
+MCP observes a closed store. Stop writers, including the HTTP server, before
+connecting. Any SQLite `-wal`, `-shm` or rollback-journal sidecar next to
+`cce.db` causes refusal. Never delete a sidecar to force admission.
+
+An MCP session keeps one immutable database snapshot. If another process writes
+to the store, later tool calls refuse it; the session does not refresh itself.
+To ingest more events, disconnect MCP, run and close the writer, then reconnect.
+See [store lifecycle](OPERATIONS.md#store-lifecycle) for the operator sequence.
 
 ## 1. Install into a virtual environment
 
@@ -280,7 +289,8 @@ App id 15368 (`trusted_verifier_apps`).
 
 ## Troubleshooting
 
-- `refusing a store with sidecars`: a writer is open or crashed. Stop it; do not delete `-wal`/`-shm`.
+- Store-sidecar refusal: a writer is open or crashed. Stop it; do not delete `-wal`/`-shm`.
+- Store changed while MCP was open: close the MCP session, stop writers cleanly, then reconnect. An existing session does not refresh its snapshot.
 - The client cannot start the server: use absolute paths for both the executable and `--dir`.
 - `check` says `neutral`: compose a packet first; new events stale the last one.
 - `verification gaps: policy:proof-required-without-required-verifiers`: configure a policy with at least one pinned verifier.
