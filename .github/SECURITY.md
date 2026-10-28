@@ -34,7 +34,9 @@ either — if you are unsure whether something is a vulnerability, treat it as
 one until it has been triaged.
 
 **Use GitHub private vulnerability reporting: Security tab → Report a
-vulnerability.** That is the channel, and reports are welcome. It is the only
+vulnerability.** The form is also reachable directly at
+<https://github.com/thequantumfalcon/causal-continuity-engine/security/advisories/new>.
+That is the channel, and reports are welcome. It is the only
 one: GitHub has no user-to-user messaging, and the maintainer's GitHub
 no-reply address does not accept inbound mail, so a report sent anywhere else
 will not arrive.
