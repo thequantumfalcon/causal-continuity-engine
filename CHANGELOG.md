@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Security
+
+- Pin the build and development toolchain to setuptools 84.1.0 for
+  GHSA-xmj3-9gf7-h52w, with a regenerated hash lock. Add synthetic-wheel
+  regressions for rejected namespace paths and accepted dotted names in its
+  legacy installer. The engine still has no runtime dependencies.
+
 ### Documentation
 
 - Shorten README narration while retaining runnable examples, proof contracts,
