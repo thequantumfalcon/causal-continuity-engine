@@ -113,9 +113,14 @@ def test_current_metadata_is_consistent_and_dated():
     assert metadata.check(ROOT) == ("0.5.0", "2026-10-17")
 
 
-def test_current_metadata_is_tag_ready():
+def test_current_unreleased_changes_require_release_preparation(tmp_path):
     metadata = _load_release_script("check_release_metadata")
-    assert metadata.check(ROOT, release_tag="v0.5.0") == ("0.5.0", "2026-10-17")
+    with pytest.raises(SystemExit, match="Unreleased section to be reset exactly"):
+        metadata.check(ROOT, release_tag="v0.5.0")
+    # Retain the positive dated-release check on a constructed prepared release.
+    _metadata_fixture(tmp_path, version="0.5.0", release_state="2026-10-17",
+                      cff_date="2026-10-17")
+    assert metadata.check(tmp_path, release_tag="v0.5.0") == ("0.5.0", "2026-10-17")
 
 
 def test_the_processor_and_extractor_versions_are_pinned():

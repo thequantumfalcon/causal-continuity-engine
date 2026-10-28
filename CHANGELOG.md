@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-No unreleased changes.
+### Fixed
+
+- Quarantined extraction labels no longer suppress unrelated confirmed control
+  state in Resume Packets. Actual payload collisions remain withheld, including
+  payloads using the same words as engine labels (ADR-136).
 
 ## 0.5.0 — 2026-10-17
 

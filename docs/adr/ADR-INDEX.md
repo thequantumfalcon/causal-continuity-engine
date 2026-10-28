@@ -3840,3 +3840,29 @@ harness plants the flag after a known-good attestation and requires the named
 reconcile rejected pushes. It does not promote all continuity-check failures
 to completion blockers. The unreleased candidate retains processor
 `cce-processor/1.12.0`.
+
+## ADR-136 — Extraction bookkeeping is not quarantined prose
+
+**Decision.** The packet exit filter's bookkeeping exclusions include the
+extractor-owned `pattern`, `demoted_from`, `proposed_kind` and `demotion_reason`
+fields. Their values classify extraction; they do not supply payload patterns.
+All other content strings remain subject to the existing exact/substring
+matching rules. This changes packet filtering, not extraction or stored identity.
+
+**Rationale.** A quarantined assumption proposal carries the label `assumption`.
+Treating that label as hostile text also matched an unrelated, canonically
+confirmed assumption's metadata. Complete packet composition then refused even
+though the confirmed statement and quarantined statement were different.
+These four fields are assigned by the extractor and are not copied from source
+object keys by `_process_text`.
+
+**Verification.** `tests/test_quarantine_metadata.py` ingests hostile agent traces
+and GitHub issue bodies after owner-local confirmation. Unrelated assumptions
+survive both live composition and rebuilt projections. Matching statement text
+still refuses without mutating the store. Engine-label words appearing under
+`title` or an unknown payload key still produce a disclosed text collision.
+
+**Limit.** This does not recognize semantic equivalence or defeat an attacker
+who quotes real control text to suppress it. Such genuine text collisions stay
+fail-closed. It does not broaden the injection screen or treat privileged raw
+Graph writes as an untrusted ingestion API.
