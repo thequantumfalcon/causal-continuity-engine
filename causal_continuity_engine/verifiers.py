@@ -543,21 +543,34 @@ def check_command_safety(command: str, *, require_absolute: bool = False) -> Non
     A pinned command is only pinned if it names the program that will run.
     `env FOO=1 pytest`, `sh -c '...'` and `timeout 5 anything` all let the
     argument list choose the real executable, which would make pinning
-    cosmetic.
+    cosmetic. Absolute symlinks are checked by their resolved name too. This
+    is a known-wrapper guard, not binary authentication or protection against
+    replacing an executable after the check.
     """
     parts = shlex.split(command)
     if not parts:
         raise UnsafeCommandError("empty command")
     executable = Path(parts[0])
-    program = executable.name.casefold()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if program.endswith(suffix):
-            program = program[:-len(suffix)]
-            break
-    if program in _INDIRECTION:
-        raise UnsafeCommandError(
-            f"{program!r} delegates to a program named in its arguments, so "
-            f"pinning this command would not pin what actually runs")
+    candidates = [executable]
+    if executable.is_absolute():
+        try:
+            candidates.append(executable.resolve(strict=True))
+        except FileNotFoundError:
+            # Preserve admission of a missing tool; execution reports it as
+            # inconclusive. Resolve its spelling to check any dangling alias.
+            candidates.append(executable.resolve())
+        except (OSError, RuntimeError):
+            raise UnsafeCommandError("cannot resolve verifier executable") from None
+    for candidate in candidates:
+        program = candidate.name.casefold()
+        for suffix in (".exe", ".cmd", ".bat"):
+            if program.endswith(suffix):
+                program = program[:-len(suffix)]
+                break
+        if program in _INDIRECTION:
+            raise UnsafeCommandError(
+                f"{program!r} delegates to a program named in its arguments, so "
+                f"pinning this command would not pin what actually runs")
     if require_absolute and not executable.is_absolute():
         raise UnsafeCommandError(
             "policy-pinned verifier executables must use an absolute path; "

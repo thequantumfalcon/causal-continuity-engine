@@ -3867,6 +3867,26 @@ who quotes real control text to suppress it. Such genuine text collisions stay
 fail-closed. It does not broaden the injection screen or treat privileged raw
 Graph writes as an untrusted ingestion API.
 
+### ADR-024 addendum — Resolve absolute executable aliases before wrapper checks
+
+**Decision.** Check both the requested basename and the resolved basename of
+an absolute executable against the existing indirection list. Resolution loops
+and operating-system errors refuse. A missing executable remains admissible and
+is reported inconclusive when execution is attempted. The runner and pinned-policy
+admission already share this check;
+both now reject an innocently named symlink to a blocked shell. Python venv
+interpreter symlinks remain admissible.
+
+**Verification.** `tests/test_verifier_symlink_indirection.py` covers direct and
+chained POSIX shell aliases, the actual runner's refusal, a Python interpreter
+alias and a symlink loop. Before the fix the renamed shell ran `true` and the
+runner reported success. The fixture performs no external operation.
+
+**Limit.** This is name-based wrapper detection. A renamed binary copy or hard
+link, a replacement after validation, or a malicious permitted interpreter is
+not excluded by it. It does not solve native Windows command-line parsing or
+claim operating-system isolation. The execution fixture is POSIX-specific.
+
 ## ADR-137 — State listings and recovery share the quarantine exit check
 
 **Decision.** MCP assumption/invalidation lists, their CLI equivalents including

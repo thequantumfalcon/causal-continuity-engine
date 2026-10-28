@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP and CLI assumption/invalidation listings and partial recovery packets
   refuse output containing known quarantined payload text. They reuse the packet
   exit filter without writing collision audits on read-only paths (ADR-137).
+- The verifier command guard checks the resolved target of an absolute symlink,
+  so renaming a link to a blocked shell no longer bypasses the wrapper check.
+  Ordinary Python interpreter symlinks remain supported; this is not executable
+  authentication or a sandbox (ADR-024 addendum).
 - Quarantined extraction labels no longer suppress unrelated confirmed control
   state in Resume Packets. Actual payload collisions remain withheld, including
   payloads using the same words as engine labels (ADR-136).
