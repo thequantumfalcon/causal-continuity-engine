@@ -765,6 +765,7 @@ class ResumeComposer:
         "span", "source_ref", "suspected_injection", "quarantine_reason",
         "quarantined_at", "extractor", "extractor_version", "node_id",
         "event_id", "kind",
+        "pattern", "demoted_from", "proposed_kind", "demotion_reason",
     })
 
     #: A pattern shorter than this matches only as a whole value. Substring
