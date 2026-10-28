@@ -362,13 +362,23 @@ def _control_fixture(tmp_path):
     return repository
 
 
+def _git_for_windows_shell(git):
+    # git.exe sits one level below the install root in cmd\ (the installer's
+    # PATH entry) and bin\, but two levels below it in mingw64\bin\, which Git
+    # Bash puts first on PATH. sh.exe is in the root's bin\ in every layout, so
+    # assuming one level made both hook fixtures fail from a Git Bash prompt.
+    executable = Path(git).resolve()
+    candidates = [root / "bin" / "sh.exe" for root in executable.parents[1:3]]
+    return next((shell for shell in candidates if shell.is_file()), None), candidates
+
+
 def _hook_command(hook, *arguments):
     if os.name != "nt":
         return (hook, *arguments)
     git = shutil.which("git")
     assert git is not None, "Git for Windows is required to run hook fixtures"
-    shell = Path(git).resolve().parents[1] / "bin" / "sh.exe"
-    assert shell.is_file(), f"expected the Git for Windows shell at {shell}"
+    shell, candidates = _git_for_windows_shell(git)
+    assert shell is not None, f"expected the Git for Windows shell at one of {candidates}"
     return (str(shell), hook, *arguments)
 
 
@@ -401,6 +411,22 @@ def test_real_hooks_reject_a_base_valid_bypass(tmp_path):
     assert "attribution.credit" in pre_commit.stderr, pre_commit.stderr
     assert commit_msg.returncode == 1, commit_msg.stderr
     assert "attribution.credit" in commit_msg.stderr, commit_msg.stderr
+
+
+# The Windows CI job resolves git from cmd\, so without this test no hosted run
+# exercises the mingw64\bin layout that a Git Bash prompt resolves first.
+@pytest.mark.parametrize("layout", ["cmd", "bin", "mingw64/bin"])
+def test_hook_shell_is_found_from_every_git_for_windows_layout(tmp_path, layout):
+    shell = tmp_path / "Git" / "bin" / "sh.exe"
+    shell.parent.mkdir(parents=True)
+    shell.write_bytes(b"")
+    git = tmp_path / "Git" / layout / "git.exe"
+    git.parent.mkdir(parents=True, exist_ok=True)
+    git.write_bytes(b"")
+
+    found, _ = _git_for_windows_shell(git)
+
+    assert found == shell.resolve()
 
 
 def _run_push_workflow(repository):
