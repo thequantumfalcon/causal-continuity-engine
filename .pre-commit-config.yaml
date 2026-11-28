@@ -43,7 +43,7 @@ repos:
       - id: check-merge-conflict
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 38bfb07c0c64c304f47eb52090f8288150c77730  # v0.17.1
+    rev: 9026c9127e153371d7a78dfcb0c45ae2046a3d10  # v0.17.6
     hooks:
       # Lint only, matching `just lint` and CI. Formatting is advisory in this
       # project and deliberately not a gate: the tree was hand-formatted before
